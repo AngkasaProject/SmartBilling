@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Customer, Invoice } from '../types';
+import { Customer, Invoice, AppSettings } from '../types';
 import { StorageService } from '../services/storage';
 import {
   Server,
@@ -12,7 +12,8 @@ import {
   RotateCcw,
   ShieldAlert,
   ChevronDown,
-  CheckCircle2
+  CheckCircle2,
+  Settings
 } from 'lucide-react';
 
 interface Props {
@@ -22,6 +23,7 @@ interface Props {
   onSelectAdminTab: (tab: string) => void;
   customers: Customer[];
   invoices: Invoice[];
+  settings: AppSettings;
   onRefreshData: () => void;
 }
 
@@ -32,6 +34,7 @@ export const Navbar: React.FC<Props> = ({
   onSelectAdminTab,
   customers,
   invoices,
+  settings,
   onRefreshData,
 }) => {
   const [isScanning, setIsScanning] = useState(false);
@@ -72,19 +75,21 @@ export const Navbar: React.FC<Props> = ({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-4">
         {/* Brand Logo & Router Status */}
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-700 to-emerald-500 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-indigo-600/20">
-            N
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-700 to-emerald-500 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-indigo-600/20 uppercase">
+            {settings.brandName ? settings.brandName.charAt(0) : 'N'}
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-extrabold text-white text-base tracking-tight">NETFLOW ISP</span>
+              <span className="font-extrabold text-white text-base tracking-tight">
+                {settings.brandName || 'NETFLOW ISP'}
+              </span>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
                 MikroTik Cloud
               </span>
             </div>
             <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mt-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span>RB4011-NOC (Connected • 18% CPU)</span>
+              <span>{settings.mikrotikHost} (Connected • 18% CPU)</span>
             </div>
           </div>
         </div>
@@ -142,6 +147,18 @@ export const Navbar: React.FC<Props> = ({
 
         {/* Action Controls & Auto-Isolir Scheduler */}
         <div className="flex items-center gap-2">
+          {/* Quick Settings Shortcut */}
+          <button
+            onClick={() => {
+              onSelectView('admin');
+              onSelectAdminTab('settings');
+            }}
+            className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-xl transition border border-slate-800"
+            title="Buka Pengaturan Sistem (Settings)"
+          >
+            <Settings className="w-4 h-4 text-indigo-400" />
+          </button>
+
           {/* Auto-Isolir Trigger */}
           <button
             onClick={handleRunAutoIsolir}
@@ -150,7 +167,7 @@ export const Navbar: React.FC<Props> = ({
             title="Scan jadwal jatuh tempo pelanggan dan aktifkan auto-isolir di MikroTik"
           >
             <Zap className={`w-3.5 h-3.5 text-rose-400 ${isScanning ? 'animate-bounce' : ''}`} />
-            <span>{isScanning ? 'Memeriksa...' : 'Auto-Isolir Scheduler'}</span>
+            <span>{isScanning ? 'Memeriksa...' : 'Auto-Isolir'}</span>
           </button>
 
           <button
@@ -185,8 +202,8 @@ export const Navbar: React.FC<Props> = ({
               { id: 'vouchers', label: 'Voucher Hotspot & Cetak', icon: Ticket },
               { id: 'routers', label: 'Router MikroTik & Script', icon: Zap },
               { id: 'whatsapp', label: 'OpenWA Gateway', icon: CheckCircle2 },
-              { id: 'payment', label: 'Payment Gateway (QRIS/VA)', icon: CreditCard },
               { id: 'docker', label: 'Docker & VPS Hosting', icon: Server },
+              { id: 'settings', label: '⚙️ Pengaturan (Settings)', icon: Settings },
             ].map(tab => {
               const Icon = tab.icon;
               const isActive = adminTab === tab.id;

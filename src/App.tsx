@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Customer, Invoice, Voucher, HotspotProfile, RouterConfig, WhatsAppLog, PaymentGatewayConfig, WhatsAppGatewayConfig } from './types';
+import { Customer, Invoice, Voucher, HotspotProfile, RouterConfig, WhatsAppLog, PaymentGatewayConfig, WhatsAppGatewayConfig, AppSettings } from './types';
 import { StorageService } from './services/storage';
 import { Navbar } from './components/Navbar';
 import { DashboardTab } from './components/admin/DashboardTab';
@@ -10,6 +10,7 @@ import { RoutersTab } from './components/admin/RoutersTab';
 import { WhatsAppTab } from './components/admin/WhatsAppTab';
 import { PaymentGatewayTab } from './components/admin/PaymentGatewayTab';
 import { DockerGuideTab } from './components/admin/DockerGuideTab';
+import { SettingsTab } from './components/admin/SettingsTab';
 import { VoucherStorePortal } from './components/portal/VoucherStorePortal';
 import { CustomerBillPortal } from './components/portal/CustomerBillPortal';
 import { HotspotLoginPage } from './components/portal/HotspotLoginPage';
@@ -20,6 +21,9 @@ import { Send, X, Check, ShieldAlert, CheckCircle2 } from 'lucide-react';
 export default function App() {
   const [currentView, setCurrentView] = useState<'admin' | 'voucher_portal' | 'hotspot_login' | 'customer_bill'>('admin');
   const [adminTab, setAdminTab] = useState('dashboard');
+
+  // App Settings (Persistent in SQLite database)
+  const [appSettings, setAppSettings] = useState<AppSettings>(StorageService.getSettings());
 
   // App Data
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -44,6 +48,8 @@ export default function App() {
   const [prefilledVoucherCode, setPrefilledVoucherCode] = useState('');
 
   const refreshAllData = () => {
+    const freshSettings = StorageService.getSettings();
+    setAppSettings(freshSettings);
     setCustomers(StorageService.getCustomers());
     setInvoices(StorageService.getInvoices());
     setVouchers(StorageService.getVouchers());
@@ -56,12 +62,16 @@ export default function App() {
 
   useEffect(() => {
     refreshAllData();
+    // Sync settings from backend SQLite database if available
+    StorageService.syncFromSqlite().then(latest => {
+      setAppSettings(latest);
+    }).catch(() => {});
   }, []);
 
   // Handle WhatsApp Reminder from Table / Dashboard
   const handleOpenSendWa = (customer: Customer, type: 'reminder' | 'isolir') => {
     const inv = invoices.find(i => i.customerId === customer.id && i.status !== 'paid');
-    const amountStr = inv ? `sebesar Rp ${inv.totalAmount.toLocaleString('id-ID')}` : `sebesar Rp ${customer.monthlyFee.toLocaleString('id-ID')}`;
+    const amountStr = inv ? `sebesar ${appSettings.currencySymbol} ${inv.totalAmount.toLocaleString('id-ID')}` : `sebesar ${appSettings.currencySymbol} ${customer.monthlyFee.toLocaleString('id-ID')}`;
 
     let text = '';
     if (type === 'reminder') {
@@ -134,6 +144,7 @@ export default function App() {
         onSelectAdminTab={setAdminTab}
         customers={customers}
         invoices={invoices}
+        settings={appSettings}
         onRefreshData={refreshAllData}
       />
 
@@ -201,6 +212,12 @@ export default function App() {
               />
             )}
             {adminTab === 'docker' && <DockerGuideTab />}
+            {adminTab === 'settings' && (
+              <SettingsTab
+                settings={appSettings}
+                onRefreshSettings={refreshAllData}
+              />
+            )}
           </>
         )}
 
@@ -234,8 +251,8 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950/60 py-4 px-6 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>NetFlow MikroTik ISP Billing & Hotspot Platform • Docker Ready Container</span>
-          <span>RouterOS v6 & v7 API Compatible • Multi-Gateway (Midtrans / Xendit / Tripay)</span>
+          <span>{appSettings.appName} • Docker SQLite Persistent (/app/data/billing.sqlite)</span>
+          <span>OpenWA (rmyndharis/OpenWA) • RouterOS v6 & v7 API Compatible</span>
         </div>
       </footer>
 

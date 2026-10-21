@@ -159,3 +159,63 @@ export interface PaymentTransaction {
   voucherCode?: string;
   invoiceId?: string;
 }
+
+export interface AppSettings {
+  // 1. General & Branding
+  appName: string;
+  brandName: string;
+  companyName: string;
+  tagline: string;
+  officeAddress: string;
+  phoneContact: string;
+  emailContact: string;
+  defaultSsid: string;
+  currencySymbol: string;
+  timezone: string;
+
+  // 2. MikroTik Router Connection
+  mikrotikHost: string;
+  mikrotikPort: number;
+  mikrotikUser: string;
+  mikrotikPass?: string;
+  mikrotikApiType: 'api' | 'api-ssl' | 'rest';
+  mikrotikTimeoutSec: number;
+
+  // 3. OpenWA WhatsApp Gateway (rmyndharis/OpenWA)
+  waProvider: 'openwa' | 'fonnte' | 'wablas' | 'baileys';
+  openwaUrl: string;
+  openwaApiKey: string;
+  openwaSessionId: string;
+  openwaSenderNumber: string;
+  autoSendReminderH3: boolean;
+  autoSendReminderH1: boolean;
+  autoSendIsolir: boolean;
+  autoSendReceipt: boolean;
+
+  // 4. Payment Gateway (Midtrans / Xendit / Tripay)
+  paymentProvider: 'midtrans' | 'xendit' | 'tripay';
+  paymentIsProduction: boolean;
+  paymentServerKey: string;
+  paymentClientKey: string;
+  paymentMerchantCode?: string;
+  paymentWebhookSecret: string;
+  paymentAutoVerify: boolean;
+
+  // 5. Billing & Hotspot Defaults
+  gracePeriodDays: number;
+  defaultVoucherPrefix: string;
+  voucherLength: number;
+  updatedAt: string;
+}
+
+export interface DatabaseStats {
+  engine: 'sqlite';
+  dbPath: string;
+  fileSizeBytes: number;
+  tablesCount: number;
+  customersCount: number;
+  invoicesCount: number;
+  vouchersCount: number;
+  lastBackupTime?: string;
+}
+

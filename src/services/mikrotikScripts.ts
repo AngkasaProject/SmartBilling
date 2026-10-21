@@ -202,6 +202,9 @@ RUN npm ci --only=production
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server.ts ./server.ts
+COPY --from=builder /app/server ./server
+COPY --from=builder /app/src/types ./src/types
+RUN mkdir -p /app/data
 
 EXPOSE 3000
 

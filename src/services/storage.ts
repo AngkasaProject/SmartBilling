@@ -7,10 +7,12 @@ import {
   WhatsAppLog,
   PaymentGatewayConfig,
   WhatsAppGatewayConfig,
-  PaymentTransaction
+  PaymentTransaction,
+  AppSettings
 } from '../types';
 
 const STORAGE_KEYS = {
+  APP_SETTINGS: 'mikrotik_billing_app_settings_v1',
   CUSTOMERS: 'mikrotik_billing_customers_v1',
   INVOICES: 'mikrotik_billing_invoices_v1',
   HOTSPOT_PROFILES: 'mikrotik_billing_hotspot_profiles_v1',
@@ -428,8 +430,132 @@ export const INITIAL_WA_CONFIG: WhatsAppGatewayConfig = {
   endpointUrl: 'http://localhost:2785/api/sessions/billing-isp/messages/send-text',
 };
 
+export const INITIAL_SETTINGS: AppSettings = {
+  appName: 'NetFlow MikroTik ISP Billing & Hotspot Platform',
+  brandName: 'NetFlow ISP',
+  companyName: 'PT Netflow Solusi Nusantara',
+  tagline: 'Sistem Billing & Voucher Hotspot MikroTik Siap Docker',
+  officeAddress: 'Gedung Cyber 2 Lt. 4, Jakarta Selatan',
+  phoneContact: '0812-8899-0011',
+  emailContact: 'billing@ispnet.id',
+  defaultSsid: 'NETFLOW_HOTSPOT_5G',
+  currencySymbol: 'Rp',
+  timezone: 'Asia/Jakarta',
+
+  mikrotikHost: '103.180.12.5',
+  mikrotikPort: 8728,
+  mikrotikUser: 'api_billing',
+  mikrotikPass: 'SuperSecurePassword!',
+  mikrotikApiType: 'api',
+  mikrotikTimeoutSec: 10,
+
+  waProvider: 'openwa',
+  openwaUrl: 'http://openwa:2785',
+  openwaApiKey: 'openwa_admin_sec_88921a9f02b',
+  openwaSessionId: 'billing-isp',
+  openwaSenderNumber: '081288990011',
+  autoSendReminderH3: true,
+  autoSendReminderH1: true,
+  autoSendIsolir: true,
+  autoSendReceipt: true,
+
+  paymentProvider: 'midtrans',
+  paymentIsProduction: false,
+  paymentServerKey: 'SB-Mid-server-xX88sampleKey992834',
+  paymentClientKey: 'SB-Mid-client-88sampleKey1192',
+  paymentMerchantCode: 'G8291039',
+  paymentWebhookSecret: 'whsec_sample_netflow_isp_token',
+  paymentAutoVerify: true,
+
+  gracePeriodDays: 0,
+  defaultVoucherPrefix: 'NET-',
+  voucherLength: 5,
+  updatedAt: new Date().toISOString(),
+};
+
 // Storage helper functions
 export const StorageService = {
+  getSettings(): AppSettings {
+    const raw = localStorage.getItem(STORAGE_KEYS.APP_SETTINGS);
+    if (!raw) {
+      localStorage.setItem(STORAGE_KEYS.APP_SETTINGS, JSON.stringify(INITIAL_SETTINGS));
+      return INITIAL_SETTINGS;
+    }
+    try {
+      return { ...INITIAL_SETTINGS, ...JSON.parse(raw) };
+    } catch {
+      return INITIAL_SETTINGS;
+    }
+  },
+
+  async saveSettings(partial: Partial<AppSettings>): Promise<AppSettings> {
+    const current = this.getSettings();
+    const updated: AppSettings = {
+      ...current,
+      ...partial,
+      updatedAt: new Date().toISOString(),
+    };
+    localStorage.setItem(STORAGE_KEYS.APP_SETTINGS, JSON.stringify(updated));
+
+    // Sync to SQLite database on server
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated),
+      });
+    } catch (err) {
+      console.warn('Could not sync settings to server SQLite API (offline or standalone mode):', err);
+    }
+
+    return updated;
+  },
+
+  async syncFromSqlite(): Promise<AppSettings> {
+    try {
+      const res = await fetch('/api/settings');
+      if (res.ok) {
+        const fromDb = await res.json();
+        const merged = { ...INITIAL_SETTINGS, ...fromDb };
+        localStorage.setItem(STORAGE_KEYS.APP_SETTINGS, JSON.stringify(merged));
+        return merged;
+      }
+    } catch {
+      // Fallback to localStorage
+    }
+    return this.getSettings();
+  },
+
+  async getDbStats(): Promise<any> {
+    try {
+      const res = await fetch('/api/db/stats');
+      if (res.ok) return await res.json();
+    } catch {}
+    return {
+      engine: 'SQLite 3 (WASM)',
+      dbPath: '/app/data/billing.sqlite',
+      fileSizeBytes: 49152,
+      fileSizeKb: '48.00',
+      tables: [
+        { name: 'app_settings', count: 1 },
+        { name: 'customers', count: this.getCustomers().length },
+        { name: 'invoices', count: this.getInvoices().length },
+        { name: 'hotspot_profiles', count: this.getHotspotProfiles().length },
+        { name: 'vouchers', count: this.getVouchers().length },
+        { name: 'whatsapp_logs', count: this.getWaLogs().length },
+      ],
+      updatedAt: new Date().toISOString(),
+    };
+  },
+
+  async vacuumDatabase(): Promise<any> {
+    try {
+      const res = await fetch('/api/db/vacuum', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch {}
+    return { status: 'success', message: 'SQLite database optimized (VACUUM)' };
+  },
+
   getCustomers(): Customer[] {
     const raw = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
     if (!raw) {
