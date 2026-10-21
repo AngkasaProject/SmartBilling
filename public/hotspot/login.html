@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta http-equiv="pragma" content="no-cache">
+  <meta http-equiv="expires" content="-1">
+  <title>Login Hotspot WiFi - High Speed Internet</title>
+  <style>
+    :root {
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+      --emerald: #10b981;
+      --emerald-hover: #059669;
+      --bg: #090d16;
+      --card: #131b2e;
+      --card-border: #1e293b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      line-height: 1.5;
+    }
+    .login-card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 24px;
+      width: 100%;
+      max-width: 400px;
+      padding: 28px 24px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      position: relative;
+      overflow: hidden;
+    }
+    .glow {
+      position: absolute;
+      top: -40px;
+      right: -40px;
+      width: 120px;
+      height: 120px;
+      background: radial-gradient(circle, rgba(79, 70, 229, 0.25) 0%, rgba(79, 70, 229, 0) 70%);
+      pointer-events: none;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .logo-icon {
+      width: 56px;
+      height: 56px;
+      background: linear-gradient(135deg, #4f46e5, #10b981);
+      border-radius: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 900;
+      font-size: 24px;
+      margin-bottom: 12px;
+      box-shadow: 0 10px 20px -5px rgba(79, 70, 229, 0.4);
+    }
+    h1 {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: #ffffff;
+    }
+    .subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+    .badge-ssid {
+      display: inline-block;
+      margin-top: 8px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .error-box {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 12px;
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    .tab-switch {
+      display: flex;
+      background: #0b1120;
+      padding: 4px;
+      border-radius: 12px;
+      margin-bottom: 18px;
+      border: 1px solid var(--card-border);
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .tab-btn.active {
+      background: var(--primary);
+      color: white;
+      box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    .input-code {
+      width: 100%;
+      padding: 12px 16px;
+      background: #090d16;
+      border: 1px solid #27354f;
+      border-radius: 14px;
+      font-size: 18px;
+      font-family: monospace;
+      font-weight: 700;
+      text-align: center;
+      letter-spacing: 2px;
+      color: white;
+      outline: none;
+      text-transform: uppercase;
+      transition: border-color 0.2s;
+    }
+    .input-code:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2);
+    }
+    .btn-submit {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, var(--primary), #6366f1);
+      border: none;
+      border-radius: 14px;
+      color: white;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 10px 20px -5px rgba(79, 70, 229, 0.4);
+      transition: transform 0.1s, opacity 0.2s;
+    }
+    .btn-submit:active {
+      transform: scale(0.99);
+    }
+    .divider {
+      position: relative;
+      text-align: center;
+      margin: 22px 0;
+    }
+    .divider::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 50%;
+      width: 100%;
+      height: 1px;
+      background: var(--card-border);
+    }
+    .divider span {
+      position: relative;
+      background: var(--card);
+      padding: 0 10px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #64748b;
+    }
+    .btn-buy {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 12px 14px;
+      background: #10b981;
+      color: white;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
+      border-radius: 14px;
+      box-shadow: 0 8px 16px -4px rgba(16, 185, 129, 0.3);
+      transition: background 0.2s, transform 0.1s;
+    }
+    .btn-buy:hover {
+      background: var(--emerald-hover);
+    }
+    .btn-trial {
+      display: inline-block;
+      margin-top: 14px;
+      color: #818cf8;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .btn-trial:hover {
+      text-decoration: underline;
+    }
+    .footer-info {
+      margin-top: 22px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: #64748b;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="glow"></div>
+
+    <div class="header">
+      <div class="logo-icon">N</div>
+      <h1>WIFI HOTSPOT SUPER</h1>
+      <p class="subtitle">Koneksi Internet Cepat, Stabil & Tanpa Batas</p>
+      <div class="badge-ssid">SSID: NETFLOW_HOTSPOT_5G</div>
+    </div>
+
+    <!-- MikroTik Error Notification Display -->
+    $(if error)
+    <div class="error-box">
+      $(error)
+    </div>
+    $(endif)
+
+    <!-- Login Mode Tabs -->
+    <div class="tab-switch">
+      <button class="tab-btn active" id="tabVoucher" onclick="setMode('voucher')">Kode Voucher</button>
+      <button class="tab-btn" id="tabMember" onclick="setMode('member')">Member PPPoE</button>
+    </div>
+
+    <!-- MikroTik Standard Login Form -->
+    <form name="login" action="$(link-login-only)" method="post" $(if chap-id) onSubmit="return doLogin()" $(endif)>
+      <input type="hidden" name="dst" value="$(link-orig)" />
+      <input type="hidden" name="popup" value="true" />
+
+      <!-- Field Username / Voucher Code -->
+      <div class="form-group">
+        <label id="lblUsername">Kode Voucher</label>
+        <input 
+          type="text" 
+          name="username" 
+          id="username" 
+          placeholder="CONTOH: NET-73921" 
+          class="input-code" 
+          required 
+          autocomplete="off" 
+          autocapitalize="characters"
+        />
+      </div>
+
+      <!-- Field Password (hidden on voucher mode, visible on member mode) -->
+      <div class="form-group" id="passGroup" style="display: none;">
+        <label>Kata Sandi (Password)</label>
+        <input 
+          type="password" 
+          name="password" 
+          id="password" 
+          placeholder="Password Akun" 
+          class="input-code" 
+          style="letter-spacing: normal; font-size: 14px;"
+        />
+      </div>
+
+      <button type="submit" class="btn-submit">
+        Masuk Sekarang
+      </button>
+    </form>
+
+    <!-- Tombol Beli Voucher Mandiri (Walled Garden Bypass) -->
+    <div class="divider">
+      <span>Belum Punya Voucher?</span>
+    </div>
+
+    <a href="http://103.180.12.5:3000/?view=voucher" class="btn-buy">
+      <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
+        <path d="M20 4H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/>
+      </svg>
+      <span>Beli Voucher Online (QRIS / E-Wallet)</span>
+    </a>
+
+    <!-- Trial Gratis jika diaktifkan di MikroTik -->
+    $(if trial == 'yes')
+    <div style="text-align: center;">
+      <a href="$(link-login-only)?dst=$(link-orig-esc)&amp;username=T-$(mac-esc)" class="btn-trial">
+        Coba Gratis 10 Menit (Trial)
+      </a>
+    </div>
+    $(endif)
+
+    <div class="footer-info">
+      <span>IP: $(ip)</span>
+      <span>MAC: $(mac)</span>
+    </div>
+  </div>
+
+  $(if chap-id)
+  <script type="text/javascript" src="md5.js"></script>
+  <script type="text/javascript">
+    function doLogin() {
+      document.sendin.username.value = document.login.username.value;
+      document.sendin.password.value = hexMD5('$(chap-id)' + document.login.password.value + '$(chap-challenge)');
+      document.sendin.submit();
+      return false;
+    }
+  </script>
+  <form name="sendin" action="$(link-login-only)" method="post" style="display:none">
+    <input type="hidden" name="username" />
+    <input type="hidden" name="password" />
+    <input type="hidden" name="dst" value="$(link-orig)" />
+    <input type="hidden" name="popup" value="true" />
+  </form>
+  $(endif)
+
+  <script type="text/javascript">
+    var currentMode = 'voucher';
+
+    function setMode(mode) {
+      currentMode = mode;
+      var tabV = document.getElementById('tabVoucher');
+      var tabM = document.getElementById('tabMember');
+      var passGrp = document.getElementById('passGroup');
+      var lblUser = document.getElementById('lblUsername');
+      var userInput = document.getElementById('username');
+
+      if (mode === 'voucher') {
+        tabV.className = 'tab-btn active';
+        tabM.className = 'tab-btn';
+        passGrp.style.display = 'none';
+        lblUser.innerText = 'Kode Voucher';
+        userInput.placeholder = 'CONTOH: NET-73921';
+        document.getElementById('password').value = userInput.value;
+      } else {
+        tabM.className = 'tab-btn active';
+        tabV.className = 'tab-btn';
+        passGrp.style.display = 'block';
+        lblUser.innerText = 'Username Member';
+        userInput.placeholder = 'Username Anda';
+        document.getElementById('password').value = '';
+      }
+    }
+
+    // Auto-sync password saat mode voucher (username = password)
+    document.getElementById('username').addEventListener('input', function(e) {
+      if (currentMode === 'voucher') {
+        document.getElementById('password').value = e.target.value.trim().toUpperCase();
+      }
+    });
+  </script>
+</body>
+</html>

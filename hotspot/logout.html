@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Logout Berhasil - Hotspot WiFi</title>
+  <style>
+    body {
+      background: #090d16;
+      color: #f8fafc;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .card {
+      background: #131b2e;
+      border: 1px solid #1e293b;
+      border-radius: 24px;
+      width: 100%;
+      max-width: 380px;
+      padding: 28px 24px;
+      text-align: center;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }
+    .icon {
+      width: 60px;
+      height: 60px;
+      background: rgba(99, 102, 241, 0.15);
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      color: #818cf8;
+      margin-bottom: 12px;
+    }
+    h1 { font-size: 20px; font-weight: 800; margin-bottom: 6px; }
+    p { font-size: 13px; color: #94a3b8; line-height: 1.5; }
+    .btn-login {
+      display: block;
+      margin-top: 20px;
+      padding: 12px;
+      background: #4f46e5;
+      color: white;
+      text-decoration: none;
+      border-radius: 14px;
+      font-weight: 700;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🔒</div>
+    <h1>Anda Telah Logout</h1>
+    <p>Sesi internet untuk voucher $(username) telah diputuskan. Sisa kuota dan durasi tetap tersimpan.</p>
+    <a href="$(link-login)" class="btn-login">Login Kembali ke Hotspot</a>
+  </div>
+</body>
+</html>

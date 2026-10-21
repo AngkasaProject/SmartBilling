@@ -1,0 +1,59 @@
+services:
+  # MikroTik Billing & Hotspot Platform
+  mikrotik-billing:
+    build: .
+    container_name: mikrotik-billing-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - RUN_EXPRESS=true
+      # MikroTik API credentials
+      - MIKROTIK_HOST=103.180.12.5
+      - MIKROTIK_PORT=8728
+      - MIKROTIK_USER=api_billing
+      - MIKROTIK_PASS=SuperSecureMikrotikPassword!
+      # Payment Gateway Config (Midtrans / Xendit / Tripay)
+      - PAYMENT_GATEWAY=midtrans
+      - MIDTRANS_SERVER_KEY=SB-Mid-server-xX88sampleKey992834
+      - MIDTRANS_CLIENT_KEY=SB-Mid-client-88sampleKey1192
+      - MIDTRANS_IS_PRODUCTION=false
+      # WhatsApp Gateway Config (rmyndharis/OpenWA)
+      - WA_PROVIDER=openwa
+      - OPENWA_BASE_URL=http://openwa:2785
+      - OPENWA_API_KEY=openwa_admin_sec_88921a9f02b
+      - OPENWA_SESSION_ID=billing-isp
+    depends_on:
+      - openwa
+    volumes:
+      - billing_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # OpenWA - Self-Hosted WhatsApp API Gateway (rmyndharis/OpenWA)
+  openwa:
+    image: rmyndharis/openwa:latest
+    container_name: openwa-api
+    restart: unless-stopped
+    ports:
+      - "2785:2785"
+    environment:
+      - PORT=2785
+      - NODE_ENV=production
+      - DEFAULT_ENGINE=baileys
+    volumes:
+      - openwa_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:2785/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  billing_data:
+  openwa_data:
