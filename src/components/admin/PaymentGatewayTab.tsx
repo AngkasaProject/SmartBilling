@@ -1,290 +1,187 @@
-import React, { useState } from 'react';
-import { PaymentGatewayConfig, Invoice } from '../../types';
-import { StorageService } from '../../services/storage';
-import {
-  CreditCard,
-  QrCode as QrIcon,
-  ShieldCheck,
-  Zap,
-  CheckCircle2,
-  Copy,
-  Check,
-  ArrowRight,
-  ExternalLink,
-  Layers,
-  Settings,
-  AlertCircle
-} from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { AlertCircle, CheckCircle2, CreditCard, ExternalLink } from 'lucide-react';
 
-interface Props {
-  invoices: Invoice[];
-  paymentConfig: PaymentGatewayConfig;
-  onRefreshData: () => void;
+interface PaymentEnvironment {
+  provider: string;
+  isProduction: boolean;
+  serverKeyConfigured: boolean;
+  clientKeyConfigured: boolean;
+  appUrlConfigured: boolean;
+  checkoutEnabled: boolean;
+  webhookUrl: string;
 }
 
-export const PaymentGatewayTab: React.FC<Props> = ({
-  invoices,
-  paymentConfig,
-  onRefreshData,
-}) => {
-  const [config, setConfig] = useState<PaymentGatewayConfig>(paymentConfig);
-  const [saved, setSaved] = useState(false);
-  const [copiedUrl, setCopiedUrl] = useState(false);
+interface ManualMethod {
+  id: string;
+  name: string;
+  serviceName?: string;
+  accountNumber?: string;
+  instructions: string;
+  enabled: boolean;
+}
 
-  // Webhook Simulator state
-  const unpaidInvoices = invoices.filter(i => i.status !== 'paid');
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState(unpaidInvoices[0]?.id || '');
-  const [simulatedMethod, setSimulatedMethod] = useState('QRIS Instant (GoPay / BCA)');
-  const [isSimulating, setIsSimulating] = useState(false);
-  const [simulationLog, setSimulationLog] = useState<string | null>(null);
+const initialMethods: ManualMethod[] = [
+  { id: 'bank-transfer', name: 'Transfer Bank', serviceName: 'BRI', accountNumber: '090549609604', instructions: '', enabled: false },
+  { id: 'dana', name: 'DANA', serviceName: 'DANA', accountNumber: '', instructions: '', enabled: false },
+  { id: 'qris-manual', name: 'QRIS Manual', serviceName: 'QRIS', accountNumber: '', instructions: '', enabled: false },
+];
 
-  const handleSaveConfig = (e: React.FormEvent) => {
-    e.preventDefault();
-    StorageService.savePaymentConfig(config);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-    onRefreshData();
-  };
+export const PaymentGatewayTab: React.FC = () => {
+  const [environment, setEnvironment] = useState<PaymentEnvironment | null>(null);
+  const [error, setError] = useState('');
+  const [methods, setMethods] = useState<ManualMethod[]>(initialMethods);
+  const [timeoutMinutes, setTimeoutMinutes] = useState(60);
+  const [savingManual, setSavingManual] = useState(false);
+  const [manualMessage, setManualMessage] = useState('');
 
-  const handleSimulateWebhook = () => {
-    if (!selectedInvoiceId) {
-      alert('Pilih invoice yang belum lunas terlebih dahulu!');
-      return;
+  useEffect(() => {
+    Promise.all([fetch('/api/payment/config'), fetch('/api/payment/manual-options')])
+      .then(async ([paymentResponse, manualResponse]) => {
+        const [payment, manual] = await Promise.all([paymentResponse.json(), manualResponse.json()]);
+        if (!paymentResponse.ok) throw new Error(payment.error || `HTTP ${paymentResponse.status}`);
+        if (!manualResponse.ok) throw new Error(manual.error || `HTTP ${manualResponse.status}`);
+        setEnvironment(payment);
+        if (Array.isArray(manual.manualPaymentMethods)) {
+          setMethods(manual.manualPaymentMethods.length ? manual.manualPaymentMethods : initialMethods);
+        }
+        setTimeoutMinutes(manual.manualTimeoutMinutes || 60);
+      })
+      .catch(fetchError => setError(fetchError instanceof Error ? fetchError.message : String(fetchError)));
+  }, []);
+
+  const saveManualOptions = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSavingManual(true);
+    setError('');
+    setManualMessage('');
+    try {
+      const response = await fetch('/api/payment/manual-options', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ manualPaymentMethods: methods, manualTimeoutMinutes: timeoutMinutes }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      setMethods(result.manualPaymentMethods);
+      setTimeoutMinutes(result.manualTimeoutMinutes);
+      setManualMessage('Metode pembayaran manual berhasil disimpan.');
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setSavingManual(false);
     }
-
-    setIsSimulating(true);
-    setSimulationLog(null);
-
-    setTimeout(() => {
-      const result = StorageService.settleInvoice(
-        selectedInvoiceId,
-        simulatedMethod.split(' ')[0],
-        simulatedMethod
-      );
-
-      setIsSimulating(false);
-      if (result.success) {
-        setSimulationLog(
-          `✅ [WEBHOOK 200 OK] Pembayaran Invoice #${result.invoice?.invoiceNumber} (${result.invoice?.customerName}) sebesar Rp ${result.invoice?.totalAmount.toLocaleString('id-ID')} diverifikasi via ${simulatedMethod}. Masa aktif otomatis diperpanjang hingga ${result.customer?.expiredDate}. Isolir MikroTik telah dibuka.`
-        );
-      } else {
-        setSimulationLog(`❌ Gagal: ${result.message}`);
-      }
-      onRefreshData();
-    }, 800);
-  };
-
-  const webhookEndpoint = `${window.location.origin}/api/payment/webhook`;
-
-  const handleCopyWebhook = () => {
-    navigator.clipboard.writeText(webhookEndpoint);
-    setCopiedUrl(true);
-    setTimeout(() => setCopiedUrl(false), 2000);
   };
 
   return (
     <div className="space-y-6">
-      {/* Top Gateway Setup & Webhook Simulator */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Gateway Credentials Setup */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
-          <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-4">
-            <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <CreditCard className="w-5 h-5 text-indigo-400" />
-              <span>Konfigurasi Payment Gateway Lokal</span>
-            </h3>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/15 text-indigo-400 border border-indigo-500/30">
-              {config.isProduction ? 'PRODUCTION' : 'SANDBOX MODE'}
-            </span>
+      <section className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-black text-white flex items-center gap-2">
+              <CreditCard className="w-5 h-5 text-indigo-400" /> Pembayaran Invoice
+            </h2>
+            <p className="mt-2 text-xs text-slate-400 max-w-2xl">
+              Checkout pelanggan menggunakan Midtrans Snap. Kunci rahasia dan mode pembayaran hanya dikelola melalui environment server.
+            </p>
           </div>
+          {environment && (
+            <span className={`px-3 py-1.5 rounded-full text-xs font-bold border ${
+              environment.checkoutEnabled
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                : 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+            }`}>
+              {environment.checkoutEnabled ? 'CHECKOUT AKTIF' : 'BELUM DIKONFIGURASI'}
+            </span>
+          )}
+        </div>
 
-          <form onSubmit={handleSaveConfig} className="space-y-3.5 text-xs">
-            <div>
-              <label className="block text-slate-300 font-medium mb-1">Provider Payment Gateway</label>
-              <select
-                value={config.provider}
-                onChange={e => setConfig({ ...config, provider: e.target.value as any })}
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-indigo-500"
-              >
-                <option value="midtrans">Midtrans (Snap & Core API QRIS / VA)</option>
-                <option value="xendit">Xendit Indonesia (Invoice & Direct Debit)</option>
-                <option value="tripay">Tripay (Payment Channel Murah RT-RW Net)</option>
-              </select>
+        {error && <p role="alert" className="mt-4 p-3 rounded-xl bg-rose-950/40 border border-rose-500/30 text-xs text-rose-200">{error}</p>}
+        {environment && (
+          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <div className="rounded-xl bg-slate-950 border border-slate-800 p-4">
+              <p className="text-slate-400">Provider</p>
+              <p className="mt-1 font-bold text-white">{environment.provider}</p>
             </div>
+            <div className="rounded-xl bg-slate-950 border border-slate-800 p-4">
+              <p className="text-slate-400">Mode</p>
+              <p className={`mt-1 font-bold ${environment.isProduction ? 'text-emerald-300' : 'text-amber-300'}`}>
+                {environment.isProduction ? 'Production' : 'Sandbox'}
+              </p>
+            </div>
+            <div className="rounded-xl bg-slate-950 border border-slate-800 p-4">
+              <p className="text-slate-400">Server key</p>
+              <p className={`mt-1 font-bold ${environment.serverKeyConfigured ? 'text-emerald-300' : 'text-rose-300'}`}>
+                {environment.serverKeyConfigured ? 'Tersedia di server' : 'MIDTRANS_SERVER_KEY belum diisi'}
+              </p>
+            </div>
+            <div className="rounded-xl bg-slate-950 border border-slate-800 p-4">
+              <p className="text-slate-400">APP_URL</p>
+              <p className={`mt-1 font-bold ${environment.appUrlConfigured ? 'text-emerald-300' : 'text-rose-300'}`}>
+                {environment.appUrlConfigured ? 'URL publik valid' : 'APP_URL belum valid'}
+              </p>
+            </div>
+          </div>
+        )}
 
-            <div className="flex items-center gap-2 pt-1 pb-1">
-              <input
-                type="checkbox"
-                id="isProdCheck"
-                checked={config.isProduction}
-                onChange={e => setConfig({ ...config, isProduction: e.target.checked })}
-                className="rounded border-slate-700 text-indigo-600 focus:ring-0"
-              />
-              <label htmlFor="isProdCheck" className="text-slate-300 cursor-pointer">
-                Aktifkan Mode Produksi (Live Real Money)
+        {!environment?.checkoutEnabled && (
+          <div className="mt-5 p-4 rounded-xl bg-amber-950/30 border border-amber-500/25 text-xs text-amber-100 flex gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <p>Isi `APP_URL`, `MIDTRANS_SERVER_KEY`, dan `PAYMENT_GATEWAY=midtrans` pada environment server. Kredensial tidak dikelola di browser.</p>
+          </div>
+        )}
+
+        {environment?.checkoutEnabled && (
+          <div className="mt-5 p-4 rounded-xl bg-emerald-950/30 border border-emerald-500/25 text-xs text-emerald-100 flex gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+            <p>Checkout pelanggan aktif. Invoice baru menjadi lunas sesudah notifikasi Midtrans tervalidasi.</p>
+          </div>
+        )}
+      </section>
+
+      <section className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-3">
+        <h3 className="font-bold text-white">Konfigurasi notifikasi Midtrans</h3>
+        <p className="text-xs text-slate-400">Atur URL berikut sebagai Payment Notification URL di dashboard Midtrans:</p>
+        <code className="block break-all p-3 rounded-xl bg-slate-950 border border-slate-800 text-emerald-300 text-xs">
+          {environment?.webhookUrl || 'Atur APP_URL di environment server untuk menampilkan URL callback'}
+        </code>
+        <a href="https://dashboard.midtrans.com/" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-xs text-indigo-300 hover:text-white">
+          Dashboard Midtrans <ExternalLink className="w-3 h-3" />
+        </a>
+      </section>
+
+      <section className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
+        <h2 className="text-lg font-black text-white">Pembayaran Manual & Persetujuan</h2>
+        <p className="mt-2 text-xs text-slate-400">Aktifkan metode yang benar-benar diterima operator dan isi instruksi transfer. Pelanggan menerima kode bayar dan diarahkan ke WhatsApp operator; cocokkan transaksi sebelum menyetujui invoice atau mengaktifkan voucher.</p>
+        <form onSubmit={saveManualOptions} className="mt-5 space-y-4">
+          {methods.map((method, index) => (
+            <div key={method.id} className="grid gap-3 rounded-xl border border-slate-800 bg-slate-950 p-4 sm:grid-cols-[auto_1fr_1fr_1fr_2fr]">
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input type="checkbox" checked={method.enabled} onChange={event => setMethods(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, enabled: event.target.checked } : item))} />
+                Aktif
+              </label>
+              <label className="text-xs text-slate-300">Nama metode
+                <input required maxLength={64} value={method.name} onChange={event => setMethods(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
+              </label>
+              <label className="text-xs text-slate-300">Nama layanan / bank
+                <input required={method.enabled} maxLength={64} value={method.serviceName || ''} onChange={event => setMethods(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, serviceName: event.target.value } : item))} placeholder="Contoh: BRI" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
+              </label>
+              <label className="text-xs text-slate-300">Nomor rekening / akun
+                <input required={method.enabled} maxLength={64} value={method.accountNumber || ''} onChange={event => setMethods(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, accountNumber: event.target.value } : item))} placeholder="Contoh: 090549609604" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-white" />
+              </label>
+              <label className="text-xs text-slate-300">Instruksi pembayaran pelanggan
+                <textarea required={method.enabled} maxLength={1000} rows={2} value={method.instructions} onChange={event => setMethods(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, instructions: event.target.value } : item))} placeholder="Contoh: Transfer ke Bank ... nomor rekening ... atas nama ..." className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
               </label>
             </div>
-
-            <div>
-              <label className="block text-slate-300 font-medium mb-1">Server Key / API Secret</label>
-              <input
-                type="password"
-                value={config.serverKey}
-                onChange={e => setConfig({ ...config, serverKey: e.target.value })}
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono focus:outline-none focus:border-indigo-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-slate-300 font-medium mb-1">Client Key / Public Key</label>
-              <input
-                type="text"
-                value={config.clientKey}
-                onChange={e => setConfig({ ...config, clientKey: e.target.value })}
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono focus:outline-none focus:border-indigo-500"
-              />
-            </div>
-
-            {/* Webhook Endpoint Display */}
-            <div className="pt-2">
-              <label className="block text-slate-400 mb-1">URL Callback / Webhook untuk Gateway Dashboard</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  readOnly
-                  value={webhookEndpoint}
-                  className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-emerald-400 font-mono text-[11px]"
-                />
-                <button
-                  type="button"
-                  onClick={handleCopyWebhook}
-                  className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-700 transition"
-                  title="Salin Webhook URL"
-                >
-                  {copiedUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              className="w-full mt-2 py-2 px-4 bg-indigo-600 hover:bg-indigo-500 font-semibold text-white rounded-xl shadow transition flex items-center justify-center gap-1.5"
-            >
-              {saved ? <Check className="w-4 h-4" /> : <Settings className="w-4 h-4" />}
-              <span>{saved ? 'Pengaturan Disimpan!' : 'Simpan Kredensial Gateway'}</span>
-            </button>
-          </form>
-        </div>
-
-        {/* Interactive Webhook Simulator */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-4">
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <Zap className="w-5 h-5 text-amber-400" />
-                <span>Simulator Webhook & Notifikasi Pembayaran</span>
-              </h3>
-              <span className="text-xs text-slate-400">Sandbox Tester</span>
-            </div>
-
-            <p className="text-xs text-slate-400 mb-4">
-              Gunakan simulator ini untuk menguji bagaimana sistem otomatis mendeteksi notifikasi pelunasan dari bank / QRIS secara real-time.
-            </p>
-
-            <div className="space-y-3.5 text-xs">
-              <div>
-                <label className="block text-slate-300 font-medium mb-1">
-                  Pilih Invoice Belum Bayar ({unpaidInvoices.length} tersedia)
-                </label>
-                {unpaidInvoices.length === 0 ? (
-                  <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl text-slate-500 text-xs">
-                    Semua invoice saat ini telah berstatus lunas.
-                  </div>
-                ) : (
-                  <select
-                    value={selectedInvoiceId}
-                    onChange={e => setSelectedInvoiceId(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-indigo-500"
-                  >
-                    {unpaidInvoices.map(inv => (
-                      <option key={inv.id} value={inv.id}>
-                        #{inv.invoiceNumber} - {inv.customerName} (Rp {inv.totalAmount.toLocaleString('id-ID')})
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              <div>
-                <label className="block text-slate-300 font-medium mb-1">Kanal Pembayaran Masuk</label>
-                <select
-                  value={simulatedMethod}
-                  onChange={e => setSimulatedMethod(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-indigo-500"
-                >
-                  <option value="QRIS Instant (GoPay / BCA / ShopeePay)">QRIS Instant (GoPay / BCA / ShopeePay)</option>
-                  <option value="Virtual Account BCA (VA 88019...)">Virtual Account BCA (VA 88019...)</option>
-                  <option value="Virtual Account Mandiri (VA 89301...)">Virtual Account Mandiri (VA 89301...)</option>
-                  <option value="Virtual Account BRI (BRIVA)">Virtual Account BRI (BRIVA)</option>
-                  <option value="Alfamart / Indomaret Payment">Alfamart / Indomaret Payment</option>
-                </select>
-              </div>
-
-              {simulationLog && (
-                <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs font-mono leading-relaxed">
-                  {simulationLog}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="pt-4 border-t border-slate-800 mt-4">
-            <button
-              onClick={handleSimulateWebhook}
-              disabled={isSimulating || unpaidInvoices.length === 0}
-              className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold text-xs shadow-lg shadow-emerald-600/30 transition flex items-center justify-center gap-2"
-            >
-              <Zap className={`w-4 h-4 text-amber-300 ${isSimulating ? 'animate-bounce' : ''}`} />
-              <span>{isSimulating ? 'Memproses Webhook Gateway...' : 'Kirim Simulasi Pembayaran Sukses (Webhook)'}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Supported Payment Channels Grid */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
-        <h3 className="text-base font-bold text-white mb-2">
-          Metode Pembayaran Lokal Indonesia yang Didukung
-        </h3>
-        <p className="text-xs text-slate-400 mb-5">
-          Semua metode langsung terhubung dengan webhook status settlement otomatis 24/7 tanpa perlu konfirmasi manual admin
-        </p>
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-          {[
-            { name: 'QRIS Instant', desc: 'BCA, GoPay, OVO, Dana', color: 'from-emerald-600 to-teal-700' },
-            { name: 'BCA Virtual Account', desc: 'Konfirmasi Instan 24 Jam', color: 'from-blue-600 to-indigo-700' },
-            { name: 'BRI Virtual Account', desc: 'BRIVA Otomatis', color: 'from-sky-600 to-blue-800' },
-            { name: 'Mandiri Livin VA', desc: 'Mandiri Bill Payment', color: 'from-amber-600 to-orange-700' },
-            { name: 'E-Wallet Dana/OVO', desc: 'Direct App Deep Link', color: 'from-violet-600 to-purple-800' },
-            { name: 'Alfamart / Indomaret', desc: 'Bayar di Kasir Toko', color: 'from-rose-600 to-pink-700' },
-          ].map((item, idx) => (
-            <div
-              key={idx}
-              className="bg-slate-950 p-4 rounded-xl border border-slate-800 hover:border-slate-700 transition flex flex-col justify-between"
-            >
-              <div>
-                <div className={`w-8 h-8 rounded-lg bg-gradient-to-tr ${item.color} flex items-center justify-center text-white font-bold text-xs mb-2.5`}>
-                  ✓
-                </div>
-                <h4 className="font-bold text-white text-xs">{item.name}</h4>
-                <p className="text-[10px] text-slate-500 mt-0.5">{item.desc}</p>
-              </div>
-              <span className="text-[9px] text-emerald-400 font-semibold mt-3">Ready</span>
-            </div>
           ))}
-        </div>
-      </div>
+          <label className="block max-w-xs text-xs text-slate-300">Timeout pembayaran manual (menit)
+            <input required type="number" min={1} max={1440} value={timeoutMinutes} onChange={event => setTimeoutMinutes(Number(event.target.value))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+          </label>
+          {manualMessage && <p role="status" className="text-xs text-emerald-300">{manualMessage}</p>}
+          <button type="submit" disabled={savingManual} className="rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50">
+            {savingManual ? 'Menyimpan...' : 'Simpan Pembayaran Manual'}
+          </button>
+        </form>
+      </section>
     </div>
   );
 };

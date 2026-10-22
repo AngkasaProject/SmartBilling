@@ -1,6 +1,6 @@
 {
   "name": "MikroTik ISP Billing & Hotspot Manager",
-  "description": "Sistem billing MikroTik modern: manajemen pelanggan PPPoE, auto-isolir jatuh tempo, notifikasi WhatsApp otomatis, portal beli voucher hotspot mandiri dengan payment gateway lokal, dan monitoring traffic NOC siap Docker.",
+  "description": "Portal paket dan tagihan pelanggan SmartBilling dengan pembayaran Midtrans Snap serta pengelolaan layanan MikroTik.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

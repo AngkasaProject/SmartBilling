@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { WhatsAppLog, WhatsAppGatewayConfig } from '../../types';
 import { StorageService } from '../../services/storage';
-import { QrCode } from '../common/QrCode';
+import { useToast } from '../ui/toast';
 import {
   Send,
   MessageSquare,
@@ -15,12 +15,10 @@ import {
   Sliders,
   Check,
   ExternalLink,
-  QrCode as QrIcon,
   ShieldCheck,
   Server,
   Zap,
   Terminal,
-  X
 } from 'lucide-react';
 
 interface Props {
@@ -29,113 +27,157 @@ interface Props {
   onRefreshData: () => void;
 }
 
+function formatOpenWaChatId(phone: string): string {
+  let digits = phone.replace(/\D/g, '');
+  if (digits.startsWith('0')) digits = `62${digits.slice(1)}`;
+  else if (!digits.startsWith('62')) digits = `62${digits}`;
+  return digits.length >= 10 ? `${digits}@c.us` : 'Masukkan nomor WhatsApp yang valid';
+}
+
 export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }) => {
+  const { toast } = useToast();
   const [config, setConfig] = useState<WhatsAppGatewayConfig>(waConfig);
-  const [savedSuccess, setSavedSuccess] = useState(false);
-  const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [waEnvironment, setWaEnvironment] = useState<{
+    provider: 'openwa' | 'fonnte';
+    managedByEnvironment: boolean;
+    baseUrl: string;
+    sessionId: string;
+    apiKeyConfigured: boolean;
+    fonnteApiUrl: string;
+    tokenConfigured: boolean;
+  } | null>(null);
+  const [waConfigError, setWaConfigError] = useState('');
   const [checkingSession, setCheckingSession] = useState(false);
 
   // Quick message tester form
-  const [testPhone, setTestPhone] = useState('081234567890');
+  const [testPhone, setTestPhone] = useState('');
   const [testTemplate, setTestTemplate] = useState<'reminder' | 'isolir' | 'lunas' | 'voucher'>('reminder');
-  const [customText, setCustomText] = useState(
-    'Halo Bpk/Ibu Budi Santoso, tagihan internet Paket Home 20 Mbps sebesar Rp 175.120 akan jatuh tempo pada 25 Oktober 2026. Bayar mudah via QRIS/VA: https://isp.net/pay/INV-001'
-  );
+  const [customText, setCustomText] = useState('Tes pesan WhatsApp dari dashboard billing.');
   const [isSending, setIsSending] = useState(false);
   const [sendSuccess, setSendSuccess] = useState(false);
-  const [lastOpenWaResponse, setLastOpenWaResponse] = useState<any | null>(null);
+  const [lastProviderResponse, setLastProviderResponse] = useState<any | null>(null);
+
+  const loadWhatsAppConfig = async () => {
+    const response = await fetch('/api/wa/config');
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    setWaEnvironment(result);
+    setConfig(current => ({
+      ...current,
+      provider: result.provider,
+      openwaUrl: result.baseUrl,
+      sessionId: result.sessionId,
+      apiKey: '',
+    }));
+  };
+
+  useEffect(() => {
+    loadWhatsAppConfig().catch(error => setWaConfigError(error instanceof Error ? error.message : String(error)));
+  }, []);
+
+  const handleProviderChange = async (provider: 'openwa' | 'fonnte') => {
+    setWaConfigError('');
+    try {
+      const response = await fetch('/api/wa/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      setWaEnvironment(result);
+      setConfig(current => ({ ...current, provider: result.provider, sessionStatus: 'disconnected', sessionPhone: undefined }));
+    } catch (error) {
+      setWaConfigError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   const handleTemplateChange = (type: 'reminder' | 'isolir' | 'lunas' | 'voucher') => {
     setTestTemplate(type);
     if (type === 'reminder') {
       setCustomText(
-        'Halo Bpk/Ibu Budi Santoso, tagihan internet Paket Home 20 Mbps sebesar Rp 175.120 akan jatuh tempo pada 25 Oktober 2026. Bayar mudah via QRIS/VA: https://isp.net/pay/INV-001'
+        'PENGINGAT TAGIHAN: Invoice [nomor invoice] sebesar [jumlah] jatuh tempo pada [tanggal].'
       );
     } else if (type === 'isolir') {
       setCustomText(
-        'PEMBERITAHUAN ISOLIR OTOMATIS: Yth. Ahmad Fauzi, akses internet Anda dinonaktifkan sementara karena masa aktif berakhir pada 19 Oktober 2026. Lakukan pembayaran untuk aktivasi otomatis seketika.'
+        'PEMBERITAHUAN: Akses PPPoE Anda telah dinonaktifkan oleh operator. Hubungi layanan pelanggan untuk informasi lebih lanjut.'
       );
     } else if (type === 'lunas') {
       setCustomText(
-        'PEMBAYARAN DITERIMA: Terima kasih Bpk Rian Pratama, tagihan Paket Home 20 Mbps Rp 175.000 telah lunas. Masa aktif internet Anda diperpanjang hingga 15 November 2026.'
+        'PEMBAYARAN DICATAT: Invoice [nomor invoice] telah diterima operator. Hubungi layanan pelanggan bila ada pertanyaan.'
       );
     } else if (type === 'voucher') {
       setCustomText(
-        'TERIMA KASIH! Pembelian Voucher Hotspot Berhasil.\nPaket: Harian 24 Jam (10M/10M)\nKode Voucher: *NET-99120*\n\nBuka WiFi dan login di http://login.hotspot'
+        'VOUCHER HOTSPOT: Kode [kode voucher], profil [nama profil]. Gunakan kode ini pada captive portal jaringan.'
       );
     }
   };
 
-  const handleSaveConfig = (e: React.FormEvent) => {
-    e.preventDefault();
-    StorageService.saveWaConfig(config);
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 2000);
-    onRefreshData();
-  };
-
-  const handleCheckSessionStatus = () => {
+  const handleCheckSessionStatus = async () => {
     setCheckingSession(true);
-    setTimeout(() => {
-      setCheckingSession(false);
+    try {
+      const response = await fetch('/api/wa/session/status');
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       setConfig(prev => ({
         ...prev,
-        sessionStatus: 'connected',
-        sessionPhone: '6281288990011',
+        sessionStatus: result.status === 'connected' ? 'connected' : 'disconnected',
+        sessionPhone: result.phone || undefined,
       }));
-      alert('Sesi OpenWA terhubung normal! WhatsApp Web Baileys aktif.');
-    }, 700);
-  };
-
-  const formatOpenWaChatId = (phone: string) => {
-    let clean = phone.replace(/[^0-9]/g, '');
-    if (clean.startsWith('0')) {
-      clean = '62' + clean.substring(1);
-    } else if (!clean.startsWith('62')) {
-      clean = '62' + clean;
+      toast(`Status sesi OpenWA: ${result.status || 'unknown'}`, result.status === 'connected' ? 'success' : 'info');
+    } catch (error) {
+      setConfig(prev => ({ ...prev, sessionStatus: 'disconnected' }));
+      toast('Gagal memeriksa status sesi OpenWA', 'error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setCheckingSession(false);
     }
-    return `${clean}@c.us`;
   };
 
-  const handleSendTestMessage = (e: React.FormEvent) => {
+  const handleSendTestMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!testPhone || !customText) return;
 
     setIsSending(true);
-    const chatId = formatOpenWaChatId(testPhone);
-
-    setTimeout(() => {
-      const msgId = 'wamid.HBgM' + Date.now().toString(36).toUpperCase() + '==';
-      const responsePayload = {
-        status: 'success',
-        session: config.sessionId || 'billing-isp',
-        endpoint: `/api/sessions/${config.sessionId || 'billing-isp'}/messages/send-text`,
-        chatId: chatId,
-        messageId: msgId,
-        timestamp: new Date().toISOString(),
-      };
-
-      setLastOpenWaResponse(responsePayload);
-
+    setSendSuccess(false);
+    try {
+      const response = await fetch('/api/wa/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: testPhone, message: customText }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `WhatsApp provider returned ${response.status}`);
+      setLastProviderResponse(result);
       StorageService.addWaLog({
         recipientPhone: testPhone,
         recipientName: 'Uji Coba Pengiriman',
         type: (testTemplate === 'reminder' ? 'reminder_h3' : testTemplate === 'isolir' ? 'isolated' : testTemplate === 'lunas' ? 'payment_success' : 'voucher_delivery') as any,
         message: customText,
         status: 'sent',
-        responseInfo: `OpenWA (rmyndharis/OpenWA): 200 OK (${msgId})`,
+        responseInfo: JSON.stringify(result.data),
       });
-
-      setIsSending(false);
       setSendSuccess(true);
       setTimeout(() => setSendSuccess(false), 2500);
       onRefreshData();
-    }, 800);
+    } catch (error) {
+      setLastProviderResponse({ status: 'failed', error: error instanceof Error ? error.message : String(error) });
+      StorageService.addWaLog({
+        recipientPhone: testPhone,
+        recipientName: 'Uji Coba Pengiriman',
+        type: 'custom',
+        message: customText,
+        status: 'failed',
+        responseInfo: error instanceof Error ? error.message : String(error),
+      });
+      onRefreshData();
+    } finally {
+      setIsSending(false);
+    }
   };
 
   return (
     <div className="space-y-6">
-      {/* OpenWA Dedicated GitHub Header Banner */}
+      {/* Provider REST integration banner */}
       <div className="bg-gradient-to-r from-slate-900 via-emerald-950/40 to-slate-900 border border-emerald-500/30 rounded-2xl p-6 shadow-xl relative overflow-hidden">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
           <div className="flex items-start gap-4">
@@ -144,7 +186,7 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-xl font-black text-white">OpenWA WhatsApp API Gateway</h2>
+                <h2 className="text-xl font-black text-white">Provider WhatsApp: {config.provider === 'fonnte' ? 'Fonnte' : 'OpenWA'}</h2>
                 <a
                   href="https://github.com/rmyndharis/OpenWA"
                   target="_blank"
@@ -156,166 +198,97 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
                 </a>
               </div>
               <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
-                Self-hosted WhatsApp API Gateway gratis tanpa biaya per pesan. Menggunakan multi-device WebSocket (Baileys) untuk pengingat jatuh tempo, notifikasi isolir otomatis, dan pengiriman kode voucher hotspot.
+                SmartBilling hanya memakai REST API provider eksternal. Layanan Fonnte/OpenWA berjalan dan dikelola terpisah dari aplikasi billing.
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => setIsQrModalOpen(true)}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-emerald-600/30 transition flex items-center gap-1.5"
-            >
-              <QrIcon className="w-4 h-4" />
-              <span>Scan QR Code Pairing</span>
-            </button>
-            <button
-              onClick={handleCheckSessionStatus}
-              disabled={checkingSession}
-              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${checkingSession ? 'animate-spin text-emerald-400' : ''}`} />
-              <span>Cek Status Sesi</span>
-            </button>
+            {config.provider === 'openwa' && (
+              <button
+                onClick={handleCheckSessionStatus}
+                disabled={checkingSession}
+                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${checkingSession ? 'animate-spin text-emerald-400' : ''}`} />
+                <span>Cek Status Sesi</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
 
       {/* Main 2-Column Section */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* OpenWA Configuration Card (1 col) */}
+        {/* Provider configuration card */}
         <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
           <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-4">
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               <Settings className="w-4 h-4 text-emerald-400" />
-              <span>Konfigurasi Sesi OpenWA</span>
+              <span>Konfigurasi Provider</span>
             </h3>
-            <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              ONLINE
-            </span>
+            {config.provider === 'openwa' && (
+              <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold border flex items-center gap-1 ${config.sessionStatus === 'connected' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                <span className={`w-2 h-2 rounded-full ${config.sessionStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+                {config.sessionStatus === 'connected' ? 'TERHUBUNG' : 'BELUM DIUJI'}
+              </span>
+            )}
           </div>
 
-          {/* Session details recap */}
-          <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2 mb-4 font-mono text-xs">
-            <div className="flex justify-between text-slate-400">
-              <span>Session ID:</span>
-              <span className="text-emerald-400 font-bold">{config.sessionId || 'billing-isp'}</span>
+          {waConfigError && <p role="alert" className="mb-3 text-xs text-rose-300">{waConfigError}</p>}
+          <div className="space-y-3 text-xs">
+            <label className="block text-slate-300 font-semibold">
+              Provider WhatsApp
+              <select
+                disabled={waEnvironment?.managedByEnvironment}
+                value={config.provider}
+                onChange={event => void handleProviderChange(event.target.value as 'openwa' | 'fonnte')}
+                className="mt-1.5 w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-white disabled:opacity-50"
+              >
+                <option value="openwa">OpenWA (REST API eksternal)</option>
+                <option value="fonnte">Fonnte (REST API eksternal)</option>
+              </select>
+            </label>
+            <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+              {config.provider === 'openwa' ? (
+                <>
+                  <p className="text-slate-400">OpenWA Base URL</p>
+                  <p className="text-white font-mono break-all">{config.openwaUrl || 'Belum dikonfigurasi'}</p>
+                  <p className="text-slate-400 mt-2">Session ID: <span className="text-white">{config.sessionId || 'Belum dikonfigurasi'}</span></p>
+                  <p className="text-slate-400 mt-2">API key</p>
+                  <p className={waEnvironment?.tokenConfigured ? 'text-emerald-400' : 'text-rose-300'}>
+                    {waEnvironment?.tokenConfigured ? 'Tersetel di environment server' : 'OPENWA_BASE_URL/OPENWA_API_KEY belum lengkap'}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-slate-400">Fonnte REST API</p>
+                  <p className="text-white font-mono break-all">{waEnvironment?.fonnteApiUrl || 'https://api.fonnte.com/send'}</p>
+                  <p className="text-slate-400 mt-2">Token API</p>
+                  <p className={waEnvironment?.tokenConfigured ? 'text-emerald-400' : 'text-rose-300'}>
+                    {waEnvironment?.tokenConfigured ? 'Tersetel di environment server' : 'FONNTE_TOKEN belum disetel'}
+                  </p>
+                </>
+              )}
             </div>
-            <div className="flex justify-between text-slate-400">
-              <span>Nomor HP Bot:</span>
-              <span className="text-white font-bold">{config.sessionPhone || '6281288990011'}</span>
-            </div>
-            <div className="flex justify-between text-slate-400">
-              <span>Engine:</span>
-              <span className="text-indigo-400">Baileys WebSocket</span>
-            </div>
+            <p className="text-[11px] text-slate-400">
+              {waEnvironment?.managedByEnvironment
+                ? 'Provider dikunci oleh WA_PROVIDER di environment server.'
+                : 'Pilih provider di sini; token/API key dan alamat endpoint disetel di environment server.'}
+              {' '}Pengingat terjadwal belum tersedia.
+            </p>
           </div>
-
-          <form onSubmit={handleSaveConfig} className="space-y-3.5 text-xs">
-            <div>
-              <label className="block text-slate-300 font-medium mb-1">OpenWA Base URL (Server API)</label>
-              <input
-                type="text"
-                value={config.openwaUrl}
-                onChange={e => setConfig({ ...config, openwaUrl: e.target.value })}
-                placeholder="http://openwa:2785"
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono focus:outline-none focus:border-emerald-500"
-              />
-              <span className="text-[10px] text-slate-500 mt-1 block">
-                Docker internal: <b>http://openwa:2785</b> atau VPS: <b>http://127.0.0.1:2785</b>
-              </span>
-            </div>
-
-            <div>
-              <label className="block text-slate-300 font-medium mb-1">OpenWA X-API-Key</label>
-              <input
-                type="password"
-                value={config.apiKey}
-                onChange={e => setConfig({ ...config, apiKey: e.target.value })}
-                placeholder="X-API-Key dari file data/.api-key"
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono focus:outline-none focus:border-emerald-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-slate-300 font-medium mb-1">Nama Sesi (Session ID)</label>
-              <input
-                type="text"
-                value={config.sessionId}
-                onChange={e => setConfig({ ...config, sessionId: e.target.value })}
-                placeholder="billing-isp"
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono focus:outline-none focus:border-emerald-500"
-              />
-            </div>
-
-            <div className="pt-2 border-t border-slate-800">
-              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
-                Otomatisasi Pesan Pelanggan
-              </span>
-
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={config.autoSendReminderH3}
-                    onChange={e => setConfig({ ...config, autoSendReminderH3: e.target.checked })}
-                    className="rounded border-slate-700 text-emerald-600 focus:ring-0"
-                  />
-                  <span className="text-slate-300 text-xs">Kirim Pengingat Tagihan H-3</span>
-                </label>
-
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={config.autoSendReminderH1}
-                    onChange={e => setConfig({ ...config, autoSendReminderH1: e.target.checked })}
-                    className="rounded border-slate-700 text-emerald-600 focus:ring-0"
-                  />
-                  <span className="text-slate-300 text-xs">Kirim Peringatan H-1 dengan Link QRIS</span>
-                </label>
-
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={config.autoSendIsolir}
-                    onChange={e => setConfig({ ...config, autoSendIsolir: e.target.checked })}
-                    className="rounded border-slate-700 text-emerald-600 focus:ring-0"
-                  />
-                  <span className="text-slate-300 text-xs">Kirim Info Isolir Saat Lewat Jatuh Tempo</span>
-                </label>
-
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={config.autoSendReceipt}
-                    onChange={e => setConfig({ ...config, autoSendReceipt: e.target.checked })}
-                    className="rounded border-slate-700 text-emerald-600 focus:ring-0"
-                  />
-                  <span className="text-slate-300 text-xs">Kirim Tanda Terima Lunas Otomatis</span>
-                </label>
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              className="w-full mt-3 py-2 px-4 bg-emerald-600 hover:bg-emerald-500 font-semibold text-white rounded-xl shadow transition flex items-center justify-center gap-1.5"
-            >
-              {savedSuccess ? <Check className="w-4 h-4" /> : <Settings className="w-4 h-4" />}
-              <span>{savedSuccess ? 'Tersimpan!' : 'Simpan Kredensial OpenWA'}</span>
-            </button>
-          </form>
         </div>
 
-        {/* Live Message Dispatch Tester & OpenWA Payload View (2 cols) */}
+        {/* Live message dispatch tester */}
         <div className="lg:col-span-2 bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-4">
               <h3 className="text-base font-bold text-white flex items-center gap-2">
                 <Send className="w-4 h-4 text-emerald-400" />
-                <span>Simulator Endpoint POST /api/sessions/{config.sessionId}/messages/send-text</span>
+                <span>Kirim pesan melalui API {config.provider === 'fonnte' ? 'Fonnte' : 'OpenWA'}</span>
               </h3>
-              <span className="text-xs text-slate-400 font-mono">Header: X-API-Key</span>
+              <span className="text-xs text-slate-400 font-mono">Server-side REST</span>
             </div>
 
             {/* Template Selector */}
@@ -370,19 +343,23 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
                       required
                       value={testPhone}
                       onChange={e => setTestPhone(e.target.value)}
-                      placeholder="081234567890"
+                      placeholder="Masukkan nomor WhatsApp"
                       className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono focus:outline-none focus:border-emerald-500"
                     />
                   </div>
                   <span className="text-[10px] text-slate-500 mt-1 block font-mono">
-                    OpenWA chatId format: <b>{formatOpenWaChatId(testPhone)}</b>
+                    {config.provider === 'openwa'
+                      ? <>OpenWA chatId: <b>{formatOpenWaChatId(testPhone)}</b></>
+                      : 'Fonnte memakai nomor tujuan format internasional.'}
                   </span>
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 mb-1">Endpoint OpenWA Terpasang</label>
+                  <label className="block text-slate-400 mb-1">Endpoint provider eksternal</label>
                   <div className="p-2 bg-slate-950 rounded-xl border border-slate-800 text-emerald-400 font-mono text-[11px] truncate">
-                    {config.openwaUrl}/api/sessions/{config.sessionId}/messages/send-text
+                    {config.provider === 'fonnte'
+                      ? waEnvironment?.fonnteApiUrl || 'https://api.fonnte.com/send'
+                      : `${config.openwaUrl}/api/sessions/${config.sessionId}/messages/send-text`}
                   </div>
                 </div>
               </div>
@@ -399,21 +376,21 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
               </div>
 
               {/* Response Json View if sent */}
-              {lastOpenWaResponse && (
-                <div className="p-3 bg-slate-950 rounded-xl border border-emerald-500/30 text-emerald-300 font-mono text-[11px] space-y-1">
+              {lastProviderResponse && (
+                <div className={`p-3 bg-slate-950 rounded-xl border font-mono text-[11px] space-y-1 ${lastProviderResponse.status === 'success' ? 'border-emerald-500/30 text-emerald-300' : 'border-rose-500/30 text-rose-300'}`}>
                   <div className="flex items-center gap-1.5 font-bold text-white text-xs">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>OpenWA REST API Response: 200 OK</span>
+                    {lastProviderResponse.status === 'success'
+                      ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      : <AlertCircle className="w-3.5 h-3.5 text-rose-400" />}
+                    <span>{lastProviderResponse.status === 'success' ? `Pesan diterima ${config.provider === 'fonnte' ? 'Fonnte' : 'OpenWA'}` : 'Pengiriman gagal'}</span>
                   </div>
-                  <div>Chat ID: {lastOpenWaResponse.chatId}</div>
-                  <div>Message ID: {lastOpenWaResponse.messageId}</div>
-                  <div>Timestamp: {lastOpenWaResponse.timestamp}</div>
+                  <pre className="whitespace-pre-wrap break-all">{JSON.stringify(lastProviderResponse.data || lastProviderResponse.error, null, 2)}</pre>
                 </div>
               )}
 
               <div className="flex items-center justify-between pt-2">
                 <span className="text-[11px] text-slate-500">
-                  Ditenagai oleh repository: <b>rmyndharis/OpenWA</b>
+                  Provider aktif: <b>{config.provider === 'fonnte' ? 'Fonnte' : 'OpenWA'}</b>
                 </span>
 
                 <button
@@ -422,7 +399,7 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
                   className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold shadow-lg shadow-emerald-600/30 transition flex items-center gap-2"
                 >
                   <Send className={`w-3.5 h-3.5 ${isSending ? 'animate-spin' : ''}`} />
-                  <span>{isSending ? 'Mengirim via OpenWA...' : sendSuccess ? 'Terkirim Sukses!' : 'Kirim Uji Coba Sekarang'}</span>
+                  <span>{isSending ? `Mengirim via ${config.provider === 'fonnte' ? 'Fonnte' : 'OpenWA'}...` : sendSuccess ? 'Diterima provider' : 'Kirim Uji Coba Sekarang'}</span>
                 </button>
               </div>
             </form>
@@ -436,10 +413,10 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
           <div>
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               <MessageSquare className="w-4 h-4 text-emerald-400" />
-              <span>Log Pengiriman OpenWA Real-Time ({waLogs.length})</span>
+              <span>Log Pengiriman WhatsApp ({waLogs.length})</span>
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              Riwayat pengiriman pesan WhatsApp via rmyndharis/OpenWA engine
+              Riwayat respons dari provider REST API yang dipilih
             </p>
           </div>
         </div>
@@ -452,7 +429,7 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
                 <th className="pb-3 px-3">Penerima & No. WA</th>
                 <th className="pb-3 px-3">Jenis Notifikasi</th>
                 <th className="pb-3 px-3">Isi Pesan Terkirim</th>
-                <th className="pb-3 px-3">Status OpenWA</th>
+                <th className="pb-3 px-3">Status Provider</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/80">
@@ -490,53 +467,6 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
         </div>
       </div>
 
-      {/* QR Code Pairing Modal */}
-      {isQrModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-md text-white shadow-2xl p-6 text-center">
-            <div className="flex justify-between items-center border-b border-slate-800 pb-3 mb-4">
-              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                Pairing Sesi OpenWA (Baileys)
-              </span>
-              <button
-                onClick={() => setIsQrModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div className="bg-white p-4 rounded-2xl inline-block shadow-inner">
-                <QrCode
-                  value={`2@vC023${Date.now()},OpenWA_rmyndharis_${config.sessionId},4a89fb2`}
-                  size={190}
-                  className="mx-auto"
-                />
-              </div>
-
-              <div className="text-left bg-slate-950 p-3.5 rounded-xl border border-slate-800 text-xs text-slate-300 space-y-1.5">
-                <p className="font-bold text-white">Cara Menghubungkan:</p>
-                <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-400">
-                  <li>Buka aplikasi WhatsApp di HP Anda.</li>
-                  <li>Ketuk Menu (titik tiga) atau <b>Pengaturan &gt; Perangkat Tertaut</b>.</li>
-                  <li>Ketuk <b>Tautkan Perangkat</b> lalu arahkan kamera ke QR Code di atas.</li>
-                </ol>
-              </div>
-
-              <button
-                onClick={() => {
-                  setIsQrModalOpen(false);
-                  alert('WhatsApp berhasil dipasangkan dengan sesi OpenWA!');
-                }}
-                className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow"
-              >
-                Selesai (Perangkat Sudah Ditautkan)
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

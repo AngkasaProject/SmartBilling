@@ -231,6 +231,12 @@
     .btn-trial:hover {
       text-decoration: underline;
     }
+    .footer-note {
+      margin-top: 12px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
     .footer-info {
       margin-top: 22px;
       padding-top: 14px;
@@ -248,10 +254,9 @@
     <div class="glow"></div>
 
     <div class="header">
-      <div class="logo-icon">N</div>
-      <h1>WIFI HOTSPOT SUPER</h1>
-      <p class="subtitle">Koneksi Internet Cepat, Stabil & Tanpa Batas</p>
-      <div class="badge-ssid">SSID: NETFLOW_HOTSPOT_5G</div>
+      <div class="logo-icon">W</div>
+      <h1>Login Hotspot</h1>
+      <p class="subtitle">Masukkan kredensial hotspot Anda</p>
     </div>
 
     <!-- MikroTik Error Notification Display -->
@@ -264,7 +269,7 @@
     <!-- Login Mode Tabs -->
     <div class="tab-switch">
       <button class="tab-btn active" id="tabVoucher" onclick="setMode('voucher')">Kode Voucher</button>
-      <button class="tab-btn" id="tabMember" onclick="setMode('member')">Member PPPoE</button>
+      <button class="tab-btn" id="tabMember" onclick="setMode('member')">Akun Hotspot</button>
     </div>
 
     <!-- MikroTik Standard Login Form -->
@@ -279,7 +284,7 @@
           type="text" 
           name="username" 
           id="username" 
-          placeholder="CONTOH: NET-73921" 
+          placeholder="Kode voucher"
           class="input-code" 
           required 
           autocomplete="off" 
@@ -305,24 +310,21 @@
       </button>
     </form>
 
-    <!-- Tombol Beli Voucher Mandiri (Walled Garden Bypass) -->
     <div class="divider">
-      <span>Belum Punya Voucher?</span>
+      <span>Belum punya voucher?</span>
     </div>
 
-    <!-- Ganti URL ini dengan IP VPS atau Domain Server Billing Anda -->
-    <a href="http://103.180.12.5:3000/?view=voucher" class="btn-buy">
-      <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24">
-        <path d="M20 4H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/>
-      </svg>
-      <span>Beli Voucher Online (QRIS / E-Wallet)</span>
+    <p class="subtitle">Pilih paket dan beli voucher melalui portal billing.</p>
+    <a href="https://BILLING_DOMAIN/portal/vouchers" class="btn-buy">
+      Lihat Paket &amp; Beli Voucher
     </a>
+    <p class="footer-note">Setelah voucher aktif, kembali ke halaman ini untuk login.</p>
 
     <!-- Trial Gratis jika diaktifkan di MikroTik -->
     $(if trial == 'yes')
     <div style="text-align: center;">
       <a href="$(link-login-only)?dst=$(link-orig-esc)&amp;username=T-$(mac-esc)" class="btn-trial">
-        Coba Gratis 10 Menit (Trial)
+        Coba akses gratis
       </a>
     </div>
     $(endif)
@@ -367,7 +369,7 @@
         tabM.className = 'tab-btn';
         passGrp.style.display = 'none';
         lblUser.innerText = 'Kode Voucher';
-        userInput.placeholder = 'CONTOH: NET-73921';
+        userInput.placeholder = 'Kode voucher';
         document.getElementById('password').value = userInput.value;
       } else {
         tabM.className = 'tab-btn active';

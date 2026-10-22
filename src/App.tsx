@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Customer, Invoice, Voucher, HotspotProfile, RouterConfig, WhatsAppLog, PaymentGatewayConfig, WhatsAppGatewayConfig, AppSettings } from './types';
+import { Customer, Invoice, Voucher, HotspotProfile, RouterConfig, WhatsAppLog, WhatsAppGatewayConfig, AppSettings } from './types';
 import { StorageService } from './services/storage';
 import { Navbar } from './components/Navbar';
 import { DashboardTab } from './components/admin/DashboardTab';
@@ -9,18 +9,27 @@ import { VouchersTab } from './components/admin/VouchersTab';
 import { RoutersTab } from './components/admin/RoutersTab';
 import { WhatsAppTab } from './components/admin/WhatsAppTab';
 import { PaymentGatewayTab } from './components/admin/PaymentGatewayTab';
-import { DockerGuideTab } from './components/admin/DockerGuideTab';
 import { SettingsTab } from './components/admin/SettingsTab';
 import { VoucherStorePortal } from './components/portal/VoucherStorePortal';
 import { CustomerBillPortal } from './components/portal/CustomerBillPortal';
-import { HotspotLoginPage } from './components/portal/HotspotLoginPage';
+import { PublicPortalHome } from './components/portal/PublicPortalHome';
+import { AdminAuthPage } from './components/AdminAuthPage';
 import { InvoicePrintModal } from './components/InvoicePrintModal';
 import { VoucherPrintModal } from './components/VoucherPrintModal';
 import { Send, X, Check, ShieldAlert, CheckCircle2 } from 'lucide-react';
+import { ToastProvider, useToast } from './components/ui/toast';
+import { ThemeProvider } from './components/ui/theme';
 
-export default function App() {
-  const [currentView, setCurrentView] = useState<'admin' | 'voucher_portal' | 'hotspot_login' | 'customer_bill'>('admin');
+function AppContent() {
+  const { toast } = useToast();
   const [adminTab, setAdminTab] = useState('dashboard');
+  const [authStatus, setAuthStatus] = useState<{
+    authenticated: boolean;
+    username: string;
+    envLoginConfigured: boolean;
+    envLoginIncomplete: boolean;
+    registrationRequired: boolean;
+  } | null>(null);
 
   // App Settings (Persistent in SQLite database)
   const [appSettings, setAppSettings] = useState<AppSettings>(StorageService.getSettings());
@@ -33,21 +42,19 @@ export default function App() {
   const [routers, setRouters] = useState<RouterConfig[]>([]);
   const [waLogs, setWaLogs] = useState<WhatsAppLog[]>([]);
   const [waConfig, setWaConfig] = useState<WhatsAppGatewayConfig>(StorageService.getWaConfig());
-  const [paymentConfig, setPaymentConfig] = useState<PaymentGatewayConfig>(StorageService.getPaymentConfig());
+  const [dataSyncError, setDataSyncError] = useState<string | null>(null);
 
   // Print Modals
   const [printInvoiceData, setPrintInvoiceData] = useState<{ invoice: Invoice; customer?: Customer } | null>(null);
   const [printVouchersData, setPrintVouchersData] = useState<Voucher[] | null>(null);
 
   // Quick WhatsApp Dispatch Modal
-  const [quickWaModal, setQuickWaModal] = useState<{ customer: Customer; type: 'reminder' | 'isolir'; text: string } | null>(null);
+  const [quickWaModal, setQuickWaModal] = useState<{ customer: Customer; type: 'reminder' | 'isolir'; text: string; needsPaymentLink: boolean } | null>(null);
   const [waSending, setWaSending] = useState(false);
   const [waSuccess, setWaSuccess] = useState(false);
+  const [waError, setWaError] = useState('');
 
-  // Pass voucher code from purchase store into hotspot login
-  const [prefilledVoucherCode, setPrefilledVoucherCode] = useState('');
-
-  const refreshAllData = () => {
+  const refreshAllData = (persist = true) => {
     const freshSettings = StorageService.getSettings();
     setAppSettings(freshSettings);
     setCustomers(StorageService.getCustomers());
@@ -57,61 +64,195 @@ export default function App() {
     setRouters(StorageService.getRouters());
     setWaLogs(StorageService.getWaLogs());
     setWaConfig(StorageService.getWaConfig());
-    setPaymentConfig(StorageService.getPaymentConfig());
+
+    if (persist) {
+      StorageService.syncDataToSqlite()
+        .then(() => setDataSyncError(null))
+        .catch(error => {
+          setDataSyncError(error instanceof Error ? error.message : String(error));
+        });
+    }
+  };
+
+  const loadAdminData = async () => {
+    await StorageService.syncDataFromSqlite();
+    let syncError: string | null = null;
+    try {
+      const response = await fetch('/api/admin/customers/sync-mikrotik', { method: 'POST' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      await StorageService.syncDataFromSqlite();
+      if (result.removed || result.updated) {
+        toast('Data pelanggan tersinkron dengan MikroTik', 'success', `${result.removed} pelanggan dihapus dari billing, ${result.updated} data diperbarui.`);
+      }
+    } catch (error) {
+      syncError = error instanceof Error ? error.message : String(error);
+    }
+    const latestSettings = await StorageService.syncFromSqlite();
+    setAppSettings(latestSettings);
+    setDataSyncError(syncError);
+    refreshAllData(false);
   };
 
   useEffect(() => {
-    refreshAllData();
-    // Sync settings from backend SQLite database if available
-    StorageService.syncFromSqlite().then(latest => {
-      setAppSettings(latest);
-    }).catch(() => {});
+    let mounted = true;
+    const initialize = async () => {
+      try {
+        const path = window.location.pathname;
+        if (path === '/') return;
+        if (path === '/portal/vouchers') {
+          const response = await fetch('/api/portal/vouchers');
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+          if (mounted) setProfiles(result.profiles);
+          return;
+        }
+        if (path === '/portal/billing') return;
+        if (path !== '/admin') return;
+
+        const response = await fetch('/api/auth/status');
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || `HTTP ${response.status}`);
+        if (!mounted) return;
+        setAuthStatus(status);
+        if (status.authenticated) await loadAdminData();
+      } catch (error) {
+        if (mounted) {
+          setDataSyncError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    };
+
+    void initialize();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
+  useEffect(() => {
+    if (!authStatus?.authenticated || window.location.pathname !== '/admin') return;
+    let syncing = false;
+    const timer = window.setInterval(async () => {
+      if (syncing) return;
+      syncing = true;
+      try {
+        const response = await fetch('/api/admin/customers/sync-mikrotik', { method: 'POST' });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (result.removed || result.updated) {
+          await StorageService.syncDataFromSqlite();
+          refreshAllData(false);
+          toast('Pelanggan disinkronkan dari MikroTik', 'success', `${result.removed} dihapus dari billing · ${result.updated} diperbarui.`);
+        }
+        setDataSyncError(null);
+      } catch (error) {
+        setDataSyncError(error instanceof Error ? error.message : String(error));
+      } finally {
+        syncing = false;
+      }
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [authStatus?.authenticated, toast]);
+
+  const handleLogout = async () => {
+    try {
+      const response = await fetch('/api/auth/logout', { method: 'POST' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      setAuthStatus(current => current ? { ...current, authenticated: false, username: '' } : current);
+    } catch (error) {
+      setDataSyncError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   // Handle WhatsApp Reminder from Table / Dashboard
-  const handleOpenSendWa = (customer: Customer, type: 'reminder' | 'isolir') => {
-    const inv = invoices.find(i => i.customerId === customer.id && i.status !== 'paid');
+  const handleOpenSendWa = async (customer: Customer, type: 'reminder' | 'isolir') => {
+    const inv = invoices.find(i => i.customerId === customer.id && i.status === 'unpaid');
     const amountStr = inv ? `sebesar ${appSettings.currencySymbol} ${inv.totalAmount.toLocaleString('id-ID')}` : `sebesar ${appSettings.currencySymbol} ${customer.monthlyFee.toLocaleString('id-ID')}`;
 
     let text = '';
+    let needsPaymentLink = false;
     if (type === 'reminder') {
-      text = `Halo Bpk/Ibu ${customer.name}, ini pengingat tagihan internet paket ${customer.profileName} ${amountStr} akan jatuh tempo pada ${customer.expiredDate}. Bayar mudah online via QRIS/VA: https://isp.net/pay/${inv?.invoiceNumber || 'INV-001'}`;
+      const invoiceLabel = inv ? ` invoice #${inv.invoiceNumber}` : '';
+      text = `Halo Bapak/Ibu ${customer.name}, pengingat tagihan paket ${customer.profileName}${invoiceLabel} ${amountStr} jatuh tempo pada ${inv?.dueDate || customer.expiredDate}.`;
+      if (inv) {
+        needsPaymentLink = true;
+        try {
+          const response = await fetch(`/api/admin/invoices/${encodeURIComponent(inv.id)}/payment-link`, { method: 'POST' });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+          text += ` Bayar atau cek tagihan di sini: ${result.url}`;
+        } catch (error) {
+          setWaError(error instanceof Error ? error.message : String(error));
+        }
+      } else {
+        text += ' Tidak ada invoice belum lunas yang ditemukan. Silakan hubungi operator.';
+      }
     } else {
-      text = `PEMBERITAHUAN ISOLIR: Yth. ${customer.name}, akses internet paket ${customer.profileName} telah dinonaktifkan sementara karena masa aktif berakhir pada ${customer.expiredDate}. Segera lakukan pelunasan untuk membuka blokir seketika.`;
+      text = `PEMBERITAHUAN: Yth. ${customer.name}, akses PPPoE paket ${customer.profileName} telah dinonaktifkan oleh operator. Hubungi operator untuk informasi tagihan dan aktivasi layanan.`;
     }
 
-    setQuickWaModal({ customer, type, text });
+    setQuickWaModal({ customer, type, text, needsPaymentLink: needsPaymentLink && !text.includes('/portal/billing?token=') });
     setWaSuccess(false);
+    if (!needsPaymentLink) setWaError('');
   };
 
-  const handleConfirmSendWa = () => {
+  const handleConfirmSendWa = async () => {
     if (!quickWaModal) return;
     setWaSending(true);
-
-    setTimeout(() => {
-      const msgId = 'wamid.HBgM' + Date.now().toString(36).toUpperCase() + '==';
+    setWaError('');
+    try {
+      const response = await fetch('/api/wa/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: quickWaModal.customer.phone, message: quickWaModal.text }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `OpenWA returned ${response.status}`);
       StorageService.addWaLog({
         recipientPhone: quickWaModal.customer.phone,
         recipientName: quickWaModal.customer.name,
         type: quickWaModal.type === 'reminder' ? 'reminder_h3' : 'isolated',
         message: quickWaModal.text,
         status: 'sent',
-        responseInfo: `OpenWA (rmyndharis/OpenWA): 200 OK (${msgId})`,
+        responseInfo: JSON.stringify(result.data),
       });
-
-      setWaSending(false);
       setWaSuccess(true);
       refreshAllData();
-
       setTimeout(() => {
         setQuickWaModal(null);
       }, 1500);
-    }, 700);
+    } catch (error) {
+      setWaError(error instanceof Error ? error.message : String(error));
+      StorageService.addWaLog({
+        recipientPhone: quickWaModal.customer.phone,
+        recipientName: quickWaModal.customer.name,
+        type: quickWaModal.type === 'reminder' ? 'reminder_h3' : 'isolated',
+        message: quickWaModal.text,
+        status: 'failed',
+        responseInfo: error instanceof Error ? error.message : String(error),
+      });
+      refreshAllData();
+    } finally {
+      setWaSending(false);
+    }
   };
 
   // Toggle Isolir
-  const handleToggleIsolir = (customer: Customer) => {
+  const handleToggleIsolir = async (customer: Customer) => {
     const newStatus = customer.status === 'isolated' ? 'active' : 'isolated';
+    try {
+      const response = await fetch(
+        `/api/mikrotik/pppoe/secrets/${encodeURIComponent(customer.routerId)}/${encodeURIComponent(customer.pppoeUsername)}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ disabled: newStatus === 'isolated' }),
+        }
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `RouterOS returned ${response.status}`);
+
     const updated: Customer = {
       ...customer,
       status: newStatus,
@@ -119,39 +260,99 @@ export default function App() {
     };
     StorageService.saveCustomer(updated);
 
-    // If isolated, dispatch notification
-    if (newStatus === 'isolated') {
+    if (newStatus === 'isolated' && appSettings.autoSendIsolir) {
+      let status: 'sent' | 'failed' = 'sent';
+      let responseInfo = '';
+      try {
+        const waResponse = await fetch('/api/wa/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            phone: customer.phone,
+            message: `PEMBERITAHUAN ISOLIR: Akses internet PPPoE Anda telah dinonaktifkan. Segera hubungi billing untuk informasi tagihan.`,
+          }),
+        });
+        const waResult = await waResponse.json();
+        if (!waResponse.ok) throw new Error(waResult.error || `OpenWA returned ${waResponse.status}`);
+        responseInfo = JSON.stringify(waResult.data);
+      } catch (error) {
+        status = 'failed';
+        responseInfo = error instanceof Error ? error.message : String(error);
+      }
       StorageService.addWaLog({
         recipientPhone: customer.phone,
         recipientName: customer.name,
         type: 'isolated',
-        message: `PEMBERITAHUAN ISOLIR: Akses internet PPPoE Anda (${customer.pppoeUsername}) telah dinonaktifkan oleh administrator NOC. Hubungi billing untuk informasi lebih lanjut.`,
-        status: 'sent',
-        responseInfo: 'Manual NOC Toggle',
+        message: 'PEMBERITAHUAN ISOLIR: Akses internet PPPoE Anda telah dinonaktifkan. Segera hubungi billing untuk informasi tagihan.',
+        status,
+        responseInfo,
       });
     }
 
     refreshAllData();
+    } catch (error) {
+      toast('Gagal mengubah status PPPoE di MikroTik', 'error', error instanceof Error ? error.message : String(error));
+    }
   };
+
+  const pathname = window.location.pathname;
+  if (pathname === '/') return <PublicPortalHome />;
+  if (pathname !== '/admin' && pathname !== '/portal/billing' && pathname !== '/portal/vouchers') {
+    return <PublicPortalHome />;
+  }
+  if (pathname === '/portal/billing') return <CustomerBillPortal />;
+  if (pathname === '/portal/vouchers') {
+    return (
+      <main className="min-h-screen bg-slate-950 text-slate-100">
+        <nav className="max-w-5xl mx-auto px-5 py-4 flex justify-between text-sm font-bold">
+          <a href="/" className="text-white">SmartBilling</a>
+          <a href="/portal/billing" className="text-indigo-300">Cek Tagihan</a>
+        </nav>
+        <VoucherStorePortal profiles={profiles} />
+      </main>
+    );
+  }
+
+  if (!authStatus) {
+    return <main className="min-h-screen bg-slate-950 text-slate-200 grid place-items-center">{dataSyncError || 'Memuat...'}</main>;
+  }
+  if (!authStatus.authenticated) {
+    return (
+      <AdminAuthPage
+        registrationRequired={authStatus.registrationRequired}
+        envLoginConfigured={authStatus.envLoginConfigured}
+        envLoginIncomplete={authStatus.envLoginIncomplete}
+        onAuthenticated={async username => {
+          setAuthStatus(current => current ? { ...current, authenticated: true, username } : current);
+          try {
+            await loadAdminData();
+          } catch (error) {
+            setDataSyncError(error instanceof Error ? error.message : String(error));
+          }
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
       {/* Top Navbar */}
       <Navbar
-        currentView={currentView}
-        onSelectView={setCurrentView}
         adminTab={adminTab}
         onSelectAdminTab={setAdminTab}
-        customers={customers}
-        invoices={invoices}
         settings={appSettings}
+        username={authStatus.username}
         onRefreshData={refreshAllData}
+        onLogout={handleLogout}
       />
 
-      {/* Main Content View Switcher */}
+      {dataSyncError && (
+        <div role="alert" className="border-b border-amber-500/30 bg-amber-950/60 px-4 py-2 text-center text-xs text-amber-200">
+          Sinkronisasi data gagal: {dataSyncError}
+        </div>
+      )}
+
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
-        {currentView === 'admin' && (
-          <>
             {adminTab === 'dashboard' && (
               <DashboardTab
                 customers={customers}
@@ -168,6 +369,7 @@ export default function App() {
               <CustomersTab
                 customers={customers}
                 invoices={invoices}
+                routers={routers}
                 onRefreshData={refreshAllData}
                 onSendWa={handleOpenSendWa}
                 onViewInvoice={(inv, cust) => setPrintInvoiceData({ invoice: inv, customer: cust })}
@@ -187,7 +389,10 @@ export default function App() {
               <VouchersTab
                 vouchers={vouchers}
                 profiles={profiles}
+                serviceProfiles={StorageService.getHotspotServiceProfiles()}
+                routers={routers}
                 onRefreshData={refreshAllData}
+                onManageRouters={() => setAdminTab('routers')}
                 onOpenPrintModal={vouchersToPrint => setPrintVouchersData(vouchersToPrint)}
               />
             )}
@@ -205,47 +410,14 @@ export default function App() {
               />
             )}
             {adminTab === 'payment' && (
-              <PaymentGatewayTab
-                invoices={invoices}
-                paymentConfig={paymentConfig}
-                onRefreshData={refreshAllData}
-              />
+              <PaymentGatewayTab />
             )}
-            {adminTab === 'docker' && <DockerGuideTab />}
             {adminTab === 'settings' && (
               <SettingsTab
                 settings={appSettings}
                 onRefreshSettings={refreshAllData}
               />
             )}
-          </>
-        )}
-
-        {currentView === 'voucher_portal' && (
-          <VoucherStorePortal
-            profiles={profiles}
-            onVoucherPurchased={refreshAllData}
-            onNavigateToLogin={code => {
-              if (code) setPrefilledVoucherCode(code);
-              setCurrentView('hotspot_login');
-            }}
-          />
-        )}
-
-        {currentView === 'customer_bill' && (
-          <CustomerBillPortal
-            customers={customers}
-            invoices={invoices}
-            onRefreshData={refreshAllData}
-          />
-        )}
-
-        {currentView === 'hotspot_login' && (
-          <HotspotLoginPage
-            initialVoucherCode={prefilledVoucherCode}
-            onNavigateToStore={() => setCurrentView('voucher_portal')}
-          />
-        )}
       </main>
 
       {/* Footer */}
@@ -261,6 +433,7 @@ export default function App() {
         <InvoicePrintModal
           invoice={printInvoiceData.invoice}
           customer={printInvoiceData.customer}
+          settings={appSettings}
           onClose={() => setPrintInvoiceData(null)}
         />
       )}
@@ -269,6 +442,7 @@ export default function App() {
       {printVouchersData && (
         <VoucherPrintModal
           vouchers={printVouchersData}
+          settings={appSettings}
           onClose={() => setPrintVouchersData(null)}
         />
       )}
@@ -319,6 +493,7 @@ export default function App() {
                   <span>Pesan berhasil dikirim ke nomor {quickWaModal.customer.phone}!</span>
                 </div>
               )}
+              {waError && <div role="alert" className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300">{waError}</div>}
             </div>
 
             <div className="flex justify-end gap-2.5 pt-4 border-t border-slate-800 mt-5">
@@ -330,7 +505,7 @@ export default function App() {
               </button>
               <button
                 onClick={handleConfirmSendWa}
-                disabled={waSending || waSuccess}
+                disabled={waSending || waSuccess || quickWaModal.needsPaymentLink}
                 className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold text-xs shadow-lg shadow-emerald-600/30 transition flex items-center gap-1.5"
               >
                 <Send className={`w-3.5 h-3.5 ${waSending ? 'animate-spin' : ''}`} />
@@ -341,5 +516,15 @@ export default function App() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <ToastProvider>
+        <AppContent />
+      </ToastProvider>
+    </ThemeProvider>
   );
 }

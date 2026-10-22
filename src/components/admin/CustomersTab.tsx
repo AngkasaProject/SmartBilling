@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { Customer, Invoice } from '../../types';
+import React, { useEffect, useState } from 'react';
+import { Customer, Invoice, RouterConfig } from '../../types';
 import { StorageService } from '../../services/storage';
+import { useToast } from '../ui/toast';
 import {
   Users,
   Search,
@@ -23,6 +24,7 @@ import {
 interface Props {
   customers: Customer[];
   invoices: Invoice[];
+  routers: RouterConfig[];
   onRefreshData: () => void;
   onSendWa: (customer: Customer, type: 'reminder' | 'isolir') => void;
   onViewInvoice: (invoice: Invoice, customer: Customer) => void;
@@ -32,15 +34,20 @@ interface Props {
 export const CustomersTab: React.FC<Props> = ({
   customers,
   invoices,
+  routers,
   onRefreshData,
   onSendWa,
   onViewInvoice,
   onToggleIsolir,
 }) => {
+  const { toast, confirm: confirmAction } = useToast();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'expiring' | 'isolated'>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+  const [routerProfiles, setRouterProfiles] = useState<Array<{ name: string; rateLimit: string }>>([]);
+  const [customerError, setCustomerError] = useState('');
+  const [isSavingCustomer, setIsSavingCustomer] = useState(false);
 
   // Form State
   const [formData, setFormData] = useState<Partial<Customer>>({
@@ -50,38 +57,53 @@ export const CustomersTab: React.FC<Props> = ({
     address: '',
     pppoeUsername: '',
     pppoePassword: '',
-    profileName: 'Paket Home 20 Mbps',
-    bandwidthLimit: '20M/20M',
-    monthlyFee: 175000,
-    billingDate: 25,
-    expiredDate: '2026-11-25',
+    profileName: '',
+    bandwidthLimit: '',
+    monthlyFee: 0,
+    billingDate: new Date().getDate(),
+    expiredDate: new Date().toISOString().substring(0, 10),
     status: 'active',
     autoIsolir: true,
-    routerId: 'rtr-1',
+    routerId: '',
     ipAddress: '',
   });
 
+  useEffect(() => {
+    const routerId = formData.routerId;
+    if (!routerId) {
+      setRouterProfiles([]);
+      return;
+    }
+    fetch(`/api/mikrotik/pppoe/profiles?routerId=${encodeURIComponent(routerId)}`).then(async response => {
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      setRouterProfiles(result.profiles);
+    }).catch(error => setCustomerError(error instanceof Error ? error.message : String(error)));
+  }, [formData.routerId]);
+
   const handleOpenAdd = () => {
     setEditingCustomer(null);
-    const randomUserNum = Math.floor(100 + Math.random() * 900);
+    const now = new Date();
+    const currentDate = now.toISOString().substring(0, 10);
     setFormData({
-      customerId: `CUST-2026-${String(customers.length + 1).padStart(3, '0')}`,
+      customerId: `CUST-${now.getFullYear()}-${String(customers.length + 1).padStart(4, '0')}`,
       name: '',
       phone: '',
       email: '',
       address: '',
-      pppoeUsername: `user_${randomUserNum}`,
-      pppoePassword: `pass${Math.floor(1000 + Math.random() * 9000)}`,
-      profileName: 'Paket Home 20 Mbps',
-      bandwidthLimit: '20M/20M',
-      monthlyFee: 175000,
-      billingDate: 25,
-      expiredDate: '2026-11-25',
+      pppoeUsername: '',
+      pppoePassword: '',
+      profileName: '',
+      bandwidthLimit: '',
+      monthlyFee: 0,
+      billingDate: now.getDate(),
+      expiredDate: currentDate,
       status: 'active',
       autoIsolir: true,
-      routerId: 'rtr-1',
-      ipAddress: `10.10.20.${customers.length + 50}`,
+      routerId: routers[0]?.id || '',
+      ipAddress: '',
     });
+    setCustomerError('');
     setIsModalOpen(true);
   };
 
@@ -91,44 +113,105 @@ export const CustomersTab: React.FC<Props> = ({
     setIsModalOpen(true);
   };
 
-  const handleDelete = (id: string, name: string) => {
-    if (window.confirm(`Yakin ingin menghapus pelanggan ${name}? Data PPPoE di MikroTik juga akan dinonaktifkan.`)) {
-      StorageService.deleteCustomer(id);
+  const handleDelete = async (customer: Customer) => {
+    const accepted = await confirmAction(
+      'Hapus pelanggan?',
+      `Pelanggan ${customer.name} dan user PPPoE ${customer.pppoeUsername} akan dihapus dari MikroTik serta daftar billing.`,
+      true
+    );
+    if (!accepted) return;
+    try {
+      const response = await fetch(`/api/mikrotik/pppoe/secrets/${encodeURIComponent(customer.routerId)}/${encodeURIComponent(customer.pppoeUsername)}`, {
+        method: 'DELETE',
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      StorageService.deleteCustomer(customer.id);
       onRefreshData();
+      toast('Pelanggan berhasil dihapus dari billing dan MikroTik.', 'success');
+    } catch (error) {
+      toast('Gagal menghapus pelanggan', 'error', error instanceof Error ? error.message : String(error));
     }
   };
 
-  const handleSaveCustomer = (e: React.FormEvent) => {
+  const handleSaveCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name || !formData.phone || !formData.pppoeUsername) {
-      alert('Nama, Nomor WhatsApp, dan Username PPPoE wajib diisi!');
+    if (!formData.name || !formData.phone || !formData.pppoeUsername || !formData.pppoePassword || !formData.profileName || !formData.routerId) {
+      setCustomerError('Nama, WhatsApp, username/password PPPoE, profile router, dan router wajib diisi.');
       return;
     }
 
+    setIsSavingCustomer(true);
+    setCustomerError('');
     const payload: Customer = {
       id: editingCustomer ? editingCustomer.id : 'cust-' + Date.now(),
-      customerId: formData.customerId || `CUST-2026-${customers.length + 1}`,
+      customerId: formData.customerId || `CUST-${new Date().getFullYear()}-${String(customers.length + 1).padStart(4, '0')}`,
       name: formData.name || '',
       phone: formData.phone || '',
       email: formData.email || '',
       address: formData.address || '',
       pppoeUsername: formData.pppoeUsername || '',
-      pppoePassword: formData.pppoePassword || '123456',
-      profileName: formData.profileName || 'Paket Home 20 Mbps',
-      bandwidthLimit: formData.bandwidthLimit || '20M/20M',
-      monthlyFee: Number(formData.monthlyFee) || 175000,
-      billingDate: Number(formData.billingDate) || 25,
-      expiredDate: formData.expiredDate || '2026-11-25',
+      pppoePassword: formData.pppoePassword,
+      profileName: formData.profileName,
+      bandwidthLimit: formData.bandwidthLimit || '',
+      monthlyFee: Number(formData.monthlyFee) || 0,
+      billingDate: Number(formData.billingDate) || new Date().getDate(),
+      expiredDate: formData.expiredDate || new Date().toISOString().substring(0, 10),
       status: (formData.status as any) || 'active',
       autoIsolir: formData.autoIsolir ?? true,
-      routerId: formData.routerId || 'rtr-1',
+      routerId: formData.routerId,
       ipAddress: formData.ipAddress || '',
       notes: formData.notes || '',
     };
 
-    StorageService.saveCustomer(payload);
-    setIsModalOpen(false);
-    onRefreshData();
+    try {
+      const previous = editingCustomer;
+      const changedRouterOrUser = previous && (
+        previous.routerId !== payload.routerId || previous.pppoeUsername !== payload.pppoeUsername
+      );
+      const endpoint = previous && !changedRouterOrUser
+        ? `/api/mikrotik/pppoe/secrets/${encodeURIComponent(payload.routerId)}/${encodeURIComponent(payload.pppoeUsername)}`
+        : '/api/mikrotik/pppoe/secrets';
+      const response = await fetch(endpoint, {
+        method: previous && !changedRouterOrUser ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(previous && !changedRouterOrUser
+          ? { password: payload.pppoePassword, profile: payload.profileName, disabled: payload.status === 'isolated' }
+          : {
+            routerId: payload.routerId,
+            name: payload.pppoeUsername,
+            password: payload.pppoePassword,
+            profile: payload.profileName,
+            comment: payload.customerId,
+            disabled: payload.status === 'isolated',
+          }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (previous && changedRouterOrUser) {
+        const deleteOld = await fetch(`/api/mikrotik/pppoe/secrets/${encodeURIComponent(previous.routerId)}/${encodeURIComponent(previous.pppoeUsername)}`, {
+          method: 'DELETE',
+        });
+        if (!deleteOld.ok) {
+          const rollback = await fetch(`/api/mikrotik/pppoe/secrets/${encodeURIComponent(payload.routerId)}/${encodeURIComponent(payload.pppoeUsername)}`, {
+            method: 'DELETE',
+          });
+          throw new Error(
+            rollback.ok
+              ? 'User lama gagal dihapus dari router; user baru telah dibatalkan.'
+              : 'User lama gagal dihapus dan pembatalan user baru juga gagal. Periksa kedua router secara manual.'
+          );
+        }
+      }
+      StorageService.saveCustomer(payload);
+      setIsModalOpen(false);
+      onRefreshData();
+      toast(previous ? 'Data pelanggan berhasil diperbarui.' : 'Pelanggan dan akun PPPoE berhasil dibuat.', 'success');
+    } catch (error) {
+      setCustomerError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSavingCustomer(false);
+    }
   };
 
   // Filtered list
@@ -156,7 +239,7 @@ export const CustomersTab: React.FC<Props> = ({
               <span>Manajemen Pelanggan PPPoE</span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Kelola user secret MikroTik, paket bandwidth, status masa aktif, dan auto-isolir terintegrasi
+              Kelola secret PPPoE dan masa aktif. Isolir manual mengubah status secret RouterOS.
             </p>
           </div>
 
@@ -273,9 +356,6 @@ export const CustomersTab: React.FC<Props> = ({
                         <div className="text-[11px] text-slate-400 mt-0.5">
                           IP: <span className="text-slate-300">{cust.ipAddress || 'Dynamic Pool'}</span>
                         </div>
-                        <div className="text-[10px] text-slate-500">
-                          Auto-Isolir: {cust.autoIsolir ? '✅ Aktif' : '❌ Nonaktif'}
-                        </div>
                       </td>
 
                       {/* Package */}
@@ -366,7 +446,7 @@ export const CustomersTab: React.FC<Props> = ({
 
                           {/* Delete */}
                           <button
-                            onClick={() => handleDelete(cust.id, cust.name)}
+                            onClick={() => void handleDelete(cust)}
                             className="p-1.5 bg-slate-800 hover:bg-rose-900/40 text-slate-400 hover:text-rose-400 rounded-lg transition"
                             title="Hapus Pelanggan"
                           >
@@ -394,7 +474,7 @@ export const CustomersTab: React.FC<Props> = ({
                   <span>{editingCustomer ? 'Edit Data Pelanggan PPPoE' : 'Tambah Pelanggan Baru'}</span>
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Data otomatis dikonfigurasi ke MikroTik RouterOS API
+                  User PPPoE dibuat di router dan baru disimpan ke billing setelah operasi RouterOS berhasil.
                 </p>
               </div>
               <button
@@ -406,6 +486,7 @@ export const CustomersTab: React.FC<Props> = ({
             </div>
 
             <form onSubmit={handleSaveCustomer} className="p-6 space-y-4 text-xs">
+              {customerError && <div role="alert" className="p-3 rounded-lg border border-rose-500/30 bg-rose-950/40 text-rose-300">{customerError}</div>}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-slate-300 font-medium mb-1">Nama Lengkap *</label>
@@ -503,9 +584,12 @@ export const CustomersTab: React.FC<Props> = ({
                       value={formData.routerId}
                       onChange={e => setFormData({ ...formData, routerId: e.target.value })}
                       className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-white focus:outline-none focus:border-indigo-500"
+                      required
                     >
-                      <option value="rtr-1">NOC-Pusat (RB4011)</option>
-                      <option value="rtr-2">Tower-Barat (RB750Gr3)</option>
+                      <option value="">Pilih router aktif</option>
+                      {routers.filter(router => router.status === 'connected').map(router => (
+                        <option key={router.id} value={router.id}>{router.name} ({router.host})</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -517,23 +601,19 @@ export const CustomersTab: React.FC<Props> = ({
                   <select
                     value={formData.profileName}
                     onChange={e => {
-                      const val = e.target.value;
-                      let fee = 175000;
-                      let bw = '20M/20M';
-                      if (val.includes('10')) { fee = 125000; bw = '10M/10M'; }
-                      else if (val.includes('20')) { fee = 175000; bw = '20M/20M'; }
-                      else if (val.includes('30')) { fee = 220000; bw = '30M/30M'; }
-                      else if (val.includes('50')) { fee = 350000; bw = '50M/50M'; }
-                      else if (val.includes('100')) { fee = 650000; bw = '100M/100M'; }
-                      setFormData({ ...formData, profileName: val, monthlyFee: fee, bandwidthLimit: bw });
+                      const selected = routerProfiles.find(profile => profile.name === e.target.value);
+                      setFormData({
+                        ...formData,
+                        profileName: e.target.value,
+                        bandwidthLimit: selected?.rateLimit || '',
+                      });
                     }}
                     className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-indigo-500"
+                    required
                   >
-                    <option value="Paket Home 10 Mbps">Paket Home 10 Mbps (Rp 125.000)</option>
-                    <option value="Paket Home 20 Mbps">Paket Home 20 Mbps (Rp 175.000)</option>
-                    <option value="Paket Home 30 Mbps">Paket Home 30 Mbps (Rp 220.000)</option>
-                    <option value="Paket Bisnis 50 Mbps">Paket Bisnis 50 Mbps (Rp 350.000)</option>
-                    <option value="Paket Bisnis 100 Mbps">Paket Bisnis 100 Mbps (Rp 650.000)</option>
+                    <option value="">Pilih profile aktual dari router</option>
+                    {formData.profileName && !routerProfiles.some(profile => profile.name === formData.profileName) && <option value={formData.profileName}>{formData.profileName} (saat ini)</option>}
+                    {routerProfiles.map(profile => <option key={profile.name} value={profile.name}>{profile.name}{profile.rateLimit ? ` (${profile.rateLimit})` : ''}</option>)}
                   </select>
                 </div>
 
@@ -573,18 +653,6 @@ export const CustomersTab: React.FC<Props> = ({
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 pt-2">
-                <input
-                  type="checkbox"
-                  id="autoIsolirCheck"
-                  checked={formData.autoIsolir}
-                  onChange={e => setFormData({ ...formData, autoIsolir: e.target.checked })}
-                  className="rounded border-slate-700 text-indigo-600 focus:ring-0"
-                />
-                <label htmlFor="autoIsolirCheck" className="text-slate-300 text-xs cursor-pointer">
-                  Aktifkan Auto-Isolir MikroTik jika melewati tanggal jatuh tempo
-                </label>
-              </div>
 
               <div className="pt-4 border-t border-slate-800 flex justify-end gap-2.5">
                 <button
@@ -596,9 +664,10 @@ export const CustomersTab: React.FC<Props> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/30"
+                  disabled={isSavingCustomer || routers.length === 0}
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/30 disabled:opacity-50"
                 >
-                  {editingCustomer ? 'Simpan Perubahan' : 'Simpan & Daftarkan ke MikroTik'}
+                  {isSavingCustomer ? 'Menyimpan...' : editingCustomer ? 'Simpan Perubahan' : 'Simpan & Daftarkan ke MikroTik'}
                 </button>
               </div>
             </form>

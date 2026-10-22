@@ -45,16 +45,34 @@ export interface Invoice {
 export interface HotspotProfile {
   id: string;
   name: string;
+  serviceProfileId?: string;
   speedLimit: string; // e.g. "5M/5M"
+  routerId?: string;
+  routerProfileName?: string;
   validityDuration: string; // e.g. "3 Jam", "1 Hari", "7 Hari", "30 Hari"
   validityHours: number;
   price: number;
   sharedUsers: number;
   dataLimitMb?: number;
   color: string;
+  enabled?: boolean;
 }
 
-export type VoucherStatus = 'unused' | 'active' | 'expired';
+export type HotspotValidityPreset = '1 jam' | '12 jam' | '1 hari' | '1 minggu' | '2 minggu' | '1 bulan';
+
+export interface HotspotServiceProfile {
+  id: string;
+  name: string;
+  routerId: string;
+  routerProfileName: string;
+  speedLimit: string;
+  validityPreset: HotspotValidityPreset;
+  validityHours: number;
+  sharedUsers: number;
+  dataLimitMb?: number;
+}
+
+export type VoucherStatus = 'pending' | 'unused' | 'active' | 'expired';
 
 export interface Voucher {
   id: string;
@@ -74,6 +92,8 @@ export interface Voucher {
   customerPhone?: string;
   paymentMethod?: string;
   paymentRef?: string;
+  routerId?: string;
+  orderId?: string;
 }
 
 export interface RouterConfig {
@@ -121,6 +141,17 @@ export interface PaymentGatewayConfig {
   merchantCode?: string;
   webhookSecret: string;
   autoVerify: boolean;
+  manualPaymentMethods?: ManualPaymentMethod[];
+  manualTimeoutMinutes?: number;
+}
+
+export interface ManualPaymentMethod {
+  id: string;
+  name: string;
+  serviceName?: string;
+  accountNumber?: string;
+  instructions: string;
+  enabled: boolean;
 }
 
 export interface WhatsAppGatewayConfig {
@@ -152,12 +183,28 @@ export interface PaymentTransaction {
   paymentChannel: string;
   status: 'pending' | 'settlement' | 'expired' | 'canceled';
   qrCodeUrl?: string;
+  paymentUrl?: string;
   vaNumber?: string;
   expiryMinutes: number;
   createdAt: string;
   paidAt?: string;
   voucherCode?: string;
   invoiceId?: string;
+  expiresAt?: string;
+  proofData?: string;
+}
+
+export interface AppDataSnapshot {
+  customers: Customer[];
+  invoices: Invoice[];
+  hotspotProfiles: HotspotProfile[];
+  hotspotServiceProfiles: HotspotServiceProfile[];
+  vouchers: Voucher[];
+  routers: RouterConfig[];
+  whatsappLogs: WhatsAppLog[];
+  paymentConfig: PaymentGatewayConfig;
+  whatsappConfig: WhatsAppGatewayConfig;
+  transactions: PaymentTransaction[];
 }
 
 export interface AppSettings {
@@ -218,4 +265,3 @@ export interface DatabaseStats {
   vouchersCount: number;
   lastBackupTime?: string;
 }
-

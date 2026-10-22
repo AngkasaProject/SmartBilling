@@ -2,7 +2,8 @@ import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { AppSettings, Customer, Invoice, HotspotProfile, Voucher, WhatsAppLog, PaymentTransaction } from '../src/types';
+import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'crypto';
+import { AppDataSnapshot, AppSettings, Customer, Invoice, PaymentTransaction, Voucher } from '../src/types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,43 +14,45 @@ const DB_FILE = path.join(DATA_DIR, 'billing.sqlite');
 
 let SQL: SqlJsStatic | null = null;
 let db: Database | null = null;
+let encryptionKeyMaterial: Buffer | null = null;
+let previousEncryptionKeys: Buffer[] = [];
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  appName: 'NetFlow MikroTik ISP Billing & Hotspot Platform',
-  brandName: 'NetFlow ISP',
-  companyName: 'PT Netflow Solusi Nusantara',
-  tagline: 'Sistem Billing & Voucher Hotspot MikroTik Siap Docker',
-  officeAddress: 'Gedung Cyber 2 Lt. 4, Jl. H.R. Rasuna Said, Jakarta Selatan',
-  phoneContact: '0812-8899-0011',
-  emailContact: 'billing@ispnet.id',
-  defaultSsid: 'NETFLOW_HOTSPOT_5G',
+  appName: 'SmartBilling',
+  brandName: 'SmartBilling',
+  companyName: '',
+  tagline: '',
+  officeAddress: '',
+  phoneContact: '',
+  emailContact: '',
+  defaultSsid: '',
   currencySymbol: 'Rp',
   timezone: 'Asia/Jakarta',
 
-  mikrotikHost: '103.180.12.5',
+  mikrotikHost: '',
   mikrotikPort: 8728,
-  mikrotikUser: 'api_billing',
-  mikrotikPass: 'SuperSecurePassword!',
+  mikrotikUser: '',
+  mikrotikPass: '',
   mikrotikApiType: 'api',
   mikrotikTimeoutSec: 10,
 
   waProvider: 'openwa',
   openwaUrl: 'http://openwa:2785',
-  openwaApiKey: 'openwa_admin_sec_88921a9f02b',
+  openwaApiKey: '',
   openwaSessionId: 'billing-isp',
-  openwaSenderNumber: '081288990011',
-  autoSendReminderH3: true,
-  autoSendReminderH1: true,
+  openwaSenderNumber: '',
+  autoSendReminderH3: false,
+  autoSendReminderH1: false,
   autoSendIsolir: true,
-  autoSendReceipt: true,
+  autoSendReceipt: false,
 
   paymentProvider: 'midtrans',
   paymentIsProduction: false,
-  paymentServerKey: 'SB-Mid-server-xX88sampleKey992834',
-  paymentClientKey: 'SB-Mid-client-88sampleKey1192',
-  paymentMerchantCode: 'G8291039',
-  paymentWebhookSecret: 'whsec_sample_netflow_isp_token',
-  paymentAutoVerify: true,
+  paymentServerKey: '',
+  paymentClientKey: '',
+  paymentMerchantCode: '',
+  paymentWebhookSecret: '',
+  paymentAutoVerify: false,
 
   gracePeriodDays: 0,
   defaultVoucherPrefix: 'NET-',
@@ -96,6 +99,7 @@ export function saveDbToDisk(): void {
     fs.writeFileSync(DB_FILE, Buffer.from(data));
   } catch (err) {
     console.error(`❌ Failed to write SQLite to disk:`, err);
+    throw err;
   }
 }
 
@@ -205,6 +209,32 @@ function initSchema(database: Database): void {
       created_at TEXT NOT NULL,
       paid_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS app_data (
+      collection TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS router_credentials (
+      router_id TEXT PRIMARY KEY,
+      secret TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS admin_users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS admin_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
   `);
 
   // Check if app_settings initialized
@@ -215,6 +245,391 @@ function initSchema(database: Database): void {
       ['app_config', JSON.stringify(DEFAULT_APP_SETTINGS), new Date().toISOString()]
     );
   }
+}
+
+const ENCRYPTION_KEY_PLACEHOLDERS = new Set([
+  'GENERATE_A_LONG_RANDOM_ENCRYPTION_KEY',
+  'YOUR_ENCRYPTION_KEY',
+  'CHANGE_ME',
+]);
+
+function encryptionKeyPath(): string {
+  return path.join(DATA_DIR, 'router-secrets.key');
+}
+
+function configuredEncryptionKey(): Buffer | null {
+  const configured = process.env.APP_ENCRYPTION_KEY?.trim();
+  if (!configured || ENCRYPTION_KEY_PLACEHOLDERS.has(configured)) return null;
+  if (configured.startsWith('base64:')) {
+    const decoded = Buffer.from(configured.slice(7), 'base64');
+    if (decoded.length !== 32) throw new Error('APP_ENCRYPTION_KEY base64 value must decode to 32 bytes');
+    return decoded;
+  }
+  return Buffer.from(configured, 'utf8');
+}
+
+function loadEncryptionKeyMaterial(): Buffer {
+  if (encryptionKeyMaterial) return encryptionKeyMaterial;
+  const configured = configuredEncryptionKey();
+  if (configured) {
+    encryptionKeyMaterial = configured;
+    return configured;
+  }
+
+  const keyPath = encryptionKeyPath();
+  if (!fs.existsSync(keyPath)) {
+    try {
+      fs.writeFileSync(keyPath, randomBytes(32), { mode: 0o600, flag: 'wx' });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+  }
+  const stored = fs.readFileSync(keyPath);
+  try {
+    const keyring = JSON.parse(stored.toString('utf8')) as { version: number; active: string; previous?: string[] };
+    if (keyring.version === 1 && typeof keyring.active === 'string') {
+      encryptionKeyMaterial = Buffer.from(keyring.active, 'base64');
+      previousEncryptionKeys = (keyring.previous || []).map(key => Buffer.from(key, 'base64'));
+      if (encryptionKeyMaterial.length !== 32 || previousEncryptionKeys.some(key => key.length !== 32)) {
+        throw new Error('Stored application encryption key is invalid');
+      }
+      return encryptionKeyMaterial;
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Stored application encryption key is invalid') throw error;
+  }
+
+  if (stored.length !== 32) throw new Error('Stored application encryption key file is invalid');
+  encryptionKeyMaterial = stored;
+  return stored;
+}
+
+function encryptionKeyFromMaterial(material: Buffer): Buffer {
+  return createHash('sha256').update(material).digest();
+}
+
+function decryptRouterSecret(secret: string, keyMaterials: Buffer[]): string {
+  const packed = Buffer.from(secret, 'base64');
+  if (packed.length < 28) throw new Error('Stored router credential is invalid');
+  const iv = packed.subarray(0, 12);
+  const tag = packed.subarray(12, 28);
+  const encrypted = packed.subarray(28);
+  let lastError: unknown;
+  for (const material of keyMaterials) {
+    try {
+      const decipher = createDecipheriv('aes-256-gcm', encryptionKeyFromMaterial(material), iv);
+      decipher.setAuthTag(tag);
+      return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error('Router credential cannot be decrypted with the configured application key', { cause: lastError });
+}
+
+function encryptRouterSecret(password: string, material = loadEncryptionKeyMaterial()): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', encryptionKeyFromMaterial(material), iv);
+  const encrypted = Buffer.concat([cipher.update(password, 'utf8'), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64');
+}
+
+function writeEncryptionKeyring(active: Buffer, previous: Buffer[] = []): void {
+  const keyPath = encryptionKeyPath();
+  const temporaryPath = `${keyPath}.${randomBytes(6).toString('hex')}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify({
+    version: 1,
+    active: active.toString('base64'),
+    previous: previous.map(key => key.toString('base64')),
+  }), { mode: 0o600, flag: 'wx' });
+  fs.renameSync(temporaryPath, keyPath);
+}
+
+export function getEncryptionKeyInfo(): { key: string; source: 'environment' | 'generated' } {
+  const configured = configuredEncryptionKey();
+  const material = configured || loadEncryptionKeyMaterial();
+  return {
+    key: `base64:${material.toString('base64')}`,
+    source: configured ? 'environment' : 'generated',
+  };
+}
+
+export async function rotateEncryptionKeyDb(): Promise<{ key: string }> {
+  if (configuredEncryptionKey()) {
+    throw new Error('APP_ENCRYPTION_KEY is set in the environment; update it there instead of rotating from the panel');
+  }
+  const database = await getDb();
+  const oldMaterial = loadEncryptionKeyMaterial();
+  const newMaterial = randomBytes(32);
+  const previous = [oldMaterial, ...previousEncryptionKeys.filter(key => !key.equals(oldMaterial))];
+  writeEncryptionKeyring(newMaterial, previous);
+  encryptionKeyMaterial = newMaterial;
+  previousEncryptionKeys = previous;
+
+  const result = database.exec('SELECT router_id, secret FROM router_credentials');
+  const rows = result[0]?.values ?? [];
+  database.run('BEGIN TRANSACTION');
+  try {
+    for (const [routerId, secret] of rows) {
+      const password = decryptRouterSecret(String(secret), [oldMaterial, ...previous]);
+      database.run(
+        'UPDATE router_credentials SET secret = ?, updated_at = ? WHERE router_id = ?',
+        [encryptRouterSecret(password, newMaterial), new Date().toISOString(), String(routerId)]
+      );
+    }
+    saveDbToDisk();
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+
+  writeEncryptionKeyring(newMaterial);
+  previousEncryptionKeys = [];
+  return { key: `base64:${newMaterial.toString('base64')}` };
+}
+
+export async function saveRouterCredentialDb(routerId: string, password: string): Promise<void> {
+  const database = await getDb();
+  const secret = encryptRouterSecret(password);
+  database.run(
+    'INSERT OR REPLACE INTO router_credentials (router_id, secret, updated_at) VALUES (?, ?, ?)',
+    [routerId, secret, new Date().toISOString()]
+  );
+  saveDbToDisk();
+}
+
+export async function getRouterCredentialDb(routerId: string): Promise<string | null> {
+  const database = await getDb();
+  const result = database.exec('SELECT secret FROM router_credentials WHERE router_id = ?', [routerId]);
+  if (!result.length || !result[0].values.length) return null;
+  const current = loadEncryptionKeyMaterial();
+  const compatibilityKeys = ENCRYPTION_KEY_PLACEHOLDERS.has(process.env.APP_ENCRYPTION_KEY?.trim() || '')
+    ? [Buffer.from(process.env.APP_ENCRYPTION_KEY!.trim(), 'utf8')]
+    : [];
+  return decryptRouterSecret(result[0].values[0][0] as string, [current, ...previousEncryptionKeys, ...compatibilityKeys]);
+}
+
+export async function countAdminUsersDb(): Promise<number> {
+  const database = await getDb();
+  const result = database.exec('SELECT COUNT(*) FROM admin_users');
+  return Number(result[0]?.values[0]?.[0] || 0);
+}
+
+export async function getAdminUserDb(username: string): Promise<{ id: string; username: string; passwordHash: string } | null> {
+  const database = await getDb();
+  const result = database.exec('SELECT id, username, password_hash FROM admin_users WHERE username = ?', [username]);
+  const row = result[0]?.values[0];
+  return row ? { id: String(row[0]), username: String(row[1]), passwordHash: String(row[2]) } : null;
+}
+
+export async function getAdminUsersDb(): Promise<Array<{ id: string; username: string; createdAt: string }>> {
+  const database = await getDb();
+  const result = database.exec('SELECT id, username, created_at FROM admin_users ORDER BY created_at');
+  return (result[0]?.values || []).map(row => ({
+    id: String(row[0]),
+    username: String(row[1]),
+    createdAt: String(row[2]),
+  }));
+}
+
+export async function createAdminUserDb(id: string, username: string, passwordHash: string): Promise<void> {
+  const database = await getDb();
+  database.run(
+    'INSERT INTO admin_users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)',
+    [id, username, passwordHash, new Date().toISOString()]
+  );
+  saveDbToDisk();
+}
+
+export async function createInitialAdminUserDb(id: string, username: string, passwordHash: string): Promise<void> {
+  const database = await getDb();
+  database.run('BEGIN TRANSACTION');
+  try {
+    const count = database.exec('SELECT COUNT(*) FROM admin_users');
+    if (Number(count[0]?.values[0]?.[0] || 0) > 0) throw new Error('Admin registration is already closed');
+    database.run(
+      'INSERT INTO admin_users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)',
+      [id, username, passwordHash, new Date().toISOString()]
+    );
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+  saveDbToDisk();
+}
+
+export async function deleteAdminUserDb(id: string): Promise<void> {
+  const database = await getDb();
+  database.run('DELETE FROM admin_sessions WHERE user_id = ?', [id]);
+  database.run('DELETE FROM admin_users WHERE id = ?', [id]);
+  saveDbToDisk();
+}
+
+export async function createAdminSessionDb(tokenHash: string, userId: string, username: string, expiresAt: string): Promise<void> {
+  const database = await getDb();
+  database.run('DELETE FROM admin_sessions WHERE expires_at <= ?', [new Date().toISOString()]);
+  database.run(
+    'INSERT INTO admin_sessions (token_hash, user_id, username, expires_at) VALUES (?, ?, ?, ?)',
+    [tokenHash, userId, username, expiresAt]
+  );
+  saveDbToDisk();
+}
+
+export async function getAdminSessionDb(tokenHash: string): Promise<{ userId: string; username: string } | null> {
+  const database = await getDb();
+  const result = database.exec(
+    'SELECT user_id, username FROM admin_sessions WHERE token_hash = ? AND expires_at > ?',
+    [tokenHash, new Date().toISOString()]
+  );
+  const row = result[0]?.values[0];
+  return row ? { userId: String(row[0]), username: String(row[1]) } : null;
+}
+
+export async function deleteAdminSessionDb(tokenHash: string): Promise<void> {
+  const database = await getDb();
+  database.run('DELETE FROM admin_sessions WHERE token_hash = ?', [tokenHash]);
+  saveDbToDisk();
+}
+
+export async function saveAppDataCollectionDb<K extends keyof AppDataSnapshot>(
+  collection: K,
+  value: AppDataSnapshot[K]
+): Promise<void> {
+  const database = await getDb();
+  database.run(
+    'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+    [collection, JSON.stringify(value), new Date().toISOString()]
+  );
+  saveDbToDisk();
+}
+
+export async function savePublicPaymentUpdateDb(
+  customers: Customer[],
+  invoices: Invoice[],
+  transactions: PaymentTransaction[],
+  vouchers?: Voucher[]
+): Promise<void> {
+  const database = await getDb();
+  const updatedAt = new Date().toISOString();
+  database.run('BEGIN TRANSACTION');
+  try {
+    database.run(
+      'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+      ['customers', JSON.stringify(customers), updatedAt]
+    );
+    database.run(
+      'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+      ['invoices', JSON.stringify(invoices), updatedAt]
+    );
+    database.run(
+      'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+      ['transactions', JSON.stringify(transactions), updatedAt]
+    );
+    if (vouchers) {
+      database.run(
+        'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+        ['vouchers', JSON.stringify(vouchers), updatedAt]
+      );
+    }
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+  saveDbToDisk();
+}
+
+export async function getOrCreatePortalLinkSecretDb(): Promise<string> {
+  const database = await getDb();
+  const current = database.exec('SELECT value FROM app_settings WHERE key = ?', ['portal_payment_link_secret']);
+  const existing = current[0]?.values[0]?.[0];
+  if (typeof existing === 'string' && existing.length >= 40) return existing;
+  const secret = randomBytes(48).toString('base64url');
+  database.run(
+    'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
+    ['portal_payment_link_secret', secret, new Date().toISOString()]
+  );
+  saveDbToDisk();
+  return secret;
+}
+
+export async function saveVoucherOrderDb(vouchers: Voucher[], transactions: PaymentTransaction[]): Promise<void> {
+  const database = await getDb();
+  const updatedAt = new Date().toISOString();
+  database.run('BEGIN TRANSACTION');
+  try {
+    database.run(
+      'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+      ['vouchers', JSON.stringify(vouchers), updatedAt]
+    );
+    database.run(
+      'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+      ['transactions', JSON.stringify(transactions), updatedAt]
+    );
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+  saveDbToDisk();
+}
+
+const APP_DATA_COLLECTIONS = [
+  'customers',
+  'invoices',
+  'hotspotProfiles',
+  'hotspotServiceProfiles',
+  'vouchers',
+  'routers',
+  'whatsappLogs',
+  'paymentConfig',
+  'whatsappConfig',
+  'transactions',
+] as const satisfies readonly (keyof AppDataSnapshot)[];
+
+export async function getAppDataDb(): Promise<{
+  initialized: boolean;
+  data: Partial<AppDataSnapshot>;
+}> {
+  const database = await getDb();
+  const result = database.exec('SELECT collection, value FROM app_data');
+  const data: Partial<AppDataSnapshot> = {};
+
+  for (const [collection, serialized] of result[0]?.values ?? []) {
+    if (!APP_DATA_COLLECTIONS.includes(collection as keyof AppDataSnapshot)) continue;
+    try {
+      (data as Record<string, unknown>)[collection as string] = JSON.parse(serialized as string);
+    } catch (err) {
+      throw new Error(`Stored app data for "${String(collection)}" is invalid JSON`, { cause: err });
+    }
+  }
+  if (!Array.isArray(data.hotspotServiceProfiles)) data.hotspotServiceProfiles = [];
+
+  return {
+    initialized: APP_DATA_COLLECTIONS.every(collection => collection in data),
+    data,
+  };
+}
+
+export async function saveAppDataDb(data: AppDataSnapshot): Promise<void> {
+  const database = await getDb();
+  const updatedAt = new Date().toISOString();
+  database.run('BEGIN TRANSACTION');
+  try {
+    for (const collection of APP_DATA_COLLECTIONS) {
+      database.run(
+        `INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)`,
+        [collection, JSON.stringify(data[collection]), updatedAt]
+      );
+    }
+    database.run('COMMIT');
+  } catch (err) {
+    database.run('ROLLBACK');
+    throw err;
+  }
+  saveDbToDisk();
 }
 
 // DB Helper Queries
@@ -266,6 +681,18 @@ export async function getDbStats() {
     }
   };
 
+  const appData = await getAppDataDb();
+  const dataCounts = {
+    customers: appData.data.customers?.length ?? 0,
+    invoices: appData.data.invoices?.length ?? 0,
+    hotspot_profiles: appData.data.hotspotProfiles?.length ?? 0,
+    hotspot_service_profiles: appData.data.hotspotServiceProfiles?.length ?? 0,
+    vouchers: appData.data.vouchers?.length ?? 0,
+    routers: appData.data.routers?.length ?? 0,
+    whatsapp_logs: appData.data.whatsappLogs?.length ?? 0,
+    payment_transactions: appData.data.transactions?.length ?? 0,
+  };
+
   return {
     engine: 'SQLite 3 (WASM)',
     dbPath: DB_FILE,
@@ -273,12 +700,14 @@ export async function getDbStats() {
     fileSizeKb: (fileSize / 1024).toFixed(2),
     tables: [
       { name: 'app_settings', count: countQuery('app_settings') },
-      { name: 'customers', count: countQuery('customers') },
-      { name: 'invoices', count: countQuery('invoices') },
-      { name: 'hotspot_profiles', count: countQuery('hotspot_profiles') },
-      { name: 'vouchers', count: countQuery('vouchers') },
-      { name: 'whatsapp_logs', count: countQuery('whatsapp_logs') },
-      { name: 'payment_transactions', count: countQuery('payment_transactions') },
+      { name: 'customers', count: dataCounts.customers },
+      { name: 'invoices', count: dataCounts.invoices },
+      { name: 'hotspot_profiles', count: dataCounts.hotspot_profiles },
+      { name: 'hotspot_service_profiles', count: dataCounts.hotspot_service_profiles },
+      { name: 'vouchers', count: dataCounts.vouchers },
+      { name: 'routers', count: dataCounts.routers },
+      { name: 'whatsapp_logs', count: dataCounts.whatsapp_logs },
+      { name: 'payment_transactions', count: dataCounts.payment_transactions },
     ],
     updatedAt: new Date().toISOString(),
   };

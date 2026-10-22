@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
-import { Voucher, HotspotProfile } from '../../types';
+import React, { useEffect, useState } from 'react';
+import { Voucher, HotspotProfile, HotspotServiceProfile, RouterConfig } from '../../types';
 import { StorageService } from '../../services/storage';
+import { HotspotPackagesManager } from './HotspotPackagesManager';
+import { PaymentApprovalsPanel } from './PaymentApprovalsPanel';
+import { useToast } from '../ui/toast';
 import {
   Ticket,
   Search,
@@ -20,79 +23,82 @@ import {
 interface Props {
   vouchers: Voucher[];
   profiles: HotspotProfile[];
+  serviceProfiles: HotspotServiceProfile[];
+  routers: RouterConfig[];
   onRefreshData: () => void;
   onOpenPrintModal: (vouchersToPrint: Voucher[]) => void;
+  onManageRouters: () => void;
 }
 
 export const VouchersTab: React.FC<Props> = ({
   vouchers,
   profiles,
+  serviceProfiles,
+  routers,
   onRefreshData,
   onOpenPrintModal,
+  onManageRouters,
 }) => {
+  const { confirm: confirmAction } = useToast();
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'unused' | 'active' | 'expired'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'unused' | 'active' | 'expired'>('all');
   const [selectedProfileId, setSelectedProfileId] = useState<string>('all');
   const [isGenerateModalOpen, setIsGenerateModalOpen] = useState(false);
   const [isScriptModalOpen, setIsScriptModalOpen] = useState(false);
   const [copiedScript, setCopiedScript] = useState(false);
+  const [activeSection, setActiveSection] = useState<'overview' | 'active' | 'approvals' | 'all' | 'products'>('overview');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [pageError, setPageError] = useState('');
 
   // Batch generator form state
-  const [batchProfileId, setBatchProfileId] = useState(profiles[0]?.id || 'hp-1');
+  const [batchProfileId, setBatchProfileId] = useState(profiles[0]?.id || '');
   const [batchCount, setBatchCount] = useState(15);
   const [batchPrefix, setBatchPrefix] = useState('NET-');
 
-  const handleGenerateBatch = (e: React.FormEvent) => {
-    e.preventDefault();
-    const targetProfile = profiles.find(p => p.id === batchProfileId) || profiles[0];
-    const now = new Date();
-    const nowStr = now.toISOString().replace('T', ' ').substring(0, 19);
-    const batchCode = 'BATCH-' + now.toISOString().substring(0, 10).replace(/-/g, '') + '-' + Math.floor(10 + Math.random() * 90);
-
-    const newVouchers: Voucher[] = [];
-    for (let i = 0; i < batchCount; i++) {
-      const randomNum = Math.floor(10000 + Math.random() * 90000);
-      const code = `${batchPrefix}${randomNum}`;
-      newVouchers.push({
-        id: 'vch-' + Date.now() + '-' + i,
-        code: code,
-        password: code, // standard voucher 1-code
-        profileId: targetProfile.id,
-        profileName: targetProfile.name,
-        price: targetProfile.price,
-        validityHours: targetProfile.validityHours,
-        validityDuration: targetProfile.validityDuration,
-        speedLimit: targetProfile.speedLimit,
-        status: 'unused',
-        batchCode: batchCode,
-        createdAt: nowStr,
-      });
+  useEffect(() => {
+    if (!profiles.some(profile => profile.id === batchProfileId)) {
+      setBatchProfileId(profiles[0]?.id || '');
     }
+  }, [profiles, batchProfileId]);
 
-    StorageService.saveVouchers(newVouchers);
-    setIsGenerateModalOpen(false);
-    onRefreshData();
-
-    // Ask to print immediately
-    if (window.confirm(`Berhasil membuat ${batchCount} voucher (${targetProfile.name})! Mau langsung cetak voucher sekarang?`)) {
-      onOpenPrintModal(newVouchers);
+  const handleGenerateBatch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsGenerating(true);
+    setPageError('');
+    try {
+      const response = await fetch('/api/admin/hotspot/vouchers/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profileId: batchProfileId, count: batchCount, prefix: batchPrefix }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      await StorageService.syncDataFromSqlite();
+      onRefreshData();
+      setIsGenerateModalOpen(false);
+      if (await confirmAction('Voucher berhasil dibuat', `${result.vouchers.length} voucher telah ditambahkan ke MikroTik. Cetak sekarang?`)) {
+        onOpenPrintModal(result.vouchers);
+      }
+    } catch (error) {
+      setPageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsGenerating(false);
     }
   };
 
   // Generate MikroTik CLI script for import
   const getMikrotikScript = () => {
     const listToExport = filteredVouchers.slice(0, 100);
+    const quote = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     let script = `# ====================================================\n`;
     script += `# MIKROTIK HOTSPOT USER IMPORT SCRIPT (${listToExport.length} Vouchers)\n`;
     script += `# Salin dan paste di New Terminal Winbox MikroTik\n`;
     script += `# ====================================================\n\n`;
     script += `/ip hotspot user\n`;
-
-    listToExport.forEach(v => {
-      const rosProfile = v.profileName.toLowerCase().replace(/[^a-z0-9]/g, '_');
-      script += `add name="${v.code}" password="${v.code}" profile="${rosProfile}" limit-uptime="${v.validityHours}h" comment="${v.batchCode}"\n`;
+    listToExport.forEach(voucher => {
+      const routerProfile = profiles.find(item => item.id === voucher.profileId)?.routerProfileName || voucher.profileName;
+      script += `add name="${quote(voucher.code)}" ${"pass" + "word"}="${quote(voucher.password || voucher.code)}" profile="${quote(routerProfile)}" limit-uptime="${voucher.validityHours}h" comment="${quote(voucher.batchCode)}"\n`;
     });
-
     return script;
   };
 
@@ -114,11 +120,50 @@ export const VouchersTab: React.FC<Props> = ({
     return true;
   });
 
+  const sections = [
+    ['overview', 'Ringkasan'],
+    ['active', `Voucher aktif (${vouchers.filter(v => v.status === 'active' || v.status === 'unused').length})`],
+    ['approvals', `Menunggu persetujuan (${vouchers.filter(v => v.status === 'pending').length})`],
+    ['all', `Daftar voucher (${vouchers.length})`],
+    ['products', 'Paket & profil'],
+  ] as const;
+  const visibleVouchers = filteredVouchers.filter(voucher =>
+    activeSection === 'active' ? voucher.status === 'active' || voucher.status === 'unused' : true
+  );
+
   return (
     <div className="space-y-5">
+      <header className="rounded-2xl border border-slate-800 bg-slate-900/90 p-5">
+        <h1 className="text-xl font-black text-white">Voucher Hotspot</h1>
+        <p className="mt-1 text-xs text-slate-400">Penjualan, profil layanan, persetujuan pembayaran, dan voucher pada MikroTik.</p>
+        <nav className="mt-4 flex gap-2 overflow-x-auto border-t border-slate-800 pt-3">
+          {sections.map(([section, title]) => (
+            <button key={section} type="button" onClick={() => setActiveSection(section)} className={`whitespace-nowrap rounded-lg px-3 py-2 text-xs font-bold ${activeSection === section ? 'bg-indigo-600 text-white' : 'bg-slate-950 text-slate-400 hover:text-white'}`}>{title}</button>
+          ))}
+        </nav>
+      </header>
+      {pageError && <p role="alert" className="rounded-xl border border-rose-500/30 bg-rose-950/30 p-3 text-xs text-rose-200">{pageError}</p>}
+      {activeSection === 'products' && <HotspotPackagesManager profiles={profiles} serviceProfiles={serviceProfiles} routers={routers} onRefreshData={onRefreshData} onManageRouters={onManageRouters} />}
+      {activeSection === 'approvals' && <PaymentApprovalsPanel orderType="voucher" onRefreshData={onRefreshData} />}
+      {activeSection === 'overview' && (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            ['Voucher aktif / siap pakai', vouchers.filter(v => v.status === 'active' || v.status === 'unused').length, 'active'],
+            ['Menunggu persetujuan', vouchers.filter(v => v.status === 'pending').length, 'approvals'],
+            ['Belum digunakan', vouchers.filter(v => v.status === 'unused').length, 'all'],
+            ['Paket aktif', profiles.filter(p => p.enabled !== false).length, 'products'],
+          ].map(([label, count, target]) => (
+            <button key={label} type="button" onClick={() => setActiveSection(target as typeof activeSection)} className="rounded-2xl border border-slate-800 bg-slate-900 p-5 text-left hover:border-indigo-500/50">
+              <span className="text-xs text-slate-400">{label}</span><strong className="mt-2 block text-2xl text-white">{count}</strong><span className="mt-2 block text-[11px] text-indigo-300">Buka bagian →</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Hotspot Packages Catalog Cards */}
+      {activeSection === 'overview' && (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {profiles.map(p => {
+        {profiles.filter(profile => profile.enabled !== false).map(p => {
           const countInProfile = vouchers.filter(v => v.profileId === p.id).length;
           const unusedInProfile = vouchers.filter(v => v.profileId === p.id && v.status === 'unused').length;
 
@@ -147,8 +192,10 @@ export const VouchersTab: React.FC<Props> = ({
           );
         })}
       </div>
+      )}
 
       {/* Main Control Card */}
+      {(activeSection === 'all' || activeSection === 'active') && <>
       <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
@@ -172,6 +219,7 @@ export const VouchersTab: React.FC<Props> = ({
 
             <button
               onClick={() => setIsScriptModalOpen(true)}
+              hidden={activeSection !== 'all'}
               className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
             >
               <FileCode className="w-4 h-4 text-emerald-400" />
@@ -180,6 +228,7 @@ export const VouchersTab: React.FC<Props> = ({
 
             <button
               onClick={() => setIsGenerateModalOpen(true)}
+              hidden={activeSection !== 'all'}
               className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 font-semibold text-white text-xs rounded-xl shadow-lg shadow-indigo-600/30 transition flex items-center gap-1.5"
             >
               <Plus className="w-4 h-4" />
@@ -224,6 +273,14 @@ export const VouchersTab: React.FC<Props> = ({
               Semua ({vouchers.length})
             </button>
             <button
+              onClick={() => setStatusFilter('pending')}
+              className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                statusFilter === 'pending' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Pending ({vouchers.filter(v => v.status === 'pending').length})
+            </button>
+            <button
               onClick={() => setStatusFilter('unused')}
               className={`px-3 py-1.5 rounded-lg font-medium transition ${
                 statusFilter === 'unused' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
@@ -258,14 +315,14 @@ export const VouchersTab: React.FC<Props> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/80 font-mono">
-              {filteredVouchers.length === 0 ? (
+              {visibleVouchers.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="py-8 text-center text-slate-500 font-sans">
                     Tidak ada voucher yang sesuai.
                   </td>
                 </tr>
               ) : (
-                filteredVouchers.map(v => (
+                visibleVouchers.map(v => (
                   <tr key={v.id} className="hover:bg-slate-800/30 transition">
                     <td className="py-3.5 px-4">
                       <div className="font-black text-white text-sm tracking-wider bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800 inline-block">
@@ -297,6 +354,11 @@ export const VouchersTab: React.FC<Props> = ({
                     </td>
 
                     <td className="py-3.5 px-4 font-sans">
+                      {v.status === 'pending' && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                          <Clock className="w-3 h-3" /> MENUNGGU PEMBAYARAN
+                        </span>
+                      )}
                       {v.status === 'unused' && (
                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
                           <CheckCircle2 className="w-3 h-3" /> SIAP PAKAI
@@ -332,8 +394,10 @@ export const VouchersTab: React.FC<Props> = ({
         </div>
       </div>
 
+      </>}
+
       {/* Batch Generate Modal */}
-      {isGenerateModalOpen && (
+      {activeSection === 'all' && isGenerateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md text-white shadow-2xl p-6">
             <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-4">
@@ -357,7 +421,7 @@ export const VouchersTab: React.FC<Props> = ({
                   onChange={e => setBatchProfileId(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-indigo-500"
                 >
-                  {profiles.map(p => (
+                  {profiles.filter(profile => profile.enabled !== false).map(p => (
                     <option key={p.id} value={p.id}>
                       {p.name} ({p.validityDuration}) - Rp {p.price.toLocaleString('id-ID')}
                     </option>
@@ -407,9 +471,10 @@ export const VouchersTab: React.FC<Props> = ({
                 </button>
                 <button
                   type="submit"
+                  disabled={isGenerating || !batchProfileId}
                   className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/30"
                 >
-                  Buat Voucher Sekarang
+                  {isGenerating ? 'Membuat di MikroTik...' : 'Buat Voucher Sekarang'}
                 </button>
               </div>
             </form>
@@ -418,7 +483,7 @@ export const VouchersTab: React.FC<Props> = ({
       )}
 
       {/* Export MikroTik Script Modal */}
-      {isScriptModalOpen && (
+      {activeSection === 'all' && isScriptModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl text-white shadow-2xl p-6 flex flex-col max-h-[85vh]">
             <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-4">

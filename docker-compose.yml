@@ -5,28 +5,32 @@ services:
     container_name: mikrotik-billing-app
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${BILLING_PORT:-1707}:3000"
     environment:
-      - PORT=3000
-      - NODE_ENV=production
-      - RUN_EXPRESS=true
-      # MikroTik API credentials
-      - MIKROTIK_HOST=103.180.12.5
-      - MIKROTIK_PORT=8728
-      - MIKROTIK_USER=api_billing
-      - MIKROTIK_PASS=SuperSecureMikrotikPassword!
-      # Payment Gateway Config (Midtrans / Xendit / Tripay)
-      - PAYMENT_GATEWAY=midtrans
-      - MIDTRANS_SERVER_KEY=SB-Mid-server-xX88sampleKey992834
-      - MIDTRANS_CLIENT_KEY=SB-Mid-client-88sampleKey1192
-      - MIDTRANS_IS_PRODUCTION=false
-      # WhatsApp Gateway Config (rmyndharis/OpenWA)
-      - WA_PROVIDER=openwa
-      - OPENWA_BASE_URL=http://openwa:2785
-      - OPENWA_API_KEY=openwa_admin_sec_88921a9f02b
-      - OPENWA_SESSION_ID=billing-isp
-    depends_on:
-      - openwa
+      PORT: 3000
+      NODE_ENV: production
+      RUN_EXPRESS: "true"
+      MIKROTIK_HOST: ${MIKROTIK_HOST:-}
+      MIKROTIK_PORT: ${MIKROTIK_PORT:-8728}
+      MIKROTIK_USER: ${MIKROTIK_USER:-}
+      MIKROTIK_PASS: ${MIKROTIK_PASS:-}
+      MIKROTIK_API_TYPE: ${MIKROTIK_API_TYPE:-api}
+      MIKROTIK_TIMEOUT_SEC: ${MIKROTIK_TIMEOUT_SEC:-10}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
+      APP_URL: ${APP_URL:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      PAYMENT_GATEWAY: ${PAYMENT_GATEWAY:-}
+      MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY:-}
+      MIDTRANS_CLIENT_KEY: ${MIDTRANS_CLIENT_KEY:-}
+      MIDTRANS_IS_PRODUCTION: ${MIDTRANS_IS_PRODUCTION:-false}
+      WA_PROVIDER: ${WA_PROVIDER:-}
+      OPENWA_BASE_URL: ${OPENWA_BASE_URL:-}
+      OPENWA_API_KEY: ${OPENWA_API_KEY:-}
+      OPENWA_SESSION_ID: ${OPENWA_SESSION_ID:-billing-isp}
+      FONNTE_API_URL: ${FONNTE_API_URL:-https://api.fonnte.com/send}
+      FONNTE_TOKEN: ${FONNTE_TOKEN:-}
+      WA_SENDER_NUMBER: ${WA_SENDER_NUMBER:-}
     volumes:
       - billing_data:/app/data
     healthcheck:
@@ -34,26 +38,5 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-
-  # OpenWA - Self-Hosted WhatsApp API Gateway (rmyndharis/OpenWA)
-  openwa:
-    image: rmyndharis/openwa:latest
-    container_name: openwa-api
-    restart: unless-stopped
-    ports:
-      - "2785:2785"
-    environment:
-      - PORT=2785
-      - NODE_ENV=production
-      - DEFAULT_ENGINE=baileys
-    volumes:
-      - openwa_data:/app/data
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:2785/api/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
 volumes:
   billing_data:
-  openwa_data:

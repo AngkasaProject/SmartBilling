@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { Customer, Invoice, Voucher, RouterConfig } from '../../types';
 import { StorageService } from '../../services/storage';
 import {
   Activity,
   ArrowUpRight,
-  ArrowDownRight,
   Users,
   ShieldAlert,
   Ticket,
@@ -39,46 +38,6 @@ export const DashboardTab: React.FC<Props> = ({
   onSendWaNotification,
   onToggleIsolir,
 }) => {
-  // Real-time Traffic Simulator state (Rx and Tx bandwidth over time)
-  const [trafficHistory, setTrafficHistory] = useState<{ time: string; rx: number; tx: number }[]>([
-    { time: '14:00', rx: 42.5, tx: 18.2 },
-    { time: '14:05', rx: 48.1, tx: 22.4 },
-    { time: '14:10', rx: 55.6, tx: 25.1 },
-    { time: '14:15', rx: 61.2, tx: 29.8 },
-    { time: '14:20', rx: 58.7, tx: 27.3 },
-    { time: '14:25', rx: 69.4, tx: 34.6 },
-    { time: '14:30', rx: 74.2, tx: 38.9 },
-    { time: '14:35', rx: 82.5, tx: 41.2 },
-    { time: '14:40', rx: 78.1, tx: 39.5 },
-    { time: '14:45', rx: 86.8, tx: 46.7 },
-  ]);
-
-  const [currentRx, setCurrentRx] = useState(86.8);
-  const [currentTx, setCurrentTx] = useState(46.7);
-
-  // Periodic traffic simulation
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const deltaRx = (Math.random() - 0.48) * 12;
-      const deltaTx = (Math.random() - 0.48) * 8;
-      const newRx = Math.max(25, Math.min(120, +(currentRx + deltaRx).toFixed(1)));
-      const newTx = Math.max(12, Math.min(65, +(currentTx + deltaTx).toFixed(1)));
-
-      setCurrentRx(newRx);
-      setCurrentTx(newTx);
-
-      const now = new Date();
-      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
-
-      setTrafficHistory(prev => {
-        const next = [...prev.slice(1), { time: timeStr, rx: newRx, tx: newTx }];
-        return next;
-      });
-    }, 2500);
-
-    return () => clearInterval(timer);
-  }, [currentRx, currentTx]);
-
   // Derived metrics
   const totalRevenue = invoices
     .filter(i => i.status === 'paid')
@@ -91,16 +50,7 @@ export const DashboardTab: React.FC<Props> = ({
 
   const urgentCustomers = customers.filter(c => c.status === 'isolated' || c.status === 'expiring');
 
-  const mainRouter = routers[0] || {
-    name: 'RB4011-NOC',
-    status: 'connected',
-    model: 'RB4011iGS+RM',
-    rosVersion: 'v7.16',
-    cpuLoad: 18,
-    memoryFreeMb: 842,
-    activePppoe: 154,
-    activeHotspot: 92,
-  };
+  const mainRouter = routers.find(router => router.status === 'connected');
 
   return (
     <div className="space-y-6">
@@ -112,13 +62,13 @@ export const DashboardTab: React.FC<Props> = ({
           <div>
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs font-semibold mb-2">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              MikroTik RouterOS API Online • v7.16 Connected
+              {mainRouter ? `RouterOS terhubung • ${mainRouter.rosVersion}` : 'Tidak ada router MikroTik terhubung'}
             </div>
             <h1 className="text-2xl font-black text-white tracking-tight">
               Network Operations & Billing Center
             </h1>
             <p className="text-slate-400 text-xs sm:text-sm mt-1 max-w-2xl">
-              Sistem otomatis mengawasi {customers.length} pelanggan PPPoE, isolir otomatis saat jatuh tempo, notifikasi WhatsApp blast, dan pembelian voucher hotspot QRIS.
+              Data yang ditampilkan berasal dari pelanggan, invoice, voucher, serta router yang tersimpan dan berhasil dimuat.
             </p>
           </div>
 
@@ -146,7 +96,7 @@ export const DashboardTab: React.FC<Props> = ({
         {/* Total Omset */}
         <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-5 shadow-lg backdrop-blur hover:border-slate-700 transition">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-400">Total Pendapatan (Okt)</span>
+            <span className="text-xs font-medium text-slate-400">Total Pendapatan Tercatat</span>
             <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
               <CreditCard className="w-4 h-4" />
             </div>
@@ -157,7 +107,7 @@ export const DashboardTab: React.FC<Props> = ({
             </div>
             <div className="flex items-center gap-1.5 mt-2 text-[11px] text-emerald-400 font-medium">
               <TrendingUp className="w-3 h-3" />
-              <span>+18.4% dari bulan lalu</span>
+              <span>{invoices.filter(invoice => invoice.status === 'paid').length} invoice lunas</span>
             </div>
           </div>
         </div>
@@ -199,7 +149,7 @@ export const DashboardTab: React.FC<Props> = ({
             </div>
             <div className="flex items-center gap-1.5 mt-2 text-[11px] text-violet-400 font-medium">
               <Wifi className="w-3 h-3" />
-              <span>{mainRouter.activeHotspot} user sedang login online</span>
+              <span>{mainRouter?.activeHotspot ?? '—'} user hotspot aktif</span>
             </div>
           </div>
         </div>
@@ -214,118 +164,29 @@ export const DashboardTab: React.FC<Props> = ({
           </div>
           <div className="mt-3">
             <div className="text-2xl font-black text-white tracking-tight">
-              {mainRouter.cpuLoad}% <span className="text-xs font-normal text-slate-400">CPU Usage</span>
+              {mainRouter ? `${mainRouter.cpuLoad}%` : '—'} <span className="text-xs font-normal text-slate-400">CPU Usage</span>
             </div>
             <div className="flex items-center justify-between mt-2 text-[11px] text-slate-400 font-mono">
-              <span>Free RAM: {mainRouter.memoryFreeMb} MB</span>
-              <span className="text-emerald-400 font-semibold">Uptime: 42d</span>
+              <span>Free RAM: {mainRouter?.memoryFreeMb ?? '—'} MB</span>
+              <span className="text-slate-400 font-semibold">Uptime: {mainRouter?.uptime ?? '—'}</span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Real-Time Bandwidth Monitor & Router Stats Section */}
+      {/* Router telemetry */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Real-time Bandwidth Graph (2 cols) */}
         <div className="lg:col-span-2 bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-            <div>
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <Activity className="w-4 h-4 text-indigo-400" />
-                <span>Live Bandwidth Monitor (NOC Gateway)</span>
-              </h3>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Pemantauan trafik real-time port ether1-WAN (Download Rx & Upload Tx)
-              </p>
-            </div>
-
-            <div className="flex items-center gap-4 bg-slate-950 px-3.5 py-1.5 rounded-xl border border-slate-800/90 font-mono text-xs">
-              <div className="flex items-center gap-1.5 text-emerald-400">
-                <ArrowDownRight className="w-3.5 h-3.5" />
-                <span>Rx: <b>{currentRx}</b> Mbps</span>
-              </div>
-              <div className="w-px h-3 bg-slate-800" />
-              <div className="flex items-center gap-1.5 text-indigo-400">
-                <ArrowUpRight className="w-3.5 h-3.5" />
-                <span>Tx: <b>{currentTx}</b> Mbps</span>
-              </div>
-            </div>
+          <div className="flex items-center gap-2 mb-3">
+            <Activity className="w-4 h-4 text-indigo-400" />
+            <h3 className="text-base font-bold text-white">Trafik Interface Router</h3>
           </div>
-
-          {/* SVG Traffic Wave Visualizer */}
-          <div className="h-48 w-full relative flex items-end">
-            <svg className="w-full h-full overflow-visible" viewBox="0 0 500 160" preserveAspectRatio="none">
-              <defs>
-                <linearGradient id="rxGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#10b981" stopOpacity="0.4" />
-                  <stop offset="100%" stopColor="#10b981" stopOpacity="0.0" />
-                </linearGradient>
-                <linearGradient id="txGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#6366f1" stopOpacity="0.3" />
-                  <stop offset="100%" stopColor="#6366f1" stopOpacity="0.0" />
-                </linearGradient>
-              </defs>
-
-              {/* Grid lines */}
-              <line x1="0" y1="40" x2="500" y2="40" stroke="#1e293b" strokeDasharray="3 3" />
-              <line x1="0" y1="80" x2="500" y2="80" stroke="#1e293b" strokeDasharray="3 3" />
-              <line x1="0" y1="120" x2="500" y2="120" stroke="#1e293b" strokeDasharray="3 3" />
-
-              {/* Rx Path */}
-              {(() => {
-                const step = 500 / (trafficHistory.length - 1);
-                const points = trafficHistory.map((d, i) => {
-                  const x = i * step;
-                  const y = 150 - (d.rx / 120) * 130;
-                  return `${x},${y}`;
-                });
-                const dArea = `M0,150 L${points.join(' L')} L500,150 Z`;
-                const dLine = `M${points.join(' L')}`;
-
-                return (
-                  <>
-                    <path d={dArea} fill="url(#rxGradient)" />
-                    <path d={dLine} fill="none" stroke="#10b981" strokeWidth="2.5" />
-                  </>
-                );
-              })()}
-
-              {/* Tx Path */}
-              {(() => {
-                const step = 500 / (trafficHistory.length - 1);
-                const points = trafficHistory.map((d, i) => {
-                  const x = i * step;
-                  const y = 150 - (d.tx / 120) * 130;
-                  return `${x},${y}`;
-                });
-                const dArea = `M0,150 L${points.join(' L')} L500,150 Z`;
-                const dLine = `M${points.join(' L')}`;
-
-                return (
-                  <>
-                    <path d={dArea} fill="url(#txGradient)" />
-                    <path d={dLine} fill="none" stroke="#6366f1" strokeWidth="2" strokeDasharray="4 2" />
-                  </>
-                );
-              })()}
-            </svg>
-          </div>
-
-          <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono mt-3 pt-2 border-t border-slate-800">
-            <span>{trafficHistory[0]?.time}</span>
-            <div className="flex items-center gap-4">
-              <span className="flex items-center gap-1.5 text-emerald-400">
-                <span className="w-2.5 h-2.5 bg-emerald-500 rounded-sm inline-block" /> Download (Rx)
-              </span>
-              <span className="flex items-center gap-1.5 text-indigo-400">
-                <span className="w-2.5 h-2.5 bg-indigo-500 rounded-sm inline-block" /> Upload (Tx)
-              </span>
-            </div>
-            <span>{trafficHistory[trafficHistory.length - 1]?.time}</span>
-          </div>
+          <p className="text-xs text-slate-400">
+            Telemetri Rx/Tx per interface belum tersedia. Grafik simulasi telah dihapus agar dashboard tidak menampilkan trafik fiktif.
+          </p>
         </div>
 
-        {/* Router Details & Auto-Scheduler Box (1 col) */}
+        {/* Router status */}
         <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-4">
@@ -333,38 +194,38 @@ export const DashboardTab: React.FC<Props> = ({
                 <Server className="w-4 h-4 text-indigo-400" />
                 <span>Status Router MikroTik</span>
               </h3>
-              <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
-                ONLINE
+              <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold ${mainRouter ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-slate-800 text-slate-400 border-slate-700'}`}>
+                {mainRouter ? 'ONLINE' : 'OFFLINE'}
               </span>
             </div>
 
             <div className="space-y-3 font-mono text-xs">
               <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
                 <div className="text-slate-400 text-[11px]">Nama Perangkat</div>
-                <div className="font-bold text-white mt-0.5">{mainRouter.name}</div>
-                <div className="text-[10px] text-slate-500 mt-0.5">{mainRouter.model} • {mainRouter.rosVersion}</div>
+                <div className="font-bold text-white mt-0.5">{mainRouter?.name || 'Belum terhubung'}</div>
+                <div className="text-[10px] text-slate-500 mt-0.5">{mainRouter ? `${mainRouter.model} • ${mainRouter.rosVersion}` : 'Tidak ada telemetri router'}</div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
                   <div className="text-slate-400 text-[10px]">PPPoE Secrets</div>
-                  <div className="text-lg font-bold text-indigo-400">{mainRouter.activePppoe}</div>
+                  <div className="text-lg font-bold text-indigo-400">{mainRouter?.activePppoe ?? '—'}</div>
                 </div>
                 <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
                   <div className="text-slate-400 text-[10px]">Hotspot Active</div>
-                  <div className="text-lg font-bold text-violet-400">{mainRouter.activeHotspot}</div>
+                  <div className="text-lg font-bold text-violet-400">{mainRouter?.activeHotspot ?? '—'}</div>
                 </div>
               </div>
 
               <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
                 <div className="flex justify-between text-slate-400 text-[11px] mb-1">
                   <span>Beban CPU MikroTik</span>
-                  <span className="text-white font-bold">{mainRouter.cpuLoad}%</span>
+                  <span className="text-white font-bold">{mainRouter ? `${mainRouter.cpuLoad}%` : '—'}</span>
                 </div>
                 <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
                   <div
                     className="bg-indigo-500 h-full rounded-full transition-all duration-500"
-                    style={{ width: `${mainRouter.cpuLoad}%` }}
+                    style={{ width: `${mainRouter?.cpuLoad ?? 0}%` }}
                   />
                 </div>
               </div>

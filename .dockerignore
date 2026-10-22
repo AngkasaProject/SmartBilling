@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env*
+node_modules
+data
+dist
+coverage
+*.log
+bun.lock
+setup.sh

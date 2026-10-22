@@ -1,16 +1,17 @@
 import React, { useState } from 'react';
-import { Voucher } from '../types';
+import { AppSettings, Voucher } from '../types';
 import { QrCode } from './common/QrCode';
 import { X, Printer, Wifi, Sparkles } from 'lucide-react';
 
 interface Props {
   vouchers: Voucher[];
+  settings: AppSettings;
   onClose: () => void;
 }
 
-export const VoucherPrintModal: React.FC<Props> = ({ vouchers, onClose }) => {
+export const VoucherPrintModal: React.FC<Props> = ({ vouchers, settings, onClose }) => {
   const [printLayout, setPrintLayout] = useState<'grid' | 'thermal'>('grid');
-  const [ssidName, setSsidName] = useState('HOTSPOT_NETFLOW_5G');
+  const [ssidName, setSsidName] = useState(settings.defaultSsid);
 
   const handlePrint = () => {
     window.print();
@@ -94,10 +95,10 @@ export const VoucherPrintModal: React.FC<Props> = ({ vouchers, onClose }) => {
                   <div className="flex items-start justify-between border-b border-slate-200 pb-2 mb-2.5">
                     <div className="flex items-center gap-1.5">
                       <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-xs">
-                        N
+                        {(settings.brandName || settings.appName || 'S').charAt(0)}
                       </div>
                       <div>
-                        <h4 className="font-extrabold text-xs text-slate-900 tracking-tight">NETFLOW WIFI</h4>
+                        <h4 className="font-extrabold text-xs text-slate-900 tracking-tight">{settings.brandName || settings.appName}</h4>
                         <p className="text-[9px] text-slate-500 font-mono flex items-center gap-1">
                           <Wifi className="w-2.5 h-2.5" /> {ssidName}
                         </p>
@@ -130,14 +131,14 @@ export const VoucherPrintModal: React.FC<Props> = ({ vouchers, onClose }) => {
                     </div>
 
                     <div className="flex flex-col items-center">
-                      <QrCode value={`http://login.hotspot/login?username=${v.code}&password=${v.code}`} size={64} />
-                      <span className="text-[8px] text-slate-400 mt-0.5 font-medium">Scan utk Login</span>
+                      <QrCode value={v.code} size={64} />
+                      <span className="text-[8px] text-slate-400 mt-0.5 font-medium">Scan kode voucher</span>
                     </div>
                   </div>
 
                   {/* Footer instruction */}
                   <div className="mt-2 pt-2 border-t border-slate-100 text-[9px] text-slate-400 flex items-center justify-between">
-                    <span>Buka browser: <b>login.hotspot</b></span>
+                    <span>Masukkan kode di halaman hotspot</span>
                     <span>1 User</span>
                   </div>
                 </div>
@@ -151,7 +152,7 @@ export const VoucherPrintModal: React.FC<Props> = ({ vouchers, onClose }) => {
                   key={v.id}
                   className="bg-white text-slate-900 w-72 p-4 font-mono text-center border border-dashed border-slate-300 shadow-md rounded"
                 >
-                  <p className="font-extrabold text-sm uppercase tracking-wide">*** NETFLOW WIFI ***</p>
+                  <p className="font-extrabold text-sm uppercase tracking-wide">*** {settings.brandName || settings.appName} ***</p>
                   <p className="text-[11px] text-slate-600">SSID: {ssidName}</p>
                   <p className="text-[10px] text-slate-400">--------------------------------</p>
 
@@ -170,7 +171,7 @@ export const VoucherPrintModal: React.FC<Props> = ({ vouchers, onClose }) => {
                   </div>
 
                   <div className="flex justify-center my-2">
-                    <QrCode value={`http://login.hotspot/login?username=${v.code}&password=${v.code}`} size={90} />
+                    <QrCode value={v.code} size={90} />
                   </div>
 
                   <p className="text-[10px] text-slate-500">
@@ -178,7 +179,7 @@ export const VoucherPrintModal: React.FC<Props> = ({ vouchers, onClose }) => {
                   </p>
                   <p className="text-[9px] text-slate-400 mt-2">
                     1. Hubungkan HP ke WiFi {ssidName}<br />
-                    2. Masukkan kode diatas di login.hotspot<br />
+                    2. Masukkan kode di halaman hotspot<br />
                     Terima Kasih & Selamat Berinternet!
                   </p>
                   <p className="text-[8px] text-slate-400 mt-2">Batch: {v.batchCode}</p>

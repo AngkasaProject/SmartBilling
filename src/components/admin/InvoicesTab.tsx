@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Invoice, Customer } from '../../types';
 import { StorageService } from '../../services/storage';
+import { PaymentApprovalsPanel } from './PaymentApprovalsPanel';
+import { useToast } from '../ui/toast';
 import {
   CreditCard,
   Search,
@@ -31,10 +33,12 @@ export const InvoicesTab: React.FC<Props> = ({
   onViewInvoice,
   onSendWa,
 }) => {
+  const { toast, confirm: confirmAction } = useToast();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'unpaid' | 'paid' | 'expired'>('all');
   const [manualPayInvoice, setManualPayInvoice] = useState<Invoice | null>(null);
   const [manualPaymentMethod, setManualPaymentMethod] = useState('Cash (Tunai / Kasir)');
+  const [isSettlingManual, setIsSettlingManual] = useState(false);
 
   // Derived stats
   const totalInvoiced = invoices.reduce((sum, i) => sum + i.totalAmount, 0);
@@ -46,15 +50,19 @@ export const InvoicesTab: React.FC<Props> = ({
     .reduce((sum, i) => sum + i.totalAmount, 0);
 
   // Batch Billing Generation (Run billing for next month)
-  const handleGenerateMonthlyInvoices = () => {
+  const handleGenerateMonthlyInvoices = async () => {
     const activeCustomers = customers.filter(c => c.status !== 'disabled');
-    if (
-      !window.confirm(
-        `Jalankan Billing Run untuk ${activeCustomers.length} pelanggan aktif? Invoice baru periode November 2026 akan dibuat.`
-      )
-    ) {
-      return;
-    }
+    const billingMonth = new Date();
+    billingMonth.setDate(1);
+    billingMonth.setMonth(billingMonth.getMonth() + 1);
+    const billingYear = billingMonth.getFullYear();
+    const billingMonthIndex = billingMonth.getMonth();
+    const periodMonth = new Intl.DateTimeFormat('id-ID', { month: 'long', year: 'numeric' }).format(billingMonth);
+    const invoicePeriod = `${billingYear}${String(billingMonthIndex + 1).padStart(2, '0')}`;
+    if (!await confirmAction(
+      'Jalankan Billing Run?',
+      `Invoice periode ${periodMonth} akan dibuat untuk ${activeCustomers.length} pelanggan.`
+    )) return;
 
     const currentInvs = StorageService.getInvoices();
     let createdCount = 0;
@@ -62,40 +70,75 @@ export const InvoicesTab: React.FC<Props> = ({
     activeCustomers.forEach((cust, idx) => {
       // Check if invoice for this month already exists
       const exists = currentInvs.some(
-        i => i.customerId === cust.id && i.periodMonth === 'November 2026'
+        i => i.customerId === cust.id && i.periodMonth === periodMonth
       );
       if (!exists) {
         const uniqueCode = Math.floor(10 + Math.random() * 890);
+        const lastDay = new Date(billingYear, billingMonthIndex + 1, 0).getDate();
+        const dueDate = `${billingYear}-${String(billingMonthIndex + 1).padStart(2, '0')}-${String(Math.min(cust.billingDate, lastDay)).padStart(2, '0')}`;
         const newInv: Invoice = {
           id: 'inv-' + Date.now() + '-' + idx,
-          invoiceNumber: `INV-202611-${String(currentInvs.length + createdCount + 1).padStart(3, '0')}`,
+          invoiceNumber: `INV-${invoicePeriod}-${String(currentInvs.length + createdCount + 1).padStart(3, '0')}`,
           customerId: cust.id,
           customerName: cust.name,
           customerPhone: cust.phone,
           profileName: cust.profileName,
-          periodMonth: 'November 2026',
+          periodMonth,
           amount: cust.monthlyFee,
           uniqueCode: uniqueCode,
           totalAmount: cust.monthlyFee + uniqueCode,
           status: 'unpaid',
-          dueDate: `2026-11-${String(cust.billingDate).padStart(2, '0')}`,
+          dueDate,
         };
         StorageService.saveInvoice(newInv);
         createdCount++;
       }
     });
 
-    alert(`Berhasil membuat ${createdCount} invoice baru untuk periode November 2026!`);
+    toast(`${createdCount} invoice baru dibuat untuk periode ${periodMonth}.`, 'success');
     onRefreshData();
   };
 
   // Process manual payment
-  const handleConfirmManualPayment = () => {
+  const handleConfirmManualPayment = async () => {
     if (!manualPayInvoice) return;
-    StorageService.settleInvoice(manualPayInvoice.id, manualPaymentMethod, 'Manual Admin Settle');
-    setManualPayInvoice(null);
-    onRefreshData();
-    alert('Pembayaran berhasil dicatat! Masa aktif pelanggan diperpanjang dan status isolir otomatis dibuka di MikroTik.');
+    setIsSettlingManual(true);
+    try {
+      const result = StorageService.settleInvoice(manualPayInvoice.id, manualPaymentMethod, 'Manual Admin Settle');
+      if (!result.success) throw new Error(result.message);
+
+      const customer = customers.find(item => item.id === manualPayInvoice.customerId);
+      let accessNotice = ' Tidak ada data pelanggan terkait untuk mengubah akses router.';
+      if (customer) {
+        try {
+          const response = await fetch(
+            `/api/mikrotik/pppoe/secrets/${encodeURIComponent(customer.routerId)}/${encodeURIComponent(customer.pppoeUsername)}`,
+            {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ disabled: false }),
+            }
+          );
+          const responseData = await response.json();
+          if (!response.ok) {
+            accessNotice = ` Pembayaran dicatat, tetapi RouterOS gagal diaktifkan: ${responseData.error || response.status}.`;
+          } else if (result.customer) {
+            StorageService.saveCustomer({ ...result.customer, status: 'active' });
+            accessNotice = ' Akses PPPoE router berhasil diaktifkan.';
+          }
+        } catch (error) {
+          accessNotice = ` Pembayaran dicatat, tetapi router tidak dapat dijangkau: ${error instanceof Error ? error.message : String(error)}.`;
+        }
+      }
+
+      setManualPayInvoice(null);
+      onRefreshData();
+      toast('Pembayaran manual berhasil dicatat.', 'success', accessNotice);
+    } catch (error) {
+      toast('Gagal mencatat pembayaran manual', 'error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSettlingManual(false);
+    }
   };
 
   const filteredInvoices = invoices.filter(i => {
@@ -111,6 +154,7 @@ export const InvoicesTab: React.FC<Props> = ({
 
   return (
     <div className="space-y-5">
+      <PaymentApprovalsPanel orderType="invoice" onRefreshData={onRefreshData} />
       {/* Metrics Row */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-lg">
@@ -387,14 +431,8 @@ export const InvoicesTab: React.FC<Props> = ({
                 </select>
               </div>
 
-              <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-[11px] text-indigo-300 leading-relaxed">
-                ℹ️ Saat dikonfirmasi, sistem akan:
-                <ul className="list-disc list-inside mt-1 space-y-0.5">
-                  <li>Mengubah status invoice menjadi LUNAS</li>
-                  <li>Memperpanjang masa aktif pelanggan +30 hari</li>
-                  <li>Mencabut isolir MikroTik seketika</li>
-                  <li>Mengirim WhatsApp tanda terima lunas otomatis</li>
-                </ul>
+              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-[11px] text-amber-300 leading-relaxed">
+                Konfirmasi ini mencatat pembayaran yang sudah diterima secara manual dan memperpanjang masa aktif. Router hanya diaktifkan setelah RouterOS mengonfirmasi perubahan; notifikasi WhatsApp tidak dikirim dari tindakan ini.
               </div>
             </div>
 
@@ -407,9 +445,10 @@ export const InvoicesTab: React.FC<Props> = ({
               </button>
               <button
                 onClick={handleConfirmManualPayment}
-                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold text-xs shadow-lg shadow-emerald-600/30"
+                disabled={isSettlingManual}
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold text-xs shadow-lg shadow-emerald-600/30 disabled:opacity-50"
               >
-                Konfirmasi Lunas & Buka Isolir
+                {isSettlingManual ? 'Mencatat pembayaran...' : 'Konfirmasi pembayaran diterima'}
               </button>
             </div>
           </div>

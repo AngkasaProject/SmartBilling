@@ -1,6 +1,6 @@
-# 🌐 NetFlow MikroTik ISP Billing & Hotspot Management Platform
+# SmartBilling
 
-Platform Billing MikroTik all-in-one modern berbasis Docker yang dirancang khusus untuk pengelola ISP, RT-RW Net, dan jaringan Hotspot. Dilengkapi dengan manajemen pelanggan PPPoE, sistem auto-isolir otomatis saat masa aktif habis, WhatsApp Gateway self-hosted menggunakan **[OpenWA by rmyndharis](https://github.com/rmyndharis/OpenWA)**, serta portal mandiri untuk pembelian voucher hotspot secara online terintegrasi dengan Payment Gateway QRIS lokal.
+Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, invoice, dan router RouterOS. Portal publik menampilkan paket dan menyediakan pemeriksaan status serta pembayaran invoice melalui Midtrans Snap jika dikonfigurasi. WhatsApp terhubung ke layanan eksternal Fonnte atau OpenWA melalui REST API.
 
 ---
 
@@ -9,10 +9,10 @@ Platform Billing MikroTik all-in-one modern berbasis Docker yang dirancang khusu
 2. [Arsitektur Sistem & Direktori](#-arsitektur-sistem--direktori)
 3. [Prasyarat Sistem](#-prasyarat-sistem)
 4. [Panduan Instalasi Docker (Langkah Cepat)](#-panduan-instalasi-docker-langkah-cepat)
-5. [Konfigurasi WhatsApp Gateway (OpenWA)](#-konfigurasi-whatsapp-gateway-openwa)
+5. [Konfigurasi WhatsApp Gateway (Fonnte/OpenWA)](#-konfigurasi-whatsapp-gateway-fonnteopenwa)
 6. [Panduan Integrasi Login Page Hotspot MikroTik](#-panduan-integrasi-login-page-hotspot-mikrotik)
-7. [Panduan Integrasi Auto-Isolir PPPoE MikroTik](#-panduan-integrasi-auto-isolir-pppoe-mikrotik)
-8. [Panduan Payment Gateway Lokal (QRIS & Virtual Account)](#-panduan-payment-gateway-lokal-qris--virtual-account)
+7. [Operasi Isolir PPPoE MikroTik](#-operasi-isolir-pppoe-mikrotik)
+8. [Pembayaran Invoice dengan Midtrans Snap](#-pembayaran-invoice-dengan-midtrans-snap)
 9. [Troubleshooting & FAQ](#-troubleshooting--faq)
 
 ---
@@ -21,53 +21,85 @@ Platform Billing MikroTik all-in-one modern berbasis Docker yang dirancang khusu
 
 - **👥 Manajemen Pelanggan PPPoE**:
   - Pendaftaran user secret, assign static / dynamic IP pool, profile kecepatan (*rate-limit*), dan penetapan tanggal jatuh tempo.
-  - Perpanjangan masa aktif otomatis 30 hari ke depan seketika setelah pembayaran terverifikasi.
+  - Pencatatan pembayaran manual memperpanjang masa aktif; aktivasi router hanya dilakukan setelah RouterOS mengonfirmasi perubahan.
   
-- **⚡ Pemutusan Akses Otomatis (Auto-Isolir)**:
-  - Scheduler otomatis memindai masa aktif pelanggan setiap hari.
-  - Memasukkan IP pelanggan yang telah lewat jatuh tempo ke *address-list* `ISOLIR_EXPIRED` di MikroTik.
-  - Mengalihkan trafik HTTP port 80 pelanggan ke halaman pemberitahuan tagihan dan tombol bayar QRIS.
+- **⚡ Operasi PPPoE RouterOS**:
+  - Membaca status router, resource, interface, profil PPP, serta menambah/mengubah/menghapus secret PPPoE melalui RouterOS API atau REST.
+  - Isolir dan aktivasi PPPoE dilakukan dengan mengubah status secret RouterOS secara langsung.
 
-- **💬 WhatsApp Gateway Terintegrasi ([rmyndharis/OpenWA](https://github.com/rmyndharis/OpenWA))**:
-  - Berbasis multi-device WebSocket (Baileys) tanpa biaya langganan per pesan.
-  - Notifikasi otomatis: Pengingat H-3 dan H-1 sebelum jatuh tempo, notifikasi pemutusan isolir, tanda terima pembayaran lunas, dan pengiriman kode voucher online.
-  - Fitur Scan QR Code pairing langsung di dalam Dashboard Admin.
+- **💬 Integrasi WhatsApp melalui layanan eksternal**:
+  - Pilih Fonnte atau OpenWA; SmartBilling hanya mengakses REST API tanpa membundel server WhatsApp.
+  - Pengiriman pesan uji dan pelanggan mencatat respons nyata dari provider terpilih.
+  - Pengingat PPPoE H-1 dapat diaktifkan di Pengaturan. Pesan memuat tautan khusus invoice; pastikan `APP_URL` HTTPS dan provider WhatsApp aktif. Kegagalan pengiriman dicatat dan dicoba ulang secara terbatas.
 
-- **🛒 Portal Pembelian Voucher Hotspot Mandiri**:
-  - Pelanggan di warkop / kafe / area RT-RW Net dapat memilih paket voucher, memasukkan nomor WhatsApp, dan membayar via QRIS Nasional (BCA, Mandiri, Dana, GoPay, OVO, ShopeePay).
-  - Kode voucher langsung muncul di layar + tombol *1-klik Login ke Hotspot*.
+- **🛒 Portal publik paket dan pelanggan**:
+  - Halaman awal menampilkan profil hotspot dari data operator serta pemeriksaan status langganan dengan ID pelanggan dan nomor WhatsApp.
+  - Invoice dapat dibayar melalui Midtrans Snap jika dikonfigurasi atau melalui instruksi pembayaran manual. Metode manual menghasilkan kode bayar dan tautan WhatsApp operator untuk konfirmasi; admin memverifikasi pembayaran sebelum menyetujui.
+  - Tautan invoice bertanda tangan memungkinkan pelanggan membuka tagihan tertentu tanpa menampilkan ID pelanggan di tautan.
+
+- **🎫 Penjualan voucher hotspot**:
+  - Buat profil layanan di menu Voucher: pilih router dan profil RouterOS tersinkron, lalu tetapkan kecepatan, masa penggunaan (1 jam, 12 jam, 1 hari, 1 minggu, 2 minggu, atau 1 bulan), perangkat bersama, dan batas kuota. Profil RouterOS baru dapat dibuat dari form yang sama.
+  - Buat paket jual dengan memilih profil layanan dan menetapkan harga. Paket dan generator voucher tersedia sebagai dialog agar halaman administrasi tetap ringkas.
+  - Pelanggan membayar melalui Midtrans Snap atau metode manual yang diatur operator. Pembayaran manual menghasilkan kode bayar dan tautan WhatsApp operator; pesanan berakhir setelah 60 menit secara default (dapat diubah). Admin mengonfirmasi transaksi sebelum voucher diprovisikan.
+  - Voucher dibuat pada MikroTik hanya setelah pembayaran otomatis terverifikasi atau operator mengonfirmasi transaksi manual. Status pesanan dan kode voucher ditampilkan di portal pelanggan.
 
 - **📱 Template Hotspot Captive Portal MikroTik Siap Pakai**:
   - File `login.html`, `status.html`, dan `logout.html` dengan desain responsif mobile-friendly.
-  - Field kode voucher (single-code login) + toggle mode Member PPPoE + tombol *"Beli Voucher Online"*.
+  - Form login voucher untuk autentikasi yang diproses oleh RouterOS.
 
 - **🎫 Generator & Cetak Voucher Massal**:
   - Format cetak Grid A4 (kartu gunting dengan QR login) dan Thermal Receipt mini POS (58mm / 80mm).
+  - QR pada voucher di-encode sebagai QR standar yang berisi kode voucher, bukan pola gambar dekoratif. Generator stok membuat akun langsung di RouterOS dan menyimpan hasilnya di SQLite.
   - Ekspor CLI script `/ip hotspot user add ...` untuk impor cepat ke terminal Winbox.
 
-- **📊 Monitoring Trafik NOC Real-Time**:
-  - Grafik visualisasi bandwidth Rx (Download) dan Tx (Upload) per detik.
-  - Telemetri MikroTik: CPU load, sisa RAM, uptime, dan jumlah user online.
+- **🛜 Pengelolaan layanan MikroTik**:
+  - Menu Router MikroTik menampilkan server PPPoE dan Hotspot serta profil PPP, Hotspot User, dan Hotspot Server yang dibaca langsung dari router.
+  - Profil PPP dan Hotspot dapat ditambahkan, demikian pula Hotspot Server dan Server Profile. Pembuatan server Hotspot memerlukan interface dan Server Profile yang sudah tersedia.
+  - Metode pembayaran manual memiliki field layanan/bank dan nomor rekening/akun. Form awal menyiapkan contoh BRI dan nomor rekening, yang harus diverifikasi atau diganti operator sebelum metode diaktifkan.
+
+- **📊 Status NOC**:
+  - Menampilkan telemetri router yang berhasil dimuat dari RouterOS.
+  - Grafik trafik interface belum tersedia; dashboard tidak lagi menampilkan data simulasi.
+
+- **💾 Persistensi Data Aplikasi**:
+  - Pengaturan dan data pelanggan, invoice, profil hotspot, voucher, router, log WhatsApp, konfigurasi gateway, serta transaksi disimpan di SQLite server.
+  - Data aplikasi disimpan secara persisten di SQLite server. Identitas perusahaan dan kredensial tidak diisi dengan nilai contoh.
 
 ---
 
 ## 🏗 Arsitektur Sistem & Direktori
 
 ```text
-├── docker-compose.yml       # Definisi multi-container (Billing App + OpenWA Gateway)
+├── docker-compose.yml       # Definisi container aplikasi billing
 ├── Dockerfile               # Multi-stage production build Node 20 Alpine
 ├── setup.sh                 # Skrip instalasi otomatis 1-klik untuk VPS Linux
 ├── .env.example             # Template konfigurasi environment variables
-├── server.ts                # Backend Express, healthcheck & OpenWA proxy
+├── server.ts                # Backend Express, healthcheck & API aplikasi
+├── data/                    # Database SQLite persisten (tidak masuk Git)
 ├── hotspot/                 # File template captive portal siap upload ke MikroTik
-│   ├── login.html           # Halaman login hotspot dengan field voucher & tombol beli
+│   ├── login.html           # Halaman login hotspot
 │   ├── status.html          # Halaman status internet dan info sisa kuota/waktu
 │   ├── logout.html          # Halaman konfirmasi pemutusan koneksi
 │   └── rsc/
-│       ├── walled-garden.rsc # Skrip MikroTik bypass payment gateway & billing
-│       └── firewall-isolir.rsc # Skrip MikroTik redirect pelanggan jatuh tempo
+│       ├── walled-garden.rsc # Template akses portal hotspot
+│       └── firewall-isolir.rsc # Catatan operasi isolir via API
 └── src/                     # Frontend React 19 + Tailwind CSS v4 + Dashboard Admin
 ```
+
+Backend menyediakan `GET /api/data` untuk memuat snapshot data dan `PUT /api/data` untuk menyimpannya ke SQLite. Jika backend tidak tersedia, perubahan tidak dianggap tersimpan ke server.
+
+### Login admin dan halaman pelanggan
+
+- Buka aplikasi pertama kali tanpa `ADMIN_USERNAME`/`ADMIN_PASSWORD` untuk mendaftarkan admin pertama. Buat password minimal 12 karakter; pendaftaran awal otomatis ditutup setelah admin dibuat.
+- Jika kedua variabel admin diisi di `.env`, login memakai kredensial tersebut dan perubahan kredensial harus dilakukan lewat environment server. Jangan hanya mengisi salah satunya.
+- Halaman awal `/` adalah portal paket pelanggan. Dashboard admin berada di `/admin` dan memerlukan login. Cek tagihan tersedia di `/portal/billing`; profil voucher ada di `/portal/vouchers`. Login captive hotspot tetap disediakan sebagai file di folder `hotspot/` untuk dipasang ke MikroTik.
+- `APP_ENCRYPTION_KEY` bersifat opsional. Tanpa nilai tersebut, aplikasi membuat kunci acak di `data/router-secrets.key`; file itu harus ikut dicadangkan bersama database. Kunci yang dibuat dapat dilihat/disalin melalui Pengaturan → Admin & Keamanan. Simpan di tempat aman. Jika kunci dikelola environment, rotasi melalui panel terkunci.
+
+### Menjalankan mode development
+
+Gunakan `npm run dev` untuk menjalankan Vite (port `3000`) dan backend Express/SQLite (port `3001`) bersamaan. Permintaan `/api/*` dari Vite otomatis diteruskan ke backend. Jangan jalankan Vite saja (`npm run dev:client`) bila ingin perubahan tersimpan ke SQLite; mode itu hanya menyediakan frontend. Untuk menjalankan API secara terpisah gunakan `npm run dev:server`.
+
+**Manajer paket dan lockfile:** instalasi Docker serta script deployment memakai **npm** dan `package-lock.json` sebagai lockfile acuan (`npm ci`). `bun.lock` dipertahankan untuk developer yang memilih Bun; keduanya harus diperbarui dari `package.json` yang sama. Setelah mengubah dependency, jalankan `npm install` lalu `bun install --lockfile-only`; validasi workflow Bun dengan `bun install --frozen-lockfile`. Docker mengabaikan `bun.lock` dan tetap memakai `package-lock.json`. Pilih satu package manager untuk satu direktori kerja `node_modules`; jangan bergantian menjalankan `npm install` dan `bun install` pada direktori yang sama. Jika berpindah, hentikan proses dev terlebih dahulu, hapus `node_modules`, lalu instal ulang dengan package manager yang dipilih.
 
 ---
 
@@ -77,8 +109,7 @@ Platform Billing MikroTik all-in-one modern berbasis Docker yang dirancang khusu
    - OS: Ubuntu 20.04 / 22.04 / 24.04 LTS atau Debian 11 / 12.
    - Minimal Spek: 1 vCPU, 1 GB RAM, 10 GB Storage.
    - Port yang perlu dibuka:
-     - `3000` (Web Billing & Portal Voucher)
-     - `2785` (OpenWA Dashboard & API)
+     - `1707` (Web Billing & Portal Voucher default Docker; dapat diubah lewat `BILLING_PORT`)
      - `80` & `443` (Nginx Reverse Proxy jika menggunakan domain)
 2. **Router MikroTik**:
    - RouterOS v6.48+ atau RouterOS v7.x.
@@ -113,21 +144,33 @@ Platform Billing MikroTik all-in-one modern berbasis Docker yang dirancang khusu
    Sesuaikan parameter berikut:
    ```env
    # Koneksi API MikroTik RouterOS
-   MIKROTIK_HOST="103.180.12.5"      # Ganti dengan IP Public / VPN MikroTik Anda
+   MIKROTIK_HOST="IP_ROUTEROS_ANDA"
    MIKROTIK_PORT=8728
-   MIKROTIK_USER="api_billing"
-   MIKROTIK_PASS="PasswordMikrotikAnda"
+   MIKROTIK_USER="USER_API_ROUTEROS"
+   MIKROTIK_PASS="PASSWORD_API_ROUTEROS"
+   MIKROTIK_API_TYPE="api"
+   MIKROTIK_TIMEOUT_SEC=10
 
-   # OpenWA WhatsApp Gateway (rmyndharis/OpenWA)
-   WA_PROVIDER="openwa"
-   OPENWA_BASE_URL="http://openwa:2785"
-   OPENWA_API_KEY="openwa_admin_sec_88921a9f02b"
+   # Opsional: jika dikosongkan, admin pertama dibuat dari halaman login.
+   ADMIN_USERNAME=""
+   ADMIN_PASSWORD=""
+
+   # Opsional: kunci acak 32 byte dalam base64. Jika kosong, aplikasi membuatnya otomatis.
+   APP_ENCRYPTION_KEY=""
+
+   # Opsional: pilih Fonnte atau OpenWA (service eksternal terpisah)
+   WA_PROVIDER=""
+   OPENWA_BASE_URL=""
+   OPENWA_API_KEY=""
    OPENWA_SESSION_ID="billing-isp"
+   FONNTE_API_URL="https://api.fonnte.com/send"
+   FONNTE_TOKEN=""
 
-   # Payment Gateway (midtrans / xendit / tripay)
+   # Pembayaran Midtrans Snap
+   APP_URL="https://billing.domain-anda"
    PAYMENT_GATEWAY="midtrans"
-   MIDTRANS_SERVER_KEY="SB-Mid-server-xxxx"
-   MIDTRANS_CLIENT_KEY="SB-Mid-client-xxxx"
+   MIDTRANS_SERVER_KEY=""
+   MIDTRANS_CLIENT_KEY=""
    MIDTRANS_IS_PRODUCTION=false
    ```
 
@@ -140,128 +183,87 @@ Platform Billing MikroTik all-in-one modern berbasis Docker yang dirancang khusu
    ```bash
    docker compose ps
    ```
-   Output yang diharapkan:
+   Periksa status layanan yang sudah dikonfigurasi:
    ```text
    NAME                   IMAGE                     STATUS         PORTS
-   mikrotik-billing-app   mikrotik-billing:latest   Up (healthy)   0.0.0.0:3000->3000/tcp
-   openwa-api             rmyndharis/openwa:latest  Up (healthy)   0.0.0.0:2785->2785/tcp
+   mikrotik-billing-app   mikrotik-billing:latest   Up (healthy)   0.0.0.0:1707->3000/tcp
    ```
 
 4. **Buka Aplikasi di Browser**:
-   - Web Billing & Hotspot Portal: `http://IP_VPS:3000`
-   - OpenWA Gateway API: `http://IP_VPS:2785`
+   - Portal paket pelanggan: `http://IP_VPS:1707`
+   - Dashboard admin: `http://IP_VPS:1707/admin`
+
+Docker menggunakan port host `1707` sebagai default, sementara port internal container tetap `3000`. Port yang tidak umum tetap dapat dipakai aplikasi lain; bila `1707` sudah terpakai, atur `BILLING_PORT=PORT_PILIHAN` di `.env`, lalu jalankan ulang `docker compose up -d`.
+
+### Integrasi RouterOS
+
+1. Pada `.env` server, isi `MIKROTIK_HOST`, `MIKROTIK_PORT`, `MIKROTIK_USER`, `MIKROTIK_PASS`, `MIKROTIK_API_TYPE`, dan `MIKROTIK_TIMEOUT_SEC`. Kredensial admin panel dikelola melalui `ADMIN_USERNAME`/`ADMIN_PASSWORD` atau registrasi pertama.
+2. Buat user RouterOS khusus aplikasi dan batasi aksesnya dengan firewall ke alamat server billing. Hak baca diperlukan untuk uji koneksi; operasi PPP secret dan setup PPPoE memerlukan hak tulis RouterOS.
+3. Pastikan API (`8728`), API-SSL (`8729`), atau REST RouterOS v7 (`443`) hanya dapat diakses dari host yang dipercaya. Jangan membuka layanan API RouterOS ke seluruh internet.
+4. Restart container setelah mengubah `.env`. Jika konfigurasi RouterOS berasal dari environment, tampilannya akan terkunci di panel; gunakan tab **Router MikroTik** untuk menambahkan server tambahan.
+5. Router dari `.env` akan dimuat otomatis. Gunakan **Tambah MikroTik** untuk menambahkan router lain; password router tambahan disimpan terenkripsi. Buat cadangan `data/router-secrets.key` bersama database bila `APP_ENCRYPTION_KEY` tidak diset.
+6. Pilih interface aktual dan konfigurasi pool/profile/server PPPoE dari halaman yang sama. Operasi setup bersifat aditif dan menolak nama yang sudah ada dengan konfigurasi konflik. Tinjau konfigurasi RouterOS sebelum menerapkan perubahan.
 
 ---
 
-## 📱 Konfigurasi WhatsApp Gateway (OpenWA)
+## 📱 Konfigurasi WhatsApp Gateway (Fonnte/OpenWA)
 
-Aplikasi ini menggunakan repository resmi **[rmyndharis/OpenWA](https://github.com/rmyndharis/OpenWA)**.
+SmartBilling tidak menjalankan atau membundel server WhatsApp. Instalasi/akun provider dikelola terpisah; aplikasi hanya mengirim request REST API dari server.
 
-1. **Dapatkan API Key OpenWA**:
-   Saat OpenWA pertama kali berjalan di Docker, kunci API admin dibuat di dalam volume:
-   ```bash
-   docker exec openwa-api cat /app/data/.api-key
-   ```
-   Salin teks API Key tersebut, lalu masukkan ke pengaturan menu **OpenWA Gateway** di Web Billing.
-
-2. **Tautkan Nomor WhatsApp (Pairing QR Code)**:
-   - Masuk ke Web Billing `http://IP_VPS:3000`.
-   - Pilih tab **OpenWA Gateway**.
-   - Klik tombol **"Scan QR Code Pairing"**.
-   - Buka WhatsApp di smartphone Anda:
-     - Pilih **Menu (titik tiga) / Pengaturan** > **Perangkat Tertaut (Linked Devices)**.
-     - Ketuk **Tautkan Perangkat** lalu arahkan kamera ponsel ke QR Code di layar.
-   - Selesai! Bot WhatsApp billing Anda kini aktif 24/7 untuk mengirim struk dan pengingat tagihan.
+- **Fonnte:** set `FONNTE_TOKEN` (dan opsional `FONNTE_API_URL`) memakai token dari akun Fonnte.
+- **OpenWA:** jalankan instalasi OpenWA secara terpisah, lalu set `OPENWA_BASE_URL`, `OPENWA_API_KEY`, dan `OPENWA_SESSION_ID`.
+- Pilih provider di menu **WhatsApp API** dashboard. `WA_PROVIDER` opsional; jika diisi di `.env`, pilihan panel dikunci.
+- Token/API key hanya disimpan di environment server. Tes pesan tersedia melalui provider aktif; cek status sesi hanya berlaku untuk OpenWA.
 
 ---
 
 ## 📶 Panduan Integrasi Login Page Hotspot MikroTik
 
-Template login page lengkap telah disediakan di folder `/hotspot`.
+Template login captive page disediakan di folder `/hotspot`. Halaman captive disajikan lokal oleh MikroTik, sedangkan katalog paket dan checkout voucher aktual menggunakan portal SmartBilling `/portal/vouchers`. Tombol **Lihat Paket & Beli Voucher** pada template membuka portal publik tersebut; MikroTik tidak membaca database billing secara langsung.
 
 ### 1. Upload Template ke Router MikroTik
 1. Buka Winbox dan hubungkan ke MikroTik Anda.
 2. Buka menu **Files**.
 3. Drag & drop folder `hotspot` dari komputer Anda ke dalam Winbox, atau letakkan file `login.html`, `status.html`, dan `logout.html` ke direktori `hotspot/`.
+4. Sebelum mengunggah, edit `hotspot/login.html` dan ganti `https://BILLING_DOMAIN/portal/vouchers` dengan alamat publik billing Anda, misalnya `https://billing.contoh.id/portal/vouchers`. Untuk pengujian tanpa domain, gunakan `http://IP_PUBLIK:1707/portal/vouchers`.
 
 ### 2. Atur Server Profile Hotspot
 1. Di Winbox, buka **IP** > **Hotspot** > tab **Server Profiles**.
 2. Klik ganda pada profile hotspot aktif Anda (misalnya `hsprof1`).
 3. Pada opsi **HTML Directory**, pilih folder: `hotspot`.
-4. Pada tab **Login**, centang:
-   - `HTTP PAP`
-   - `HTTP CHAP`
-   - `Trial` (jika ingin mengaktifkan opsi uji coba gratis 10 menit).
+4. Pada tab **Login**, aktifkan metode autentikasi yang sesuai dengan akun hotspot dan kebijakan jaringan Anda. Konfigurasi trial dilakukan terpisah pada profile RouterOS.
 5. Klik **Apply** & **OK**.
 
 ### 3. Konfigurasi Walled Garden (PENTING!)
-Agar pengguna yang belum login WiFi dapat membuka web pembelian voucher dan memindai QRIS bank/e-wallet, MikroTik wajib mengizinkan domain tersebut lewat Walled Garden.
+Agar pengguna yang belum login WiFi dapat membuka katalog dan membeli voucher, izinkan hostname portal billing melalui Walled Garden. Masukkan host saja (tanpa `https://`, path, atau port). Untuk produksi captive portal, gunakan domain HTTPS dengan sertifikat valid dan pastikan reverse proxy/firewall menerima koneksi pelanggan.
 
-Cukup salin dan jalankan script ini di **New Terminal** Winbox:
+Cukup ganti `DOMAIN_PORTAL_ANDA` dengan hostname portal Anda, lalu jalankan script ini di **New Terminal** Winbox:
 ```routeros
 /ip hotspot walled-garden
-add dst-host=*billing.ispnet.id action=allow comment="Web Billing & Beli Voucher"
-add dst-host=*midtrans.com action=allow comment="Payment Gateway Midtrans"
-add dst-host=*api.midtrans.com action=allow comment="Midtrans Core API"
-add dst-host=*app.midtrans.com action=allow comment="Midtrans Snap API"
-add dst-host=*xendit.co action=allow comment="Payment Gateway Xendit"
-add dst-host=*tripay.co.id action=allow comment="Payment Gateway Tripay"
-add dst-host=*googleapis.com action=allow comment="Google CDN & Fonts"
-
-/ip hotspot walled-garden ip
-add action=accept protocol=tcp dst-port=80 comment="Allow HTTP Portal"
-add action=accept protocol=tcp dst-port=443 comment="Allow HTTPS Gateway"
-add action=accept protocol=tcp dst-port=3000 comment="Allow Port Billing 3000"
+add dst-host=DOMAIN_PORTAL_ANDA action=allow comment="Portal Billing"
 ```
-*(Atau gunakan perintah `/import hotspot/rsc/walled-garden.rsc`)*
+Ganti `DOMAIN_PORTAL_ANDA` dengan hostname yang sama dengan URL pada tombol beli. Bila memakai alamat IP dan port publik, firewall jaringan juga harus mengizinkan koneksi tersebut. Untuk pelanggan captive, direkomendasikan memasang reverse proxy HTTPS pada port `443`.
 
-### 4. Hubungkan Tombol "Beli Voucher Online"
-Buka file `hotspot/login.html` menggunakan text editor, cari baris tautan berikut:
-```html
-<a href="http://103.180.12.5:3000/?view=voucher" class="btn-buy">
-```
-Ganti `http://103.180.12.5:3000` dengan domain atau IP VPS Server Billing Anda.
+### 4. Alur pembelian voucher dari login MikroTik
+1. Pelanggan terhubung ke SSID dan melihat halaman login lokal MikroTik.
+2. Pelanggan yang sudah memiliki voucher login seperti biasa. Pelanggan baru menekan **Lihat Paket & Beli Voucher**.
+3. Portal SmartBilling menampilkan paket hotspot aktif dari SQLite dan pelanggan mengisi nama serta nomor WhatsApp.
+4. Pelanggan memilih pembayaran otomatis (jika gateway tersedia) atau manual. Pembayaran manual memberikan kode pesanan dan tautan WhatsApp operator; voucher baru aktif setelah operator menyetujui pembayaran. Pembayaran otomatis menunggu konfirmasi provider.
+5. Sesudah pembayaran dikonfirmasi, akun voucher dibuat di RouterOS dan kodenya ditampilkan/dikirim ke pelanggan. Pelanggan kembali ke halaman login MikroTik, memasukkan kode voucher, lalu mulai menggunakan internet.
+
+Uji portal dari perangkat yang belum login. Untuk pembayaran otomatis, hostname checkout/payment Midtrans yang diwajibkan provider juga harus diizinkan menurut dokumentasi Midtrans; aturan Walled Garden domain billing saja tidak otomatis membuka domain pembayaran pihak ketiga. Perhatikan bahwa kebijakan akses provider dapat berubah. Untuk WhatsApp, pelanggan diarahkan ke aplikasi WhatsApp operator setelah pesanan manual dibuat.
 
 ---
 
-## 🔒 Panduan Integrasi Auto-Isolir PPPoE MikroTik
+## 🔒 Operasi Isolir PPPoE MikroTik
 
-Ketika masa aktif pelanggan habis, sistem billing akan memasukkan IP pelanggan ke *address-list* `ISOLIR_EXPIRED`. Agar trafik pelanggan teralihkan ke web tagihan, terapkan aturan firewall berikut di MikroTik:
+Isolir manual di menu pelanggan mengubah properti `disabled` pada PPP secret yang dipilih setelah RouterOS mengonfirmasi perubahan. Aktivasi manual dari daftar pelanggan menggunakan operasi yang sama. Scheduler isolir otomatis dan redirect ke halaman tagihan belum diimplementasikan; jangan mengandalkan aplikasi ini untuk memutus pelanggan otomatis karena jatuh tempo.
 
-```routeros
-# 1. Daftarkan IP Server Billing agar selalu bisa diakses oleh pelanggan yang terisolir
-/ip firewall address-list
-add list=ALLOW_BILLING address=IP_VPS_BILLING_ANDA comment="Server Billing NetFlow"
-add list=ALLOW_PAYMENT address=app.midtrans.com comment="Midtrans Payment"
+## 💳 Pembayaran invoice dengan Midtrans Snap
 
-# 2. Filter Rules
-/ip firewall filter
-add chain=forward action=accept protocol=udp dst-port=53 src-address-list=ISOLIR_EXPIRED comment="Bypass DNS User Isolir"
-add chain=forward action=accept protocol=tcp dst-port=53 src-address-list=ISOLIR_EXPIRED comment="Bypass DNS User Isolir"
-add chain=forward action=accept dst-address-list=ALLOW_BILLING src-address-list=ISOLIR_EXPIRED comment="Bypass Akses Web Tagihan"
-add chain=forward action=accept dst-address-list=ALLOW_PAYMENT src-address-list=ISOLIR_EXPIRED comment="Bypass Akses Bayar QRIS"
-add chain=forward action=drop src-address-list=ISOLIR_EXPIRED comment="DROP Akses Internet Lainnya User Isolir"
+Konfigurasikan `APP_URL`, `PAYMENT_GATEWAY=midtrans`, `MIDTRANS_SERVER_KEY`, dan mode `MIDTRANS_IS_PRODUCTION` di environment server. Set URL notifikasi Midtrans menjadi `https://domain-anda/api/payment/webhook`. `MIDTRANS_CLIENT_KEY` dapat disimpan untuk referensi dashboard; kredensial rahasia tidak dikirim ke browser.
 
-# 3. NAT Redirect Port HTTP (80) ke Halaman Tagihan Billing
-/ip firewall nat
-add chain=dstnat action=dst-nat to-addresses=IP_VPS_BILLING_ANDA to-ports=3000 protocol=tcp dst-port=80 src-address-list=ISOLIR_EXPIRED comment="Redirect Pelanggan Isolir ke Web Tagihan"
-```
-
----
-
-## 💳 Panduan Payment Gateway Lokal (QRIS & Virtual Account)
-
-Sistem mendukung 3 gateway pembayaran Indonesia: **Midtrans**, **Xendit**, dan **Tripay**.
-
-### Setting Webhook Callback URL:
-1. Masuk ke dashboard gateway Anda (misalnya: [dashboard.midtrans.com](https://dashboard.midtrans.com)).
-2. Masuk ke menu **Settings** > **Configuration**.
-3. Isi **Payment Notification URL** dengan:
-   ```text
-   http://IP_VPS_ANDA:3000/api/payment/webhook
-   ```
-4. Simpan perubahan.
-5. Saat pelanggan membayar QRIS atau Virtual Account, gateway akan mengirimkan sinyal instan ke endpoint ini. Sistem akan langsung menandai invoice **LUNAS**, memperpanjang masa aktif pelanggan, membuka blokir isolir di MikroTik, dan mengirimkan pesan tanda terima WhatsApp melalui OpenWA.
+Pelanggan membuka portal publik, memasukkan ID pelanggan dan nomor WhatsApp terdaftar, lalu memilih **Bayar Tagihan** pada invoice yang belum lunas. Aplikasi membuat checkout Snap; invoice hanya ditandai lunas setelah signature webhook Midtrans diverifikasi dan nominal cocok. Gunakan HTTPS untuk produksi dan uji dahulu dengan kredensial sandbox. Provider selain Midtrans belum didukung checkout.
 
 ---
 
@@ -271,9 +273,6 @@ Sistem mendukung 3 gateway pembayaran Indonesia: **Midtrans**, **Xendit**, dan *
 ```bash
 # Log seluruh layanan
 docker compose logs -f
-
-# Log khusus WhatsApp Gateway OpenWA
-docker compose logs -f openwa
 
 # Log khusus aplikasi billing
 docker compose logs -f mikrotik-billing
@@ -285,10 +284,10 @@ docker compose down && docker compose up -d
 ```
 
 **Q: Apakah aplikasi ini aman dibuka langsung tanpa domain?**
-Untuk tahap pengujian dapat langsung menggunakan IP VPS port `3000`. Untuk produksi publik, disarankan memasang domain dan sertifikat SSL gratis (Let's Encrypt) menggunakan Nginx reverse proxy sesuai contoh konfigurasi di tab **Docker & VPS Hosting**.
+Untuk tahap pengujian dapat menggunakan IP VPS port `1707`. Untuk produksi publik dan penggunaan captive portal, disarankan domain dengan sertifikat SSL valid melalui reverse proxy.
 
 ---
 
 Dibuat dengan ❤️ untuk komunitas jaringan & ISP Indonesia.
 Lisensi: MIT.
-WhatsApp Gateway ditenagai oleh **[rmyndharis/OpenWA](https://github.com/rmyndharis/OpenWA)**.
+Integrasi WhatsApp dilakukan melalui REST API Fonnte atau instalasi OpenWA eksternal yang dipilih administrator.

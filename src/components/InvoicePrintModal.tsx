@@ -1,14 +1,15 @@
 import React from 'react';
-import { Invoice, Customer } from '../types';
+import { Invoice, Customer, AppSettings } from '../types';
 import { X, Printer, CheckCircle2, Clock, AlertTriangle } from 'lucide-react';
 
 interface Props {
   invoice: Invoice;
   customer?: Customer;
+  settings: AppSettings;
   onClose: () => void;
 }
 
-export const InvoicePrintModal: React.FC<Props> = ({ invoice, customer, onClose }) => {
+export const InvoicePrintModal: React.FC<Props> = ({ invoice, customer, settings, onClose }) => {
   const handlePrint = () => {
     window.print();
   };
@@ -54,22 +55,23 @@ export const InvoicePrintModal: React.FC<Props> = ({ invoice, customer, onClose 
             <div>
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center text-white font-bold text-lg shadow-md">
-                  N
+                  {(settings.brandName || settings.appName || 'S').charAt(0)}
                 </div>
                 <div>
-                  <h1 className="text-xl font-extrabold tracking-tight text-slate-900">NETFLOW ISP</h1>
-                  <p className="text-[11px] text-slate-500">PT. Netflow Solusi Nusantara</p>
+                  <h1 className="text-xl font-extrabold tracking-tight text-slate-900">{settings.brandName || settings.appName}</h1>
+                  {settings.companyName && <p className="text-[11px] text-slate-500">{settings.companyName}</p>}
                 </div>
               </div>
-              <p className="text-xs text-slate-500 mt-3 leading-relaxed">
-                NOC & Billing Center: Gedung Cyber 2 Lt. 4<br />
-                WhatsApp NOC: 0812-8899-0011 | Email: billing@ispnet.id
-              </p>
+              {(settings.officeAddress || settings.phoneContact || settings.emailContact) && (
+                <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+                  {settings.officeAddress && <>{settings.officeAddress}<br /></>}
+                  {[settings.phoneContact, settings.emailContact].filter(Boolean).join(' | ')}
+                </p>
+              )}
             </div>
             <div className="text-right">
               <span className="text-xs font-bold text-indigo-600 tracking-wider uppercase">Tagihan Pelanggan</span>
               <p className="text-2xl font-black text-slate-900 mt-0.5">#{invoice.invoiceNumber}</p>
-              <p className="text-xs text-slate-500 mt-1">Tanggal Terbit: 01 {invoice.periodMonth}</p>
               <p className="text-xs font-semibold text-rose-600">Jatuh Tempo: {invoice.dueDate}</p>
             </div>
           </div>
@@ -95,11 +97,11 @@ export const InvoicePrintModal: React.FC<Props> = ({ invoice, customer, onClose 
               <div className="inline-flex items-center gap-1.5 mt-2 px-3 py-1 rounded-full text-xs font-bold">
                 {isPaid ? (
                   <span className="bg-emerald-100 text-emerald-800 flex items-center gap-1 px-3 py-1 rounded-full">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> LUNAS TERVERIFIKASI
+                    <CheckCircle2 className="w-3.5 h-3.5" /> LUNAS DICATAT OPERATOR
                   </span>
                 ) : invoice.status === 'expired' ? (
                   <span className="bg-rose-100 text-rose-800 flex items-center gap-1 px-3 py-1 rounded-full">
-                    <AlertTriangle className="w-3.5 h-3.5" /> LEWAT JATUH TEMPO (ISOLIR)
+                    <AlertTriangle className="w-3.5 h-3.5" /> LEWAT JATUH TEMPO
                   </span>
                 ) : (
                   <span className="bg-amber-100 text-amber-800 flex items-center gap-1 px-3 py-1 rounded-full">
@@ -111,7 +113,7 @@ export const InvoicePrintModal: React.FC<Props> = ({ invoice, customer, onClose 
                 <p className="text-[11px] text-slate-500 mt-2">
                   Dibayar pada: <span className="font-semibold text-slate-700">{invoice.paidAt}</span>
                   <br />
-                  Metode: <span className="font-semibold">{invoice.paymentMethod || 'QRIS / VA'}</span>
+                  Metode: <span className="font-semibold">{invoice.paymentMethod || 'Tidak tercatat'}</span>
                 </p>
               )}
             </div>
@@ -131,7 +133,7 @@ export const InvoicePrintModal: React.FC<Props> = ({ invoice, customer, onClose 
                 <td className="py-4 font-semibold text-slate-800">
                   {invoice.profileName}
                   <div className="text-[11px] font-normal text-slate-500 mt-0.5">
-                    Akses Internet Fiber Optic Unlimited Tanpa FUP (MikroTik Dedicated Bandwidth)
+                    Layanan berlangganan
                   </div>
                 </td>
                 <td className="py-4 text-center text-slate-600">{invoice.periodMonth}</td>
@@ -163,19 +165,17 @@ export const InvoicePrintModal: React.FC<Props> = ({ invoice, customer, onClose 
           {/* Payment Instructions if unpaid */}
           {!isPaid ? (
             <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs mb-6">
-              <p className="font-semibold text-slate-800 mb-1.5">Cara Pembayaran Otomatis:</p>
-              <ul className="list-disc list-inside space-y-1 text-slate-600">
-                <li>Scan QRIS melalui aplikasi BCA Mobile, GoPay, OVO, Dana, ShopeePay, atau Livin Mandiri.</li>
-                <li>Transfer Virtual Account BCA: <b>88019{invoice.customerPhone.slice(-6)}</b> a/n Netflow ISP.</li>
-                <li>Sistem MikroTik akan mendeteksi pembayaran secara real-time dan memperpanjang masa aktif otomatis.</li>
-              </ul>
+              <p className="font-semibold text-slate-800 mb-1.5">Konfirmasi Pembayaran</p>
+              <p className="text-slate-600">
+                Pembayaran online belum tersedia. Hubungi operator menggunakan kontak yang tercantum di atas untuk mengonfirmasi metode pembayaran.
+              </p>
             </div>
           ) : (
             <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 mb-6 flex items-center justify-between">
               <div>
                 <p className="font-bold">Terima Kasih Atas Pembayaran Anda!</p>
                 <p className="text-[11px] text-emerald-700 mt-0.5">
-                  Ref Transaksi: {invoice.paymentRef || 'TX-AUTO-GATEWAY'} | Akses Internet Berjalan Lancar.
+                  {invoice.paymentRef ? `Referensi transaksi: ${invoice.paymentRef}` : 'Pembayaran dicatat oleh operator.'}
                 </p>
               </div>
               <div className="w-16 h-16 border-2 border-emerald-500/40 rounded-full flex items-center justify-center text-emerald-600 font-extrabold rotate-[-12deg] text-xs uppercase tracking-widest">
@@ -186,7 +186,7 @@ export const InvoicePrintModal: React.FC<Props> = ({ invoice, customer, onClose 
 
           {/* Footer note */}
           <div className="border-t border-slate-200 pt-4 text-center text-[10px] text-slate-400">
-            Invoice ini diterbitkan otomatis oleh NetFlow MikroTik Billing & ISP Management System. Sah tanpa tanda tangan basah.
+            Bukti ini menampilkan data invoice yang tercatat di aplikasi.
           </div>
         </div>
       </div>
