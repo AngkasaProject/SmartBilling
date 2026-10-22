@@ -45,10 +45,10 @@ export const DashboardTab: React.FC<Props> = ({
     vouchers.reduce((sum, v) => sum + (v.status !== 'unused' ? v.price : 0), 0);
 
   const activeCustomers = customers.filter(c => c.status === 'active').length;
-  const isolatedCustomers = customers.filter(c => c.status === 'isolated').length;
+  const isolatedCustomers = customers.filter(c => c.status === 'isolated' || c.status === 'disabled').length;
   const expiringCustomers = customers.filter(c => c.status === 'expiring').length;
 
-  const urgentCustomers = customers.filter(c => c.status === 'isolated' || c.status === 'expiring');
+  const urgentCustomers = customers.filter(c => c.status === 'isolated' || c.status === 'disabled' || c.status === 'expiring');
 
   const mainRouter = routers.find(router => router.status === 'connected');
 
@@ -291,7 +291,8 @@ export const DashboardTab: React.FC<Props> = ({
                       <div className="text-[11px] text-slate-400 font-mono">{cust.pppoeUsername} • {cust.phone}</div>
                     </td>
                     <td className="py-3.5">
-                      <div className="text-slate-300">{cust.profileName}</div>
+                      <div className="text-slate-300">{cust.servicePackageName || cust.profileName}</div>
+                      {cust.servicePackageName && <div className="text-[10px] text-slate-500">PPP profile: {cust.profileName}</div>}
                       <div className="text-[11px] font-semibold text-indigo-400">
                         Rp {cust.monthlyFee.toLocaleString('id-ID')}
                       </div>
@@ -301,7 +302,7 @@ export const DashboardTab: React.FC<Props> = ({
                       <div className="text-[10px] text-slate-500">Tgl {cust.billingDate} per bulan</div>
                     </td>
                     <td className="py-3.5">
-                      {cust.status === 'isolated' ? (
+                      {cust.status === 'isolated' || cust.status === 'disabled' ? (
                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
                           <AlertCircle className="w-3 h-3" /> TER-ISOLIR
                         </span>
@@ -314,7 +315,7 @@ export const DashboardTab: React.FC<Props> = ({
                     <td className="py-3.5 text-right">
                       <div className="inline-flex items-center gap-2">
                         <button
-                          onClick={() => onSendWaNotification(cust, cust.status === 'isolated' ? 'isolir' : 'reminder')}
+                          onClick={() => onSendWaNotification(cust, cust.status === 'isolated' || cust.status === 'disabled' ? 'isolir' : 'reminder')}
                           className="px-2.5 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 rounded-lg text-[11px] font-semibold transition flex items-center gap-1"
                           title="Kirim pengingat via WhatsApp"
                         >
@@ -325,12 +326,12 @@ export const DashboardTab: React.FC<Props> = ({
                         <button
                           onClick={() => onToggleIsolir(cust)}
                           className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition flex items-center gap-1 ${
-                            cust.status === 'isolated'
+                            cust.status === 'isolated' || cust.status === 'disabled'
                               ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
                               : 'bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-300'
                           }`}
                         >
-                          {cust.status === 'isolated' ? (
+                          {cust.status === 'isolated' || cust.status === 'disabled' ? (
                             <>
                               <CheckCircle2 className="w-3 h-3" />
                               <span>Buka Isolir</span>

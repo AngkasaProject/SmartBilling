@@ -1,10 +1,10 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, randomBytes, randomUUID, randomInt, scryptSync, timingSafeEqual } from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { AppDataSnapshot, Customer, HotspotProfile, HotspotServiceProfile, HotspotValidityPreset, ManualPaymentMethod, PaymentTransaction, RouterConfig, Voucher } from './src/types/index.js';
+import { AppDataSnapshot, Customer, HotspotProfile, HotspotServiceProfile, HotspotValidityPreset, Invoice, ManualPaymentMethod, PaymentTransaction, RouterConfig, Voucher } from './src/types/index.js';
 import {
   getRouterCredentialDb,
   countAdminUsersDb,
@@ -70,6 +70,7 @@ function isAppDataSnapshot(value: unknown): value is AppDataSnapshot {
   const arrayCollections = [
     'customers',
     'invoices',
+    'pppoePackages',
     'hotspotProfiles',
     'hotspotServiceProfiles',
     'vouchers',
@@ -137,13 +138,23 @@ function isValidPppoeSetup(value: PppoeSetup): boolean {
   );
 }
 
-function createInvoicePortalToken(invoiceId: string, expiresAt: number, secret: string): string {
-  const payload = Buffer.from(JSON.stringify({ invoiceId, expiresAt })).toString('base64url');
+interface PortalLinkToken {
+  invoiceId?: string;
+  customerId?: string;
+  expiresAt: number;
+}
+
+function createPortalLinkToken(
+  subject: { invoiceId: string } | { customerId: string },
+  expiresAt: number,
+  secret: string
+): string {
+  const payload = Buffer.from(JSON.stringify({ ...subject, expiresAt })).toString('base64url');
   const signature = createHmac('sha256', secret).update(payload).digest('base64url');
   return `${payload}.${signature}`;
 }
 
-function verifyInvoicePortalToken(token: unknown, secret: string): { invoiceId: string; expiresAt: number } | null {
+function verifyPortalLinkToken(token: unknown, secret: string): PortalLinkToken | null {
   if (typeof token !== 'string' || token.length > 1024) return null;
   const [payload, signature, extra] = token.split('.');
   if (!payload || !signature || extra !== undefined) return null;
@@ -156,13 +167,28 @@ function verifyInvoicePortalToken(token: unknown, secret: string): { invoiceId: 
   }
   if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
   try {
-    const value = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { invoiceId?: unknown; expiresAt?: unknown };
+    const value = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
+      invoiceId?: unknown;
+      customerId?: unknown;
+      expiresAt?: unknown;
+    };
     if (
-      typeof value.invoiceId !== 'string' ||
+      !(
+        typeof value.invoiceId === 'string' && value.invoiceId.length > 0 &&
+        value.customerId === undefined
+      ) &&
+      !(
+        typeof value.customerId === 'string' && value.customerId.length > 0 &&
+        value.invoiceId === undefined
+      ) ||
       !Number.isSafeInteger(value.expiresAt) ||
       Number(value.expiresAt) <= Date.now()
     ) return null;
-    return { invoiceId: value.invoiceId, expiresAt: Number(value.expiresAt) };
+    return {
+      ...(typeof value.invoiceId === 'string' ? { invoiceId: value.invoiceId } : {}),
+      ...(typeof value.customerId === 'string' ? { customerId: value.customerId } : {}),
+      expiresAt: Number(value.expiresAt),
+    };
   } catch {
     return null;
   }
@@ -474,6 +500,153 @@ async function startServer() {
     return { ...router, password, timeoutSec: 10 };
   }
 
+  function buildInvoiceReminderMessage(
+    customer: Customer,
+    invoice: Invoice,
+    paymentUrl: string,
+    settings: Awaited<ReturnType<typeof getAppSettingsDb>>,
+    paymentConfig: AppDataSnapshot['paymentConfig'] | undefined
+  ): string {
+    const [year, month] = invoice.dueDate.split('-');
+    const period = year && month ? `${month}/${year}` : invoice.periodMonth;
+    const currency = settings.currencySymbol || 'Rp';
+    const message = [
+      `Halo Bapak/Ibu ${customer.name},`,
+      '',
+      'Ini adalah pengingat sebelum tanggal jatuh tempo/isolir.',
+      '',
+      `📦 Paket: ${customer.servicePackageName || customer.profileName}`,
+      `💰 Total Tagihan: ${currency} ${invoice.totalAmount.toLocaleString('id-ID')}`,
+      `📅 Periode: ${period}`,
+    ];
+    const automaticPaymentAvailable = Boolean(
+      (!process.env.PAYMENT_GATEWAY || process.env.PAYMENT_GATEWAY === 'midtrans') &&
+      process.env.MIDTRANS_SERVER_KEY &&
+      configuredPaymentAppUrl()
+    );
+    if (automaticPaymentAvailable) {
+      message.push(
+        '',
+        '˗ˋˏ$ˎˊ˗➜ Pembayaran Online proses otomatis setiap hari, proses 24 jam. melalui tautan berikut:',
+        paymentUrl
+      );
+    }
+
+    const manualMethods = (paymentConfig?.manualPaymentMethods || []).filter(method => method.enabled);
+    if (manualMethods.length) {
+      message.push('', '🏛️➜ Pembayaran Manual');
+      for (const method of manualMethods) {
+        const title = method.serviceName?.trim() || method.name;
+        message.push('', `${title} : ${method.accountNumber || '-'}`);
+        if (method.instructions.trim()) message.push(method.instructions.trim());
+      }
+      if (settings.phoneContact.trim()) {
+        message.push('', `📲 Kirim bukti transfer atau konfirmasi pembayaran ke ${settings.phoneContact}.`);
+      }
+    }
+
+    if (settings.officeAddress.trim()) {
+      message.push(
+        '',
+        '💵➜ Untuk pembayaran cash bisa langsung ke kantor',
+        settings.officeAddress.trim()
+      );
+    }
+    message.push(
+      '',
+      'Terima kasih atas kerja samanya.',
+      'Salam,',
+      settings.companyName.trim() || settings.brandName.trim() || settings.appName
+    );
+    return message.join('\n');
+  }
+
+  const invoiceGenerationInProgress = new Map<string, Promise<Invoice | null>>();
+  async function ensureDueInvoice(
+    customerId: string,
+    includeDueTomorrow = false,
+    createForUpcomingPeriod = false
+  ): Promise<Invoice | null> {
+    const running = invoiceGenerationInProgress.get(customerId);
+    if (running) return running;
+
+    const operation = (async () => {
+      const stored = await getAppDataDb();
+      const customer = (stored.data.customers || []).find(item => item.id === customerId);
+      if (!customer || !Number.isSafeInteger(customer.monthlyFee) || customer.monthlyFee <= 0) return null;
+      const today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Jakarta',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+      const tomorrowDate = new Date(`${today}T12:00:00+07:00`);
+      tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+      const tomorrow = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Jakarta',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(tomorrowDate);
+      const isDue = customer.status !== 'active' || customer.expiredDate <= today ||
+        (includeDueTomorrow && customer.expiredDate <= tomorrow) ||
+        (createForUpcomingPeriod && customer.expiredDate > today);
+      if (!isDue) return null;
+
+      const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(customer.expiredDate) && customer.expiredDate > today
+        ? customer.expiredDate
+        : today;
+      const dueMonthDate = new Date(`${dueDate}T12:00:00+07:00`);
+      const periodMonth = new Intl.DateTimeFormat('id-ID', {
+        month: 'long',
+        year: 'numeric',
+        timeZone: 'Asia/Jakarta',
+      }).format(dueMonthDate);
+      const invoices = stored.data.invoices || [];
+      const unpaid = invoices.find(invoice =>
+        invoice.customerId === customer.id && invoice.status === 'unpaid'
+      );
+      if (unpaid) return unpaid;
+      const periodInvoices = invoices.filter(invoice =>
+        invoice.customerId === customer.id && invoice.periodMonth === periodMonth
+      );
+      if (periodInvoices.some(invoice => invoice.status === 'paid')) return null;
+
+      const periodCode = dueDate.slice(0, 7).replace('-', '');
+      const numberPattern = new RegExp(`^INV-${periodCode}-(\\d+)$`);
+      const nextNumber = Math.max(0, ...invoices.map(invoice => {
+        const match = invoice.invoiceNumber.match(numberPattern);
+        return match ? Number(match[1]) : 0;
+      })) + 1;
+      const uniqueCode = randomInt(10, 900);
+      const invoice: Invoice = {
+        id: randomUUID(),
+        invoiceNumber: `INV-${periodCode}-${String(nextNumber).padStart(3, '0')}`,
+        customerId: customer.id,
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        profileName: customer.servicePackageName || customer.profileName,
+        periodMonth,
+        amount: customer.monthlyFee,
+        uniqueCode,
+        totalAmount: customer.monthlyFee + uniqueCode,
+        status: 'unpaid',
+        dueDate,
+      };
+      await saveAppDataCollectionDb('invoices', [invoice, ...invoices]);
+      return invoice;
+    })();
+
+    invoiceGenerationInProgress.set(customerId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (invoiceGenerationInProgress.get(customerId) === operation) {
+        invoiceGenerationInProgress.delete(customerId);
+      }
+    }
+  }
+
   app.post('/api/admin/customers/sync-mikrotik', requireAdminSession, async (_req, res) => {
     try {
       const stored = await getAppDataDb();
@@ -513,7 +686,11 @@ async function startServer() {
           ...customer,
           profileName: secret.profile || customer.profileName,
           bandwidthLimit: profile?.rateLimit || customer.bandwidthLimit,
-          status: secret.disabled ? 'isolated' : customer.status === 'isolated' ? 'active' : customer.status,
+          status: secret.disabled
+            ? 'isolated'
+            : customer.status === 'isolated' || customer.status === 'disabled'
+              ? 'active'
+              : customer.status,
           ...(secret.remoteAddress ? { ipAddress: secret.remoteAddress } : {}),
         };
         if (
@@ -654,7 +831,7 @@ async function startServer() {
 
     const customer = updatedCustomers.find(item => item.id === invoice.customerId);
     if (customer) {
-      const token = createInvoicePortalToken(invoice.id, Date.now() + 30 * 24 * 60 * 60 * 1000, await getOrCreatePortalLinkSecretDb());
+      const token = createPortalLinkToken({ invoiceId: invoice.id }, Date.now() + 30 * 24 * 60 * 60 * 1000, await getOrCreatePortalLinkSecretDb());
       const appUrl = configuredPaymentAppUrl();
       const billingUrl = appUrl ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(token)}` : '';
       const message = `Pembayaran invoice ${invoice.invoiceNumber} telah disetujui. Masa aktif layanan hingga ${customer.expiredDate}.${billingUrl ? ` Cek detail atau bayar tagihan berikutnya: ${billingUrl}` : ''}`;
@@ -1321,22 +1498,28 @@ async function startServer() {
         ? customers.find(item => item.phone.replace(/[^0-9]/g, '') === normalizedPhone)
         : undefined);
       if (!customer) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
-      const invoices = (stored.data.invoices || [])
+      await ensureDueInvoice(customer.id);
+      const latest = await getAppDataDb();
+      const invoices = (latest.data.invoices || [])
         .filter(invoice => invoice.customerId === customer.id)
         .map(({ id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod }) => ({
           id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod,
         }));
+      const today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date());
+      const publicStatus = customer.status === 'active' && customer.expiredDate <= today ? 'expiring' : customer.status;
       res.setHeader('Cache-Control', 'no-store');
       res.json({
         customer: {
           id: customer.id,
           customerId: customer.customerId,
           name: customer.name,
-          profileName: customer.profileName,
+          profileName: customer.servicePackageName || customer.profileName,
           bandwidthLimit: customer.bandwidthLimit,
           monthlyFee: customer.monthlyFee,
           expiredDate: customer.expiredDate,
-          status: customer.status,
+          status: publicStatus,
         },
         invoices,
         paymentAvailable: Boolean(
@@ -1353,38 +1536,41 @@ async function startServer() {
   app.post('/api/portal/billing-link', async (req, res) => {
     try {
       const secret = await getOrCreatePortalLinkSecretDb();
-      const token = verifyInvoicePortalToken(req.body?.token, secret);
+      const token = verifyPortalLinkToken(req.body?.token, secret);
       if (!token) return res.status(410).json({ error: 'Tautan tagihan tidak valid atau sudah kedaluwarsa' });
       const stored = await getAppDataDb();
-      const invoice = (stored.data.invoices || []).find(item => item.id === token.invoiceId);
-      if (!invoice) return res.status(404).json({ error: 'Tagihan tidak ditemukan' });
-      const customer = (stored.data.customers || []).find(item => item.id === invoice.customerId);
+      const invoice = token.invoiceId
+        ? (stored.data.invoices || []).find(item => item.id === token.invoiceId)
+        : undefined;
+      if (token.invoiceId && !invoice) return res.status(404).json({ error: 'Tagihan tidak ditemukan' });
+      const customerId = invoice?.customerId || token.customerId;
+      if (token.customerId && invoice && token.customerId !== invoice.customerId) {
+        return res.status(403).json({ error: 'Tautan pelanggan tidak cocok dengan tagihan' });
+      }
+      const customer = (stored.data.customers || []).find(item => item.id === customerId);
       if (!customer) return res.status(404).json({ error: 'Data pelanggan tidak ditemukan' });
+      await ensureDueInvoice(customer.id);
+      const latest = await getAppDataDb();
+      const currentInvoices = (latest.data.invoices || []).filter(item =>
+        item.customerId === customer.id && (!invoice || item.id === invoice.id)
+      );
       res.setHeader('Cache-Control', 'no-store');
       res.json({
         customer: {
           id: customer.id,
           customerId: customer.customerId,
           name: customer.name,
-          profileName: customer.profileName,
+          profileName: customer.servicePackageName || customer.profileName,
           bandwidthLimit: customer.bandwidthLimit,
           monthlyFee: customer.monthlyFee,
           expiredDate: customer.expiredDate,
-          status: customer.status,
+          status: customer.status === 'active' && customer.expiredDate <= new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
+          }).format(new Date()) ? 'expiring' : customer.status,
         },
-        invoices: [{
-          id: invoice.id,
-          invoiceNumber: invoice.invoiceNumber,
-          profileName: invoice.profileName,
-          periodMonth: invoice.periodMonth,
-          amount: invoice.amount,
-          uniqueCode: invoice.uniqueCode,
-          totalAmount: invoice.totalAmount,
-          status: invoice.status,
-          dueDate: invoice.dueDate,
-          paidAt: invoice.paidAt,
-          paymentMethod: invoice.paymentMethod,
-        }],
+        invoices: currentInvoices.map(({ id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod }) => ({
+          id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod,
+        })),
         paymentAvailable: Boolean(
           process.env.MIDTRANS_SERVER_KEY &&
           configuredPaymentAppUrl() &&
@@ -1393,6 +1579,112 @@ async function startServer() {
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/admin/customers/:customerId/payment-link', requireAdminSession, async (req, res) => {
+    try {
+      const stored = await getAppDataDb();
+      const customer = (stored.data.customers || []).find(item => item.id === req.params.customerId);
+      if (!customer) return res.status(404).json({ error: 'Data pelanggan tidak ditemukan' });
+      const createUpcomingInvoice = req.body?.createUpcomingInvoice === true;
+      const invoice = await ensureDueInvoice(customer.id, false, createUpcomingInvoice);
+      const appUrl = configuredPaymentAppUrl() || (!isProd ? new URL('http://localhost:3000') : null);
+      if (!appUrl) return res.status(503).json({ error: 'APP_URL HTTPS harus dikonfigurasi sebelum membuat tautan pelanggan' });
+      const secret = await getOrCreatePortalLinkSecretDb();
+      const token = createPortalLinkToken(
+        invoice ? { invoiceId: invoice.id } : { customerId: customer.id },
+        Date.now() + 30 * 24 * 60 * 60 * 1000,
+        secret
+      );
+      const url = `${appUrl.origin}/portal/billing?token=${encodeURIComponent(token)}`;
+      const latest = await getAppDataDb();
+      const message = invoice
+        ? buildInvoiceReminderMessage(
+          customer,
+          invoice,
+          url,
+          await getAppSettingsDb(),
+          latest.data.paymentConfig
+        )
+        : undefined;
+      res.json({ url, invoice, message });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  const manualInvoiceCreationInProgress = new Set<string>();
+  app.post('/api/admin/invoices', requireAdminSession, async (req, res) => {
+    const { customerId } = req.body || {};
+    if (typeof customerId !== 'string' || !customerId.trim()) {
+      return res.status(400).json({ error: 'Pilih pelanggan yang akan ditagih' });
+    }
+    if (manualInvoiceCreationInProgress.has(customerId)) {
+      return res.status(409).json({ error: 'Pembuatan invoice untuk pelanggan ini sedang diproses' });
+    }
+    manualInvoiceCreationInProgress.add(customerId);
+    try {
+      const stored = await getAppDataDb();
+      const customers = stored.data.customers || [];
+      const customer = customers.find(item => item.id === customerId);
+      if (!customer) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
+      if (!Number.isSafeInteger(customer.monthlyFee) || customer.monthlyFee <= 0) {
+        return res.status(400).json({ error: 'Pelanggan belum memiliki biaya paket bulanan yang valid' });
+      }
+      const invoices = stored.data.invoices || [];
+      const outstandingInvoice = invoices.find(item =>
+        item.customerId === customer.id && item.status === 'unpaid'
+      );
+      if (outstandingInvoice) {
+        return res.status(409).json({
+          error: `Pelanggan sudah memiliki invoice belum lunas ${outstandingInvoice.invoiceNumber}`,
+          invoice: outstandingInvoice,
+        });
+      }
+
+      const today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Jakarta',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+      const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(customer.expiredDate) && customer.expiredDate > today
+        ? customer.expiredDate
+        : today;
+      const dueMonthDate = new Date(`${dueDate}T12:00:00+07:00`);
+      const periodMonth = new Intl.DateTimeFormat('id-ID', {
+        month: 'long',
+        year: 'numeric',
+        timeZone: 'Asia/Jakarta',
+      }).format(dueMonthDate);
+      const periodCode = dueDate.slice(0, 7).replace('-', '');
+      const numberPattern = new RegExp(`^INV-${periodCode}-(\\d+)$`);
+      const nextNumber = Math.max(0, ...invoices.map(invoice => {
+        const match = invoice.invoiceNumber.match(numberPattern);
+        return match ? Number(match[1]) : 0;
+      })) + 1;
+      const uniqueCode = randomInt(10, 900);
+      const invoice: Invoice = {
+        id: randomUUID(),
+        invoiceNumber: `INV-${periodCode}-${String(nextNumber).padStart(3, '0')}`,
+        customerId: customer.id,
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        profileName: customer.servicePackageName || customer.profileName,
+        periodMonth,
+        amount: customer.monthlyFee,
+        uniqueCode,
+        totalAmount: customer.monthlyFee + uniqueCode,
+        status: 'unpaid',
+        dueDate,
+      };
+      await saveAppDataCollectionDb('invoices', [invoice, ...invoices]);
+      res.status(201).json({ invoice });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      manualInvoiceCreationInProgress.delete(customerId);
     }
   });
 
@@ -1405,7 +1697,7 @@ async function startServer() {
       const appUrl = configuredPaymentAppUrl() || (!isProd ? new URL('http://localhost:3000') : null);
       if (!appUrl) return res.status(503).json({ error: 'APP_URL HTTPS harus dikonfigurasi sebelum membuat tautan pembayaran' });
       const secret = await getOrCreatePortalLinkSecretDb();
-      const token = createInvoicePortalToken(invoice.id, Date.now() + 30 * 24 * 60 * 60 * 1000, secret);
+      const token = createPortalLinkToken({ invoiceId: invoice.id }, Date.now() + 30 * 24 * 60 * 60 * 1000, secret);
       res.json({ url: `${appUrl.origin}/portal/billing?token=${encodeURIComponent(token)}` });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1439,11 +1731,14 @@ async function startServer() {
       let customer: Customer | undefined;
       if (typeof portalToken === 'string') {
         const secret = await getOrCreatePortalLinkSecretDb();
-        const token = verifyInvoicePortalToken(portalToken, secret);
-        if (!token || token.invoiceId !== invoiceId) {
+        const token = verifyPortalLinkToken(portalToken, secret);
+        if (!token || (token.invoiceId && token.invoiceId !== invoiceId)) {
           return res.status(410).json({ error: 'Tautan tagihan tidak valid atau sudah kedaluwarsa' });
         }
-        const linkedInvoice = (stored.data.invoices || []).find(item => item.id === token.invoiceId);
+        const linkedInvoice = (stored.data.invoices || []).find(item => item.id === invoiceId);
+        if (token.customerId && linkedInvoice?.customerId !== token.customerId) {
+          return res.status(403).json({ error: 'Tautan pelanggan tidak cocok dengan tagihan' });
+        }
         customer = customers.find(item => item.id === linkedInvoice?.customerId);
       } else {
         const searchValue = lookupValue.trim();
@@ -2254,7 +2549,7 @@ async function startServer() {
     if (backgroundTasksRunning) return;
     backgroundTasksRunning = true;
     try {
-      const stored = await getAppDataDb();
+      let stored = await getAppDataDb();
       const transactions = stored.data.transactions || [];
       const expiredOrderIds = new Set(transactions
         .filter(item => item.paymentMethod === 'manual' && item.status === 'pending' && item.expiresAt && new Date(item.expiresAt).getTime() <= Date.now())
@@ -2296,6 +2591,10 @@ async function startServer() {
       const tomorrow = new Date(`${today}T12:00:00+07:00`);
       tomorrow.setDate(tomorrow.getDate() + 1);
       const dueTomorrow = jakartaDate(tomorrow);
+      await Promise.all((stored.data.customers || [])
+        .filter(customer => customer.status !== 'active' || customer.expiredDate <= dueTomorrow)
+        .map(customer => ensureDueInvoice(customer.id, true)));
+      stored = await getAppDataDb();
       const whatsappLogs = stored.data.whatsappLogs || [];
       for (const invoice of (stored.data.invoices || []).filter(item =>
         item.status === 'unpaid' && item.dueDate === dueTomorrow
@@ -2309,16 +2608,20 @@ async function startServer() {
         const customer = (stored.data.customers || []).find(item => item.id === invoice.customerId);
         if (!customer) continue;
         const secret = await getOrCreatePortalLinkSecretDb();
-        const token = createInvoicePortalToken(invoice.id, Date.now() + 30 * 24 * 60 * 60 * 1000, secret);
+        const token = createPortalLinkToken({ invoiceId: invoice.id }, Date.now() + 30 * 24 * 60 * 60 * 1000, secret);
         const appUrl = configuredPaymentAppUrl();
         if (!appUrl) {
           console.error(`[Reminder] Skipping invoice ${invoice.invoiceNumber}: APP_URL is not configured.`);
           continue;
         }
         const paymentUrl = `${appUrl.origin}/portal/billing?token=${encodeURIComponent(token)}`;
-        const message =
-          `PENGINGAT TAGIHAN H-1: Halo ${customer.name}, invoice ${invoice.invoiceNumber} sebesar Rp ${invoice.totalAmount.toLocaleString('id-ID')} jatuh tempo besok (${invoice.dueDate}). ` +
-          `Cek detail dan bayar melalui tautan resmi: ${paymentUrl}`;
+        const message = buildInvoiceReminderMessage(
+          customer,
+          invoice,
+          paymentUrl,
+          settings,
+          stored.data.paymentConfig
+        );
         try {
           const sent = await sendWhatsAppMessage(customer.phone, message);
           await recordWhatsAppLog(customer.phone, customer.name, 'reminder_h1', message, 'sent', `${marker}:${sent.provider}`);

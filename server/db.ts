@@ -579,6 +579,7 @@ export async function saveVoucherOrderDb(vouchers: Voucher[], transactions: Paym
 const APP_DATA_COLLECTIONS = [
   'customers',
   'invoices',
+  'pppoePackages',
   'hotspotProfiles',
   'hotspotServiceProfiles',
   'vouchers',
@@ -606,6 +607,7 @@ export async function getAppDataDb(): Promise<{
     }
   }
   if (!Array.isArray(data.hotspotServiceProfiles)) data.hotspotServiceProfiles = [];
+  if (!Array.isArray(data.pppoePackages)) data.pppoePackages = [];
 
   return {
     initialized: APP_DATA_COLLECTIONS.every(collection => collection in data),
@@ -685,6 +687,7 @@ export async function getDbStats() {
   const dataCounts = {
     customers: appData.data.customers?.length ?? 0,
     invoices: appData.data.invoices?.length ?? 0,
+    pppoe_packages: appData.data.pppoePackages?.length ?? 0,
     hotspot_profiles: appData.data.hotspotProfiles?.length ?? 0,
     hotspot_service_profiles: appData.data.hotspotServiceProfiles?.length ?? 0,
     vouchers: appData.data.vouchers?.length ?? 0,

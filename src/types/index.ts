@@ -9,6 +9,8 @@ export interface Customer {
   address: string;
   pppoeUsername: string;
   pppoePassword: string;
+  pppoePackageId?: string;
+  servicePackageName?: string;
   profileName: string; // e.g. "Paket Home 20 Mbps"
   bandwidthLimit: string; // e.g. "20M/20M"
   monthlyFee: number; // e.g. 175000
@@ -56,6 +58,16 @@ export interface HotspotProfile {
   dataLimitMb?: number;
   color: string;
   enabled?: boolean;
+}
+
+export interface PppoePackage {
+  id: string;
+  name: string;
+  routerId: string;
+  routerProfileName: string;
+  speedLimit: string;
+  monthlyFee: number;
+  enabled: boolean;
 }
 
 export type HotspotValidityPreset = '1 jam' | '12 jam' | '1 hari' | '1 minggu' | '2 minggu' | '1 bulan';
@@ -197,6 +209,7 @@ export interface PaymentTransaction {
 export interface AppDataSnapshot {
   customers: Customer[];
   invoices: Invoice[];
+  pppoePackages: PppoePackage[];
   hotspotProfiles: HotspotProfile[];
   hotspotServiceProfiles: HotspotServiceProfile[];
   vouchers: Voucher[];

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Customer, Invoice, Voucher, HotspotProfile, RouterConfig, WhatsAppLog, WhatsAppGatewayConfig, AppSettings } from './types';
+import { Customer, Invoice, Voucher, HotspotProfile, PppoePackage, RouterConfig, WhatsAppLog, WhatsAppGatewayConfig, AppSettings } from './types';
 import { StorageService } from './services/storage';
 import { Navbar } from './components/Navbar';
 import { DashboardTab } from './components/admin/DashboardTab';
@@ -37,6 +37,7 @@ function AppContent() {
   // App Data
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [pppoePackages, setPppoePackages] = useState<PppoePackage[]>([]);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
   const [profiles, setProfiles] = useState<HotspotProfile[]>([]);
   const [routers, setRouters] = useState<RouterConfig[]>([]);
@@ -59,6 +60,7 @@ function AppContent() {
     setAppSettings(freshSettings);
     setCustomers(StorageService.getCustomers());
     setInvoices(StorageService.getInvoices());
+    setPppoePackages(StorageService.getPppoePackages());
     setVouchers(StorageService.getVouchers());
     setProfiles(StorageService.getHotspotProfiles());
     setRouters(StorageService.getRouters());
@@ -167,29 +169,48 @@ function AppContent() {
 
   // Handle WhatsApp Reminder from Table / Dashboard
   const handleOpenSendWa = async (customer: Customer, type: 'reminder' | 'isolir') => {
-    const inv = invoices.find(i => i.customerId === customer.id && i.status === 'unpaid');
-    const amountStr = inv ? `sebesar ${appSettings.currencySymbol} ${inv.totalAmount.toLocaleString('id-ID')}` : `sebesar ${appSettings.currencySymbol} ${customer.monthlyFee.toLocaleString('id-ID')}`;
-
     let text = '';
     let needsPaymentLink = false;
     if (type === 'reminder') {
-      const invoiceLabel = inv ? ` invoice #${inv.invoiceNumber}` : '';
-      text = `Halo Bapak/Ibu ${customer.name}, pengingat tagihan paket ${customer.profileName}${invoiceLabel} ${amountStr} jatuh tempo pada ${inv?.dueDate || customer.expiredDate}.`;
-      if (inv) {
-        needsPaymentLink = true;
-        try {
-          const response = await fetch(`/api/admin/invoices/${encodeURIComponent(inv.id)}/payment-link`, { method: 'POST' });
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-          text += ` Bayar atau cek tagihan di sini: ${result.url}`;
-        } catch (error) {
-          setWaError(error instanceof Error ? error.message : String(error));
+      needsPaymentLink = true;
+      setWaError('');
+      text = `Halo Bapak/Ibu ${customer.name}, pengingat tagihan layanan PPPoE paket ${customer.servicePackageName || customer.profileName}.`;
+      try {
+        const response = await fetch(`/api/admin/customers/${encodeURIComponent(customer.id)}/payment-link`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ createUpcomingInvoice: true }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        const invoice = result.invoice as Invoice | null;
+        if (invoice) {
+          text = typeof result.message === 'string'
+            ? result.message
+            : `Halo Bapak/Ibu ${customer.name}, invoice ${invoice.invoiceNumber} sebesar ${appSettings.currencySymbol} ${invoice.totalAmount.toLocaleString('id-ID')} jatuh tempo pada ${invoice.dueDate}.\n\nDetail pelanggan dan pembayaran: ${result.url}`;
+        } else {
+          text += ` Masa aktif hingga ${customer.expiredDate}.`;
+          text += `\n\nLihat detail pelanggan: ${result.url}`;
         }
-      } else {
-        text += ' Tidak ada invoice belum lunas yang ditemukan. Silakan hubungi operator.';
+      } catch (error) {
+        setWaError(error instanceof Error ? error.message : String(error));
       }
     } else {
-      text = `PEMBERITAHUAN: Yth. ${customer.name}, akses PPPoE paket ${customer.profileName} telah dinonaktifkan oleh operator. Hubungi operator untuk informasi tagihan dan aktivasi layanan.`;
+      needsPaymentLink = true;
+      setWaError('');
+      text = `PEMBERITAHUAN: Yth. ${customer.name}, akses PPPoE paket ${customer.servicePackageName || customer.profileName} telah dinonaktifkan oleh operator.`;
+      try {
+        const response = await fetch(`/api/admin/customers/${encodeURIComponent(customer.id)}/payment-link`, { method: 'POST' });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        const invoice = result.invoice as Invoice | null;
+        if (invoice) {
+          text += ` Tagihan #${invoice.invoiceNumber} sebesar ${appSettings.currencySymbol} ${invoice.totalAmount.toLocaleString('id-ID')}.`;
+        }
+        text += `\n\nDetail pelanggan dan pembayaran: ${result.url}`;
+      } catch (error) {
+        setWaError(error instanceof Error ? error.message : String(error));
+      }
     }
 
     setQuickWaModal({ customer, type, text, needsPaymentLink: needsPaymentLink && !text.includes('/portal/billing?token=') });
@@ -240,7 +261,8 @@ function AppContent() {
 
   // Toggle Isolir
   const handleToggleIsolir = async (customer: Customer) => {
-    const newStatus = customer.status === 'isolated' ? 'active' : 'isolated';
+    const isBlocked = customer.status === 'isolated' || customer.status === 'disabled';
+    const newStatus = isBlocked ? 'active' : 'isolated';
     try {
       const response = await fetch(
         `/api/mikrotik/pppoe/secrets/${encodeURIComponent(customer.routerId)}/${encodeURIComponent(customer.pppoeUsername)}`,
@@ -253,43 +275,46 @@ function AppContent() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `RouterOS returned ${response.status}`);
 
-    const updated: Customer = {
-      ...customer,
-      status: newStatus,
-      notes: newStatus === 'isolated' ? 'Diisolir manual oleh NOC' : 'Isolir dibuka manual oleh NOC',
-    };
-    StorageService.saveCustomer(updated);
+      const updated: Customer = {
+        ...customer,
+        status: newStatus,
+        notes: newStatus === 'isolated' ? 'Diisolir manual oleh NOC' : 'Isolir dibuka manual oleh NOC',
+      };
+      StorageService.saveCustomer(updated);
 
-    if (newStatus === 'isolated' && appSettings.autoSendIsolir) {
-      let status: 'sent' | 'failed' = 'sent';
-      let responseInfo = '';
-      try {
-        const waResponse = await fetch('/api/wa/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            phone: customer.phone,
-            message: `PEMBERITAHUAN ISOLIR: Akses internet PPPoE Anda telah dinonaktifkan. Segera hubungi billing untuk informasi tagihan.`,
-          }),
+      if (newStatus === 'isolated' && appSettings.autoSendIsolir) {
+        let status: 'sent' | 'failed' = 'sent';
+        let responseInfo = '';
+        let message = `PEMBERITAHUAN ISOLIR: Akses internet PPPoE ${customer.name} pada paket ${customer.servicePackageName || customer.profileName} telah dinonaktifkan.`;
+        try {
+          const linkResponse = await fetch(`/api/admin/customers/${encodeURIComponent(customer.id)}/payment-link`, { method: 'POST' });
+          const linkResult = await linkResponse.json();
+          if (!linkResponse.ok) throw new Error(linkResult.error || `HTTP ${linkResponse.status}`);
+          message += `\n\nDetail pelanggan dan pembayaran: ${linkResult.url}`;
+          const waResponse = await fetch('/api/wa/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone: customer.phone, message }),
+          });
+          const waResult = await waResponse.json();
+          if (!waResponse.ok) throw new Error(waResult.error || `OpenWA returned ${waResponse.status}`);
+          responseInfo = JSON.stringify(waResult.data);
+        } catch (error) {
+          status = 'failed';
+          responseInfo = error instanceof Error ? error.message : String(error);
+        }
+        StorageService.addWaLog({
+          recipientPhone: customer.phone,
+          recipientName: customer.name,
+          type: 'isolated',
+          message,
+          status,
+          responseInfo,
         });
-        const waResult = await waResponse.json();
-        if (!waResponse.ok) throw new Error(waResult.error || `OpenWA returned ${waResponse.status}`);
-        responseInfo = JSON.stringify(waResult.data);
-      } catch (error) {
-        status = 'failed';
-        responseInfo = error instanceof Error ? error.message : String(error);
       }
-      StorageService.addWaLog({
-        recipientPhone: customer.phone,
-        recipientName: customer.name,
-        type: 'isolated',
-        message: 'PEMBERITAHUAN ISOLIR: Akses internet PPPoE Anda telah dinonaktifkan. Segera hubungi billing untuk informasi tagihan.',
-        status,
-        responseInfo,
-      });
-    }
 
-    refreshAllData();
+      refreshAllData();
+      toast(newStatus === 'isolated' ? 'Akses PPPoE dinonaktifkan.' : 'Akses PPPoE diaktifkan.', 'success');
     } catch (error) {
       toast('Gagal mengubah status PPPoE di MikroTik', 'error', error instanceof Error ? error.message : String(error));
     }
@@ -369,6 +394,7 @@ function AppContent() {
               <CustomersTab
                 customers={customers}
                 invoices={invoices}
+                pppoePackages={pppoePackages}
                 routers={routers}
                 onRefreshData={refreshAllData}
                 onSendWa={handleOpenSendWa}
@@ -473,7 +499,7 @@ function AppContent() {
                   </div>
                 </div>
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-indigo-300">
-                  {quickWaModal.customer.profileName}
+                  {quickWaModal.customer.servicePackageName || quickWaModal.customer.profileName}
                 </span>
               </div>
 

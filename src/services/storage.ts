@@ -3,6 +3,7 @@ import {
   Invoice,
   HotspotProfile,
   HotspotServiceProfile,
+  PppoePackage,
   Voucher,
   RouterConfig,
   WhatsAppLog,
@@ -17,6 +18,7 @@ const STORAGE_KEYS = {
   APP_SETTINGS: 'mikrotik_billing_app_settings_v1',
   CUSTOMERS: 'mikrotik_billing_customers_v1',
   INVOICES: 'mikrotik_billing_invoices_v1',
+  PPPOE_PACKAGES: 'mikrotik_billing_pppoe_packages_v1',
   HOTSPOT_PROFILES: 'mikrotik_billing_hotspot_profiles_v1',
   HOTSPOT_SERVICE_PROFILES: 'mikrotik_billing_hotspot_service_profiles_v1',
   VOUCHERS: 'mikrotik_billing_vouchers_v1',
@@ -203,6 +205,7 @@ export const StorageService = {
     const mappings: Array<[keyof AppDataSnapshot, string]> = [
       ['customers', STORAGE_KEYS.CUSTOMERS],
       ['invoices', STORAGE_KEYS.INVOICES],
+      ['pppoePackages', STORAGE_KEYS.PPPOE_PACKAGES],
       ['hotspotProfiles', STORAGE_KEYS.HOTSPOT_PROFILES],
       ['hotspotServiceProfiles', STORAGE_KEYS.HOTSPOT_SERVICE_PROFILES],
       ['vouchers', STORAGE_KEYS.VOUCHERS],
@@ -242,6 +245,7 @@ export const StorageService = {
     const snapshot: AppDataSnapshot = {
       customers: this.getCustomers(),
       invoices: this.getInvoices(),
+      pppoePackages: this.getPppoePackages(),
       hotspotProfiles: this.getHotspotProfiles(),
       hotspotServiceProfiles: this.getHotspotServiceProfiles(),
       vouchers: this.getVouchers(),
@@ -281,6 +285,7 @@ export const StorageService = {
         { name: 'app_settings', count: 1 },
         { name: 'customers', count: this.getCustomers().length },
         { name: 'invoices', count: this.getInvoices().length },
+        { name: 'pppoe_packages', count: this.getPppoePackages().length },
         { name: 'hotspot_profiles', count: this.getHotspotProfiles().length },
         { name: 'hotspot_service_profiles', count: this.getHotspotServiceProfiles().length },
         { name: 'vouchers', count: this.getVouchers().length },
@@ -321,6 +326,15 @@ export const StorageService = {
 
   getInvoices(): Invoice[] {
     return readStoredList<Invoice>(STORAGE_KEYS.INVOICES, ['inv-1', 'inv-2', 'inv-3', 'inv-4', 'inv-5']);
+  },
+
+  getPppoePackages(): PppoePackage[] {
+    return readStoredList<PppoePackage>(STORAGE_KEYS.PPPOE_PACKAGES);
+  },
+
+  savePppoePackages(packages: PppoePackage[]): PppoePackage[] {
+    localStorage.setItem(STORAGE_KEYS.PPPOE_PACKAGES, JSON.stringify(packages));
+    return packages;
   },
 
   saveInvoice(inv: Invoice): Invoice[] {
@@ -509,6 +523,7 @@ export const StorageService = {
   resetDefaults(): void {
     localStorage.removeItem(STORAGE_KEYS.CUSTOMERS);
     localStorage.removeItem(STORAGE_KEYS.INVOICES);
+    localStorage.removeItem(STORAGE_KEYS.PPPOE_PACKAGES);
     localStorage.removeItem(STORAGE_KEYS.HOTSPOT_PROFILES);
     localStorage.removeItem(STORAGE_KEYS.VOUCHERS);
     localStorage.removeItem(STORAGE_KEYS.ROUTERS);

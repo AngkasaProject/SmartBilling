@@ -536,8 +536,8 @@ export async function addPppoeSecret(
   const client = apiClient(router);
   try {
     const api = await client.connect();
-    const existing = await api.menu('/ppp secret').where('name', secret.name).get() as RouterRow[];
-    if (existing.length) throw new Error('PPPoE username already exists on router');
+    const existing = await api.menu('/ppp secret').get() as RouterRow[];
+    if (findPppoeSecret(existing, secret.name)) throw new Error('PPPoE username already exists on router');
     await api.menu('/ppp secret').add(secret);
   } finally {
     await client.close();
@@ -549,6 +549,32 @@ export interface PppoeSecretRecord {
   profile: string;
   disabled: boolean;
   remoteAddress: string;
+}
+
+function missingPppoeSecret(name: string, router: RouterConnection, secrets: RouterRow[]): Error {
+  return new Error(
+    `User PPPoE "${name}" tidak ditemukan pada ${router.name} (${router.host}). MikroTik mengembalikan ${secrets.length} secret; pastikan Router dan username pelanggan sesuai.`
+  );
+}
+
+function findPppoeSecret(secrets: RouterRow[], name: string): RouterRow | undefined {
+  const username = name.trim();
+  return secrets.find(secret => typeof secret.name === 'string' && secret.name.trim() === username);
+}
+
+function getPppoeSecretId(secret: RouterRow, router: RouterConnection): string | undefined {
+  const id = router.apiType === 'rest' ? secret['.id'] : secret.id;
+  return id === undefined ? undefined : String(id);
+}
+
+function preservePppoeSecretProfile(
+  secret: RouterRow,
+  update: { password?: string; profile?: string; disabled?: boolean }
+): { password?: string; profile?: string; disabled?: boolean } {
+  if (update.profile !== undefined || update.disabled === undefined) return update;
+  const profile = String(secret.profile || '').trim();
+  if (!profile) throw new Error('MikroTik tidak mengembalikan profile PPPoE Secret; perubahan status dibatalkan.');
+  return { ...update, profile };
 }
 
 export async function getPppoeSecrets(router: RouterConnection): Promise<PppoeSecretRecord[]> {
@@ -564,7 +590,7 @@ export async function getPppoeSecrets(router: RouterConnection): Promise<PppoeSe
       }
     })();
   return rows.map(row => ({
-    name: String(row.name || ''),
+    name: String(row.name || '').trim(),
     profile: String(row.profile || ''),
     disabled: row.disabled === true || row.disabled === 'true' || row.disabled === 'yes',
     remoteAddress: String(row['remote-address'] || row.remoteAddress || ''),
@@ -578,10 +604,11 @@ export async function updatePppoeSecret(
 ): Promise<void> {
   if (router.apiType === 'rest') {
     const secrets = await restRequest<RouterRow[]>(router, '/ppp/secret', 'GET');
-    const secret = secrets.find(item => item.name === name);
-    if (!secret) throw new Error('PPPoE username was not found on router');
+    const secret = findPppoeSecret(secrets, name);
+    if (!secret) throw missingPppoeSecret(name, router, secrets);
     const id = encodeURIComponent(String(secret['.id']));
-    const body = Object.fromEntries(Object.entries(update).map(([key, value]) => [
+    const effectiveUpdate = preservePppoeSecretProfile(secret, update);
+    const body = Object.fromEntries(Object.entries(effectiveUpdate).map(([key, value]) => [
       key,
       typeof value === 'boolean' ? String(value) : value,
     ])) as Record<string, string>;
@@ -591,9 +618,11 @@ export async function updatePppoeSecret(
   const client = apiClient(router);
   try {
     const api = await client.connect();
-    const secret = await api.menu('/ppp secret').where('name', name).getOnly() as RouterRow;
-    if (!secret?.['.id']) throw new Error('PPPoE username was not found on router');
-    await api.menu('/ppp secret').where('.id', String(secret['.id'])).update(update);
+    const secrets = await api.menu('/ppp secret').get() as RouterRow[];
+    const secret = findPppoeSecret(secrets, name);
+    const id = secret && getPppoeSecretId(secret, router);
+    if (!id) throw missingPppoeSecret(name, router, secrets);
+    await api.menu('/ppp secret').where('id', id).update(preservePppoeSecretProfile(secret, update));
   } finally {
     await client.close();
   }
@@ -602,17 +631,19 @@ export async function updatePppoeSecret(
 export async function deletePppoeSecret(router: RouterConnection, name: string): Promise<void> {
   if (router.apiType === 'rest') {
     const secrets = await restRequest<RouterRow[]>(router, '/ppp/secret', 'GET');
-    const secret = secrets.find(item => item.name === name);
-    if (!secret) throw new Error('PPPoE username was not found on router');
+    const secret = findPppoeSecret(secrets, name);
+    if (!secret) throw missingPppoeSecret(name, router, secrets);
     await restRequest(router, `/ppp/secret/${encodeURIComponent(String(secret['.id']))}`, 'DELETE');
     return;
   }
   const client = apiClient(router);
   try {
     const api = await client.connect();
-    const secret = await api.menu('/ppp secret').where('name', name).getOnly() as RouterRow;
-    if (!secret?.['.id']) throw new Error('PPPoE username was not found on router');
-    await api.menu('/ppp secret').where('.id', String(secret['.id'])).delete();
+    const secrets = await api.menu('/ppp secret').get() as RouterRow[];
+    const secret = findPppoeSecret(secrets, name);
+    const id = secret && getPppoeSecretId(secret, router);
+    if (!id) throw missingPppoeSecret(name, router, secrets);
+    await api.menu('/ppp secret').where('id', id).delete();
   } finally {
     await client.close();
   }

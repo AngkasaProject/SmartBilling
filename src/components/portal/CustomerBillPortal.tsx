@@ -205,18 +205,29 @@ export const CustomerBillPortal: React.FC<CustomerBillPortalProps> = ({ showNavi
         {customer && (
           <section className="mt-6 space-y-4">
             <div className={`p-4 rounded-xl border flex items-start gap-3 ${
-              customer.status === 'isolated'
+              customer.status === 'isolated' || customer.status === 'disabled'
                 ? 'bg-rose-950/40 border-rose-500/40 text-rose-200'
                 : customer.status === 'expiring'
                   ? 'bg-amber-950/40 border-amber-500/40 text-amber-200'
                   : 'bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
             }`}>
-              {customer.status === 'isolated' ? <ShieldAlert className="w-5 h-5 shrink-0" /> :
+              {customer.status === 'isolated' || customer.status === 'disabled' ? <ShieldAlert className="w-5 h-5 shrink-0" /> :
                 customer.status === 'expiring' ? <AlertCircle className="w-5 h-5 shrink-0" /> :
                   <CheckCircle2 className="w-5 h-5 shrink-0" />}
               <div>
-                <h2 className="font-bold">{customer.status === 'isolated' ? 'Layanan dinonaktifkan' : customer.status === 'expiring' ? 'Masa aktif segera berakhir' : 'Status layanan'}</h2>
-                <p className="text-xs mt-1">Masa aktif: {customer.expiredDate}. Hubungi operator untuk konfirmasi pembayaran atau aktivasi.</p>
+                <h2 className="font-bold">
+                  {customer.status === 'isolated' || customer.status === 'disabled'
+                    ? 'Layanan dinonaktifkan'
+                    : customer.status === 'expiring'
+                      ? 'Masa aktif segera berakhir'
+                      : 'Status layanan'}
+                </h2>
+                <p className="text-xs mt-1">
+                  Masa aktif: {customer.expiredDate}.
+                  {customer.status === 'active'
+                    ? ' Layanan Anda aktif.'
+                    : ' Tagihan dan pilihan pembayaran tersedia di bawah.'}
+                </p>
               </div>
             </div>
 
@@ -265,8 +276,10 @@ export const CustomerBillPortal: React.FC<CustomerBillPortalProps> = ({ showNavi
                   ))}
                 </div>
               )}
-              {paymentAvailable || manualPaymentOptions.length > 0
-                ? <p className="mt-4 text-xs text-slate-500">Pilih pembayaran otomatis atau manual. Pembayaran manual menunggu verifikasi admin.</p>
+              {customer.status === 'active' && !invoices.some(invoice => invoice.status === 'unpaid')
+                ? <p className="mt-4 text-xs text-emerald-300">Layanan masih aktif. Pilihan pembayaran akan tersedia saat masa aktif segera berakhir atau layanan dinonaktifkan.</p>
+                : paymentAvailable || manualPaymentOptions.length > 0
+                ? <p className="mt-4 text-xs text-slate-500">Invoice yang belum lunas dapat dibayar sekarang, termasuk sebelum masa aktif berakhir. Pembayaran manual menunggu verifikasi admin.</p>
                 : <p className="mt-4 text-xs text-amber-300">Metode pembayaran belum dikonfigurasi oleh operator. Hubungi operator.</p>}
               <p className="mt-2 text-xs text-slate-500">Jangan membagikan ID pelanggan atau nomor terdaftar kepada pihak lain.</p>
             </div>

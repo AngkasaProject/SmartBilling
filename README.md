@@ -20,6 +20,7 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 ## 🚀 Fitur Utama
 
 - **👥 Manajemen Pelanggan PPPoE**:
+  - Paket PPPoE dapat dibuat dari menu Pelanggan dengan menghubungkan harga billing ke PPP profile live di router. Saat mendaftarkan pelanggan, operator memilih paket; profile, kecepatan, dan harga terisi dari paket.
   - Pendaftaran user secret, assign static / dynamic IP pool, profile kecepatan (*rate-limit*), dan penetapan tanggal jatuh tempo.
   - Pencatatan pembayaran manual memperpanjang masa aktif; aktivasi router hanya dilakukan setelah RouterOS mengonfirmasi perubahan.
   
@@ -30,11 +31,12 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 - **💬 Integrasi WhatsApp melalui layanan eksternal**:
   - Pilih Fonnte atau OpenWA; SmartBilling hanya mengakses REST API tanpa membundel server WhatsApp.
   - Pengiriman pesan uji dan pelanggan mencatat respons nyata dari provider terpilih.
-  - Pengingat PPPoE H-1 dapat diaktifkan di Pengaturan. Pesan memuat tautan khusus invoice; pastikan `APP_URL` HTTPS dan provider WhatsApp aktif. Kegagalan pengiriman dicatat dan dicoba ulang secara terbatas.
+  - Pengingat PPPoE H-1 dapat diaktifkan di Pengaturan. Pesan pengingat dan isolir manual memuat tautan bertanda tangan ke detail pelanggan/tagihan; pastikan `APP_URL` HTTPS dan provider WhatsApp aktif. Kegagalan pengiriman dicatat dan dicoba ulang secara terbatas.
 
 - **🛒 Portal publik paket dan pelanggan**:
   - Halaman awal menampilkan profil hotspot dari data operator serta pemeriksaan status langganan dengan ID pelanggan dan nomor WhatsApp.
   - Invoice dapat dibayar melalui Midtrans Snap jika dikonfigurasi atau melalui instruksi pembayaran manual. Metode manual menghasilkan kode bayar dan tautan WhatsApp operator untuk konfirmasi; admin memverifikasi pembayaran sebelum menyetujui.
+  - Saat pelanggan tidak aktif atau memasuki tanggal jatuh tempo, portal membuat invoice bulanan bila belum ada dan menampilkan flow pembayaran. Pelanggan yang masih aktif tidak diberi tombol bayar.
   - Tautan invoice bertanda tangan memungkinkan pelanggan membuka tagihan tertentu tanpa menampilkan ID pelanggan di tautan.
 
 - **🎫 Penjualan voucher hotspot**:
