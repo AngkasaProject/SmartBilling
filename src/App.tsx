@@ -1,28 +1,38 @@
-import React, { useState, useEffect } from 'react';
-import { Customer, Invoice, Voucher, HotspotProfile, PppoePackage, RouterConfig, WhatsAppLog, WhatsAppGatewayConfig, AppSettings } from './types';
-import { StorageService } from './services/storage';
-import { Navbar } from './components/Navbar';
-import { DashboardTab } from './components/admin/DashboardTab';
-import { CustomersTab } from './components/admin/CustomersTab';
-import { InvoicesTab } from './components/admin/InvoicesTab';
-import { VouchersTab } from './components/admin/VouchersTab';
-import { RoutersTab } from './components/admin/RoutersTab';
-import { WhatsAppTab } from './components/admin/WhatsAppTab';
-import { PaymentGatewayTab } from './components/admin/PaymentGatewayTab';
-import { SettingsTab } from './components/admin/SettingsTab';
-import { VoucherStorePortal } from './components/portal/VoucherStorePortal';
-import { CustomerBillPortal } from './components/portal/CustomerBillPortal';
-import { PublicPortalHome } from './components/portal/PublicPortalHome';
-import { AdminAuthPage } from './components/AdminAuthPage';
-import { InvoicePrintModal } from './components/InvoicePrintModal';
-import { VoucherPrintModal } from './components/VoucherPrintModal';
-import { Send, X, Check, ShieldAlert, CheckCircle2 } from 'lucide-react';
-import { ToastProvider, useToast } from './components/ui/toast';
-import { ThemeProvider } from './components/ui/theme';
+import React, { useState, useEffect } from "react";
+import {
+  Customer,
+  Invoice,
+  Voucher,
+  HotspotProfile,
+  PppoePackage,
+  RouterConfig,
+  WhatsAppLog,
+  WhatsAppGatewayConfig,
+  AppSettings,
+} from "./types";
+import { StorageService } from "./services/storage";
+import { Navbar } from "./components/Navbar";
+import { DashboardTab } from "./components/admin/DashboardTab";
+import { CustomersTab } from "./components/admin/CustomersTab";
+import { InvoicesTab } from "./components/admin/InvoicesTab";
+import { VouchersTab } from "./components/admin/VouchersTab";
+import { RoutersTab } from "./components/admin/RoutersTab";
+import { WhatsAppTab } from "./components/admin/WhatsAppTab";
+import { PaymentGatewayTab } from "./components/admin/PaymentGatewayTab";
+import { SettingsTab } from "./components/admin/SettingsTab";
+import { VoucherStorePortal } from "./components/portal/VoucherStorePortal";
+import { CustomerBillPortal } from "./components/portal/CustomerBillPortal";
+import { PublicPortalHome } from "./components/portal/PublicPortalHome";
+import { AdminAuthPage } from "./components/AdminAuthPage";
+import { InvoicePrintModal } from "./components/InvoicePrintModal";
+import { VoucherPrintModal } from "./components/VoucherPrintModal";
+import { Send, X, Check, ShieldAlert, CheckCircle2 } from "lucide-react";
+import { ToastProvider, useToast } from "./components/ui/toast";
+import { ThemeProvider } from "./components/ui/theme";
 
 function AppContent() {
   const { toast } = useToast();
-  const [adminTab, setAdminTab] = useState('dashboard');
+  const [adminTab, setAdminTab] = useState("dashboard");
   const [authStatus, setAuthStatus] = useState<{
     authenticated: boolean;
     username: string;
@@ -32,7 +42,9 @@ function AppContent() {
   } | null>(null);
 
   // App Settings (Persistent in SQLite database)
-  const [appSettings, setAppSettings] = useState<AppSettings>(StorageService.getSettings());
+  const [appSettings, setAppSettings] = useState<AppSettings>(
+    StorageService.getSettings(),
+  );
 
   // App Data
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -42,18 +54,30 @@ function AppContent() {
   const [profiles, setProfiles] = useState<HotspotProfile[]>([]);
   const [routers, setRouters] = useState<RouterConfig[]>([]);
   const [waLogs, setWaLogs] = useState<WhatsAppLog[]>([]);
-  const [waConfig, setWaConfig] = useState<WhatsAppGatewayConfig>(StorageService.getWaConfig());
+  const [waConfig, setWaConfig] = useState<WhatsAppGatewayConfig>(
+    StorageService.getWaConfig(),
+  );
   const [dataSyncError, setDataSyncError] = useState<string | null>(null);
 
   // Print Modals
-  const [printInvoiceData, setPrintInvoiceData] = useState<{ invoice: Invoice; customer?: Customer } | null>(null);
-  const [printVouchersData, setPrintVouchersData] = useState<Voucher[] | null>(null);
+  const [printInvoiceData, setPrintInvoiceData] = useState<{
+    invoice: Invoice;
+    customer?: Customer;
+  } | null>(null);
+  const [printVouchersData, setPrintVouchersData] = useState<Voucher[] | null>(
+    null,
+  );
 
   // Quick WhatsApp Dispatch Modal
-  const [quickWaModal, setQuickWaModal] = useState<{ customer: Customer; type: 'reminder' | 'isolir'; text: string; needsPaymentLink: boolean } | null>(null);
+  const [quickWaModal, setQuickWaModal] = useState<{
+    customer: Customer;
+    type: "reminder" | "isolir";
+    text: string;
+    needsPaymentLink: boolean;
+  } | null>(null);
   const [waSending, setWaSending] = useState(false);
   const [waSuccess, setWaSuccess] = useState(false);
-  const [waError, setWaError] = useState('');
+  const [waError, setWaError] = useState("");
 
   const refreshAllData = (persist = true) => {
     const freshSettings = StorageService.getSettings();
@@ -70,8 +94,10 @@ function AppContent() {
     if (persist) {
       StorageService.syncDataToSqlite()
         .then(() => setDataSyncError(null))
-        .catch(error => {
-          setDataSyncError(error instanceof Error ? error.message : String(error));
+        .catch((error) => {
+          setDataSyncError(
+            error instanceof Error ? error.message : String(error),
+          );
         });
     }
   };
@@ -80,12 +106,19 @@ function AppContent() {
     await StorageService.syncDataFromSqlite();
     let syncError: string | null = null;
     try {
-      const response = await fetch('/api/admin/customers/sync-mikrotik', { method: 'POST' });
+      const response = await fetch("/api/admin/customers/sync-mikrotik", {
+        method: "POST",
+      });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (!response.ok)
+        throw new Error(result.error || `HTTP ${response.status}`);
       await StorageService.syncDataFromSqlite();
       if (result.removed || result.updated) {
-        toast('Data pelanggan tersinkron dengan MikroTik', 'success', `${result.removed} pelanggan dihapus dari billing, ${result.updated} data diperbarui.`);
+        toast(
+          "Data pelanggan tersinkron dengan MikroTik",
+          "success",
+          `${result.removed} pelanggan dihapus dari billing, ${result.updated} data diperbarui.`,
+        );
       }
     } catch (error) {
       syncError = error instanceof Error ? error.message : String(error);
@@ -101,26 +134,30 @@ function AppContent() {
     const initialize = async () => {
       try {
         const path = window.location.pathname;
-        if (path === '/') return;
-        if (path === '/portal/vouchers') {
-          const response = await fetch('/api/portal/vouchers');
+        if (path === "/") return;
+        if (path === "/portal/vouchers") {
+          const response = await fetch("/api/portal/vouchers");
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+          if (!response.ok)
+            throw new Error(result.error || `HTTP ${response.status}`);
           if (mounted) setProfiles(result.profiles);
           return;
         }
-        if (path === '/portal/billing') return;
-        if (path !== '/admin') return;
+        if (path === "/portal/billing") return;
+        if (path !== "/admin") return;
 
-        const response = await fetch('/api/auth/status');
+        const response = await fetch("/api/auth/status");
         const status = await response.json();
-        if (!response.ok) throw new Error(status.error || `HTTP ${response.status}`);
+        if (!response.ok)
+          throw new Error(status.error || `HTTP ${response.status}`);
         if (!mounted) return;
         setAuthStatus(status);
         if (status.authenticated) await loadAdminData();
       } catch (error) {
         if (mounted) {
-          setDataSyncError(error instanceof Error ? error.message : String(error));
+          setDataSyncError(
+            error instanceof Error ? error.message : String(error),
+          );
         }
       }
     };
@@ -132,23 +169,33 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    if (!authStatus?.authenticated || window.location.pathname !== '/admin') return;
+    if (!authStatus?.authenticated || window.location.pathname !== "/admin")
+      return;
     let syncing = false;
     const timer = window.setInterval(async () => {
       if (syncing) return;
       syncing = true;
       try {
-        const response = await fetch('/api/admin/customers/sync-mikrotik', { method: 'POST' });
+        const response = await fetch("/api/admin/customers/sync-mikrotik", {
+          method: "POST",
+        });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (!response.ok)
+          throw new Error(result.error || `HTTP ${response.status}`);
         if (result.removed || result.updated) {
           await StorageService.syncDataFromSqlite();
           refreshAllData(false);
-          toast('Pelanggan disinkronkan dari MikroTik', 'success', `${result.removed} dihapus dari billing · ${result.updated} diperbarui.`);
+          toast(
+            "Pelanggan disinkronkan dari MikroTik",
+            "success",
+            `${result.removed} dihapus dari billing · ${result.updated} diperbarui.`,
+          );
         }
         setDataSyncError(null);
       } catch (error) {
-        setDataSyncError(error instanceof Error ? error.message : String(error));
+        setDataSyncError(
+          error instanceof Error ? error.message : String(error),
+        );
       } finally {
         syncing = false;
       }
@@ -158,36 +205,47 @@ function AppContent() {
 
   const handleLogout = async () => {
     try {
-      const response = await fetch('/api/auth/logout', { method: 'POST' });
+      const response = await fetch("/api/auth/logout", { method: "POST" });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-      setAuthStatus(current => current ? { ...current, authenticated: false, username: '' } : current);
+      if (!response.ok)
+        throw new Error(result.error || `HTTP ${response.status}`);
+      setAuthStatus((current) =>
+        current ? { ...current, authenticated: false, username: "" } : current,
+      );
     } catch (error) {
       setDataSyncError(error instanceof Error ? error.message : String(error));
     }
   };
 
   // Handle WhatsApp Reminder from Table / Dashboard
-  const handleOpenSendWa = async (customer: Customer, type: 'reminder' | 'isolir') => {
-    let text = '';
+  const handleOpenSendWa = async (
+    customer: Customer,
+    type: "reminder" | "isolir",
+  ) => {
+    let text = "";
     let needsPaymentLink = false;
-    if (type === 'reminder') {
+    if (type === "reminder") {
       needsPaymentLink = true;
-      setWaError('');
+      setWaError("");
       text = `Halo Bapak/Ibu ${customer.name}, pengingat tagihan layanan PPPoE paket ${customer.servicePackageName || customer.profileName}.`;
       try {
-        const response = await fetch(`/api/admin/customers/${encodeURIComponent(customer.id)}/payment-link`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ createUpcomingInvoice: true }),
-        });
+        const response = await fetch(
+          `/api/admin/customers/${encodeURIComponent(customer.id)}/payment-link`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ createUpcomingInvoice: true }),
+          },
+        );
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (!response.ok)
+          throw new Error(result.error || `HTTP ${response.status}`);
         const invoice = result.invoice as Invoice | null;
         if (invoice) {
-          text = typeof result.message === 'string'
-            ? result.message
-            : `Halo Bapak/Ibu ${customer.name}, invoice ${invoice.invoiceNumber} sebesar ${appSettings.currencySymbol} ${invoice.totalAmount.toLocaleString('id-ID')} jatuh tempo pada ${invoice.dueDate}.\n\nDetail pelanggan dan pembayaran: ${result.url}`;
+          text =
+            typeof result.message === "string"
+              ? result.message
+              : `Halo Bapak/Ibu ${customer.name}, invoice ${invoice.invoiceNumber} sebesar ${appSettings.currencySymbol} ${invoice.totalAmount.toLocaleString("id-ID")} jatuh tempo pada ${invoice.dueDate}.\n\nDetail pelanggan dan pembayaran: ${result.url}`;
         } else {
           text += ` Masa aktif hingga ${customer.expiredDate}.`;
           text += `\n\nLihat detail pelanggan: ${result.url}`;
@@ -197,15 +255,19 @@ function AppContent() {
       }
     } else {
       needsPaymentLink = true;
-      setWaError('');
+      setWaError("");
       text = `PEMBERITAHUAN: Yth. ${customer.name}, akses PPPoE paket ${customer.servicePackageName || customer.profileName} telah dinonaktifkan oleh operator.`;
       try {
-        const response = await fetch(`/api/admin/customers/${encodeURIComponent(customer.id)}/payment-link`, { method: 'POST' });
+        const response = await fetch(
+          `/api/admin/customers/${encodeURIComponent(customer.id)}/payment-link`,
+          { method: "POST" },
+        );
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (!response.ok)
+          throw new Error(result.error || `HTTP ${response.status}`);
         const invoice = result.invoice as Invoice | null;
         if (invoice) {
-          text += ` Tagihan #${invoice.invoiceNumber} sebesar ${appSettings.currencySymbol} ${invoice.totalAmount.toLocaleString('id-ID')}.`;
+          text += ` Tagihan #${invoice.invoiceNumber} sebesar ${appSettings.currencySymbol} ${invoice.totalAmount.toLocaleString("id-ID")}.`;
         }
         text += `\n\nDetail pelanggan dan pembayaran: ${result.url}`;
       } catch (error) {
@@ -213,29 +275,39 @@ function AppContent() {
       }
     }
 
-    setQuickWaModal({ customer, type, text, needsPaymentLink: needsPaymentLink && !text.includes('/portal/billing?token=') });
+    setQuickWaModal({
+      customer,
+      type,
+      text,
+      needsPaymentLink:
+        needsPaymentLink && !text.includes("/portal/billing?token="),
+    });
     setWaSuccess(false);
-    if (!needsPaymentLink) setWaError('');
+    if (!needsPaymentLink) setWaError("");
   };
 
   const handleConfirmSendWa = async () => {
     if (!quickWaModal) return;
     setWaSending(true);
-    setWaError('');
+    setWaError("");
     try {
-      const response = await fetch('/api/wa/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: quickWaModal.customer.phone, message: quickWaModal.text }),
+      const response = await fetch("/api/wa/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: quickWaModal.customer.phone,
+          message: quickWaModal.text,
+        }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || `OpenWA returned ${response.status}`);
+      if (!response.ok)
+        throw new Error(result.error || `OpenWA returned ${response.status}`);
       StorageService.addWaLog({
         recipientPhone: quickWaModal.customer.phone,
         recipientName: quickWaModal.customer.name,
-        type: quickWaModal.type === 'reminder' ? 'reminder_h3' : 'isolated',
+        type: quickWaModal.type === "reminder" ? "reminder_h3" : "isolated",
         message: quickWaModal.text,
-        status: 'sent',
+        status: "sent",
         responseInfo: JSON.stringify(result.data),
       });
       setWaSuccess(true);
@@ -248,9 +320,9 @@ function AppContent() {
       StorageService.addWaLog({
         recipientPhone: quickWaModal.customer.phone,
         recipientName: quickWaModal.customer.name,
-        type: quickWaModal.type === 'reminder' ? 'reminder_h3' : 'isolated',
+        type: quickWaModal.type === "reminder" ? "reminder_h3" : "isolated",
         message: quickWaModal.text,
-        status: 'failed',
+        status: "failed",
         responseInfo: error instanceof Error ? error.message : String(error),
       });
       refreshAllData();
@@ -261,52 +333,64 @@ function AppContent() {
 
   // Toggle Isolir
   const handleToggleIsolir = async (customer: Customer) => {
-    const isBlocked = customer.status === 'isolated' || customer.status === 'disabled';
-    const newStatus = isBlocked ? 'active' : 'isolated';
+    const isBlocked =
+      customer.status === "isolated" || customer.status === "disabled";
+    const newStatus = isBlocked ? "active" : "isolated";
     try {
       const response = await fetch(
         `/api/mikrotik/pppoe/secrets/${encodeURIComponent(customer.routerId)}/${encodeURIComponent(customer.pppoeUsername)}`,
         {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ disabled: newStatus === 'isolated' }),
-        }
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ disabled: newStatus === "isolated" }),
+        },
       );
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || `RouterOS returned ${response.status}`);
+      if (!response.ok)
+        throw new Error(result.error || `RouterOS returned ${response.status}`);
 
       const updated: Customer = {
         ...customer,
         status: newStatus,
-        notes: newStatus === 'isolated' ? 'Diisolir manual oleh NOC' : 'Isolir dibuka manual oleh NOC',
+        notes:
+          newStatus === "isolated"
+            ? "Diisolir manual oleh NOC"
+            : "Isolir dibuka manual oleh NOC",
       };
       StorageService.saveCustomer(updated);
 
-      if (newStatus === 'isolated' && appSettings.autoSendIsolir) {
-        let status: 'sent' | 'failed' = 'sent';
-        let responseInfo = '';
+      if (newStatus === "isolated" && appSettings.autoSendIsolir) {
+        let status: "sent" | "failed" = "sent";
+        let responseInfo = "";
         let message = `PEMBERITAHUAN ISOLIR: Akses internet PPPoE ${customer.name} pada paket ${customer.servicePackageName || customer.profileName} telah dinonaktifkan.`;
         try {
-          const linkResponse = await fetch(`/api/admin/customers/${encodeURIComponent(customer.id)}/payment-link`, { method: 'POST' });
+          const linkResponse = await fetch(
+            `/api/admin/customers/${encodeURIComponent(customer.id)}/payment-link`,
+            { method: "POST" },
+          );
           const linkResult = await linkResponse.json();
-          if (!linkResponse.ok) throw new Error(linkResult.error || `HTTP ${linkResponse.status}`);
+          if (!linkResponse.ok)
+            throw new Error(linkResult.error || `HTTP ${linkResponse.status}`);
           message += `\n\nDetail pelanggan dan pembayaran: ${linkResult.url}`;
-          const waResponse = await fetch('/api/wa/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+          const waResponse = await fetch("/api/wa/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ phone: customer.phone, message }),
           });
           const waResult = await waResponse.json();
-          if (!waResponse.ok) throw new Error(waResult.error || `OpenWA returned ${waResponse.status}`);
+          if (!waResponse.ok)
+            throw new Error(
+              waResult.error || `OpenWA returned ${waResponse.status}`,
+            );
           responseInfo = JSON.stringify(waResult.data);
         } catch (error) {
-          status = 'failed';
+          status = "failed";
           responseInfo = error instanceof Error ? error.message : String(error);
         }
         StorageService.addWaLog({
           recipientPhone: customer.phone,
           recipientName: customer.name,
-          type: 'isolated',
+          type: "isolated",
           message,
           status,
           responseInfo,
@@ -314,24 +398,41 @@ function AppContent() {
       }
 
       refreshAllData();
-      toast(newStatus === 'isolated' ? 'Akses PPPoE dinonaktifkan.' : 'Akses PPPoE diaktifkan.', 'success');
+      toast(
+        newStatus === "isolated"
+          ? "Akses PPPoE dinonaktifkan."
+          : "Akses PPPoE diaktifkan.",
+        "success",
+      );
     } catch (error) {
-      toast('Gagal mengubah status PPPoE di MikroTik', 'error', error instanceof Error ? error.message : String(error));
+      toast(
+        "Gagal mengubah status PPPoE di MikroTik",
+        "error",
+        error instanceof Error ? error.message : String(error),
+      );
     }
   };
 
   const pathname = window.location.pathname;
-  if (pathname === '/') return <PublicPortalHome />;
-  if (pathname !== '/admin' && pathname !== '/portal/billing' && pathname !== '/portal/vouchers') {
+  if (pathname === "/") return <PublicPortalHome />;
+  if (
+    pathname !== "/admin" &&
+    pathname !== "/portal/billing" &&
+    pathname !== "/portal/vouchers"
+  ) {
     return <PublicPortalHome />;
   }
-  if (pathname === '/portal/billing') return <CustomerBillPortal />;
-  if (pathname === '/portal/vouchers') {
+  if (pathname === "/portal/billing") return <CustomerBillPortal />;
+  if (pathname === "/portal/vouchers") {
     return (
       <main className="min-h-screen bg-slate-950 text-slate-100">
         <nav className="max-w-5xl mx-auto px-5 py-4 flex justify-between text-sm font-bold">
-          <a href="/" className="text-white">SmartBilling</a>
-          <a href="/portal/billing" className="text-indigo-300">Cek Tagihan</a>
+          <a href="/" className="text-white">
+            SmartBilling
+          </a>
+          <a href="/portal/billing" className="text-indigo-300">
+            Cek Tagihan
+          </a>
         </nav>
         <VoucherStorePortal profiles={profiles} />
       </main>
@@ -339,7 +440,11 @@ function AppContent() {
   }
 
   if (!authStatus) {
-    return <main className="min-h-screen bg-slate-950 text-slate-200 grid place-items-center">{dataSyncError || 'Memuat...'}</main>;
+    return (
+      <main className="min-h-screen bg-slate-950 text-slate-200 grid place-items-center">
+        {dataSyncError || "Memuat..."}
+      </main>
+    );
   }
   if (!authStatus.authenticated) {
     return (
@@ -347,12 +452,16 @@ function AppContent() {
         registrationRequired={authStatus.registrationRequired}
         envLoginConfigured={authStatus.envLoginConfigured}
         envLoginIncomplete={authStatus.envLoginIncomplete}
-        onAuthenticated={async username => {
-          setAuthStatus(current => current ? { ...current, authenticated: true, username } : current);
+        onAuthenticated={async (username) => {
+          setAuthStatus((current) =>
+            current ? { ...current, authenticated: true, username } : current,
+          );
           try {
             await loadAdminData();
           } catch (error) {
-            setDataSyncError(error instanceof Error ? error.message : String(error));
+            setDataSyncError(
+              error instanceof Error ? error.message : String(error),
+            );
           }
         }}
       />
@@ -372,85 +481,94 @@ function AppContent() {
       />
 
       {dataSyncError && (
-        <div role="alert" className="border-b border-amber-500/30 bg-amber-950/60 px-4 py-2 text-center text-xs text-amber-200">
+        <div
+          role="alert"
+          className="border-b border-amber-500/30 bg-amber-950/60 px-4 py-2 text-center text-xs text-amber-200"
+        >
           Sinkronisasi data gagal: {dataSyncError}
         </div>
       )}
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
-            {adminTab === 'dashboard' && (
-              <DashboardTab
-                customers={customers}
-                invoices={invoices}
-                vouchers={vouchers}
-                routers={routers}
-                onRefreshData={refreshAllData}
-                onNavigateTab={setAdminTab}
-                onSendWaNotification={handleOpenSendWa}
-                onToggleIsolir={handleToggleIsolir}
-              />
-            )}
-            {adminTab === 'customers' && (
-              <CustomersTab
-                customers={customers}
-                invoices={invoices}
-                pppoePackages={pppoePackages}
-                routers={routers}
-                onRefreshData={refreshAllData}
-                onSendWa={handleOpenSendWa}
-                onViewInvoice={(inv, cust) => setPrintInvoiceData({ invoice: inv, customer: cust })}
-                onToggleIsolir={handleToggleIsolir}
-              />
-            )}
-            {adminTab === 'invoices' && (
-              <InvoicesTab
-                invoices={invoices}
-                customers={customers}
-                onRefreshData={refreshAllData}
-                onViewInvoice={(inv, cust) => setPrintInvoiceData({ invoice: inv, customer: cust })}
-                onSendWa={handleOpenSendWa}
-              />
-            )}
-            {adminTab === 'vouchers' && (
-              <VouchersTab
-                vouchers={vouchers}
-                profiles={profiles}
-                serviceProfiles={StorageService.getHotspotServiceProfiles()}
-                routers={routers}
-                onRefreshData={refreshAllData}
-                onManageRouters={() => setAdminTab('routers')}
-                onOpenPrintModal={vouchersToPrint => setPrintVouchersData(vouchersToPrint)}
-              />
-            )}
-            {adminTab === 'routers' && (
-              <RoutersTab
-                routers={routers}
-                onRefreshData={refreshAllData}
-              />
-            )}
-            {adminTab === 'whatsapp' && (
-              <WhatsAppTab
-                waLogs={waLogs}
-                waConfig={waConfig}
-                onRefreshData={refreshAllData}
-              />
-            )}
-            {adminTab === 'payment' && (
-              <PaymentGatewayTab />
-            )}
-            {adminTab === 'settings' && (
-              <SettingsTab
-                settings={appSettings}
-                onRefreshSettings={refreshAllData}
-              />
-            )}
+        {adminTab === "dashboard" && (
+          <DashboardTab
+            customers={customers}
+            invoices={invoices}
+            vouchers={vouchers}
+            routers={routers}
+            onRefreshData={refreshAllData}
+            onNavigateTab={setAdminTab}
+            onSendWaNotification={handleOpenSendWa}
+            onToggleIsolir={handleToggleIsolir}
+          />
+        )}
+        {adminTab === "customers" && (
+          <CustomersTab
+            customers={customers}
+            invoices={invoices}
+            pppoePackages={pppoePackages}
+            routers={routers}
+            onRefreshData={refreshAllData}
+            onSendWa={handleOpenSendWa}
+            onViewInvoice={(inv, cust) =>
+              setPrintInvoiceData({ invoice: inv, customer: cust })
+            }
+            onToggleIsolir={handleToggleIsolir}
+          />
+        )}
+        {adminTab === "invoices" && (
+          <InvoicesTab
+            invoices={invoices}
+            customers={customers}
+            onRefreshData={refreshAllData}
+            onViewInvoice={(inv, cust) =>
+              setPrintInvoiceData({ invoice: inv, customer: cust })
+            }
+            onSendWa={handleOpenSendWa}
+          />
+        )}
+        {adminTab === "vouchers" && (
+          <VouchersTab
+            vouchers={vouchers}
+            profiles={profiles}
+            serviceProfiles={StorageService.getHotspotServiceProfiles()}
+            routers={routers}
+            onRefreshData={refreshAllData}
+            onManageRouters={() => setAdminTab("routers")}
+            onOpenPrintModal={(vouchersToPrint) =>
+              setPrintVouchersData(vouchersToPrint)
+            }
+          />
+        )}
+        {adminTab === "routers" && (
+          <RoutersTab routers={routers} onRefreshData={refreshAllData} />
+        )}
+        {adminTab === "whatsapp" && (
+          <WhatsAppTab
+            waLogs={waLogs}
+            waConfig={waConfig}
+            onRefreshData={refreshAllData}
+          />
+        )}
+        {adminTab === "payment" && <PaymentGatewayTab />}
+        {adminTab === "settings" && (
+          <SettingsTab
+            settings={appSettings}
+            onRefreshSettings={refreshAllData}
+          />
+        )}
       </main>
 
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950/60 py-4 px-6 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>{appSettings.appName} • Docker SQLite Persistent (/app/data/billing.sqlite)</span>
-          <span>OpenWA (rmyndharis/OpenWA) • RouterOS v6 & v7 API Compatible</span>
+          <span>
+            {appSettings.appName} • Docker SQLite Persistent
+            (/app/data/billing.sqlite)
+          </span>
+          <span>
+            OpenWA (rmyndharis/OpenWA) • RouterOS v6 & v7 API Compatible
+          </span>
         </div>
       </footer>
 
@@ -493,22 +611,29 @@ function AppContent() {
             <div className="space-y-3.5 text-xs">
               <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex justify-between items-center">
                 <div>
-                  <div className="font-bold text-white text-sm">{quickWaModal.customer.name}</div>
+                  <div className="font-bold text-white text-sm">
+                    {quickWaModal.customer.name}
+                  </div>
                   <div className="text-[11px] font-mono text-emerald-400 mt-0.5">
                     WhatsApp: {quickWaModal.customer.phone}
                   </div>
                 </div>
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-indigo-300">
-                  {quickWaModal.customer.servicePackageName || quickWaModal.customer.profileName}
+                  {quickWaModal.customer.servicePackageName ||
+                    quickWaModal.customer.profileName}
                 </span>
               </div>
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1">Preview Isi Pesan:</label>
+                <label className="block text-slate-300 font-semibold mb-1">
+                  Preview Isi Pesan:
+                </label>
                 <textarea
                   rows={4}
                   value={quickWaModal.text}
-                  onChange={e => setQuickWaModal({ ...quickWaModal, text: e.target.value })}
+                  onChange={(e) =>
+                    setQuickWaModal({ ...quickWaModal, text: e.target.value })
+                  }
                   className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-white font-mono text-xs focus:outline-none focus:border-indigo-500 leading-relaxed"
                 />
               </div>
@@ -516,10 +641,20 @@ function AppContent() {
               {waSuccess && (
                 <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 flex items-center gap-2 font-medium">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  <span>Pesan berhasil dikirim ke nomor {quickWaModal.customer.phone}!</span>
+                  <span>
+                    Pesan berhasil dikirim ke nomor{" "}
+                    {quickWaModal.customer.phone}!
+                  </span>
                 </div>
               )}
-              {waError && <div role="alert" className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300">{waError}</div>}
+              {waError && (
+                <div
+                  role="alert"
+                  className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300"
+                >
+                  {waError}
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-2.5 pt-4 border-t border-slate-800 mt-5">
@@ -531,11 +666,21 @@ function AppContent() {
               </button>
               <button
                 onClick={handleConfirmSendWa}
-                disabled={waSending || waSuccess || quickWaModal.needsPaymentLink}
+                disabled={
+                  waSending || waSuccess || quickWaModal.needsPaymentLink
+                }
                 className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold text-xs shadow-lg shadow-emerald-600/30 transition flex items-center gap-1.5"
               >
-                <Send className={`w-3.5 h-3.5 ${waSending ? 'animate-spin' : ''}`} />
-                <span>{waSending ? 'Mengirim...' : waSuccess ? 'Terkirim!' : 'Kirim Sekarang'}</span>
+                <Send
+                  className={`w-3.5 h-3.5 ${waSending ? "animate-spin" : ""}`}
+                />
+                <span>
+                  {waSending
+                    ? "Mengirim..."
+                    : waSuccess
+                      ? "Terkirim!"
+                      : "Kirim Sekarang"}
+                </span>
               </button>
             </div>
           </div>
