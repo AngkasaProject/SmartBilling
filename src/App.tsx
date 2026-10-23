@@ -29,6 +29,7 @@ import { VoucherPrintModal } from "./components/VoucherPrintModal";
 import { Send, X, Check, ShieldAlert, CheckCircle2 } from "lucide-react";
 import { ToastProvider, useToast } from "./components/ui/toast";
 import { ThemeProvider } from "./components/ui/theme";
+import { renderWhatsAppTemplate } from "./utils/whatsappTemplates";
 
 function AppContent() {
   const { toast } = useToast();
@@ -224,6 +225,7 @@ function AppContent() {
   ) => {
     let text = "";
     let needsPaymentLink = false;
+    let paymentLinkCreated = false;
     if (type === "reminder") {
       needsPaymentLink = true;
       setWaError("");
@@ -240,6 +242,8 @@ function AppContent() {
         const result = await response.json();
         if (!response.ok)
           throw new Error(result.error || `HTTP ${response.status}`);
+        if (typeof result.url !== "string" || !result.url) throw new Error("Tautan tagihan tidak dibuat oleh server");
+        paymentLinkCreated = true;
         const invoice = result.invoice as Invoice | null;
         if (invoice) {
           text =
@@ -265,11 +269,13 @@ function AppContent() {
         const result = await response.json();
         if (!response.ok)
           throw new Error(result.error || `HTTP ${response.status}`);
-        const invoice = result.invoice as Invoice | null;
-        if (invoice) {
-          text += ` Tagihan #${invoice.invoiceNumber} sebesar ${appSettings.currencySymbol} ${invoice.totalAmount.toLocaleString("id-ID")}.`;
-        }
-        text += `\n\nDetail pelanggan dan pembayaran: ${result.url}`;
+        if (typeof result.url !== "string" || !result.url) throw new Error("Tautan tagihan tidak dibuat oleh server");
+        paymentLinkCreated = true;
+        text = renderWhatsAppTemplate("isolir", appSettings.whatsappTemplates, {
+          customer_name: customer.name,
+          business_name: appSettings.companyName.trim() || appSettings.brandName.trim() || appSettings.appName,
+          payment_url: result.url,
+        });
       } catch (error) {
         setWaError(error instanceof Error ? error.message : String(error));
       }
@@ -279,8 +285,7 @@ function AppContent() {
       customer,
       type,
       text,
-      needsPaymentLink:
-        needsPaymentLink && !text.includes("/portal/billing?token="),
+      needsPaymentLink: needsPaymentLink && !paymentLinkCreated,
     });
     setWaSuccess(false);
     if (!needsPaymentLink) setWaError("");
@@ -371,7 +376,11 @@ function AppContent() {
           const linkResult = await linkResponse.json();
           if (!linkResponse.ok)
             throw new Error(linkResult.error || `HTTP ${linkResponse.status}`);
-          message += `\n\nDetail pelanggan dan pembayaran: ${linkResult.url}`;
+          message = renderWhatsAppTemplate("isolir", appSettings.whatsappTemplates, {
+            customer_name: customer.name,
+            business_name: appSettings.companyName.trim() || appSettings.brandName.trim() || appSettings.appName,
+            payment_url: linkResult.url,
+          });
           const waResponse = await fetch("/api/wa/send", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -469,7 +478,7 @@ function AppContent() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
+    <div className="admin-shell min-h-screen bg-background text-foreground flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
       {/* Top Navbar */}
       <Navbar
         adminTab={adminTab}
@@ -560,7 +569,7 @@ function AppContent() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-900 bg-slate-950/60 py-4 px-6 text-center text-xs text-slate-500">
+      <footer className="border-t border-border bg-background/60 py-4 px-6 text-center text-xs text-muted-foreground">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
           <span>
             {appSettings.appName} • Docker SQLite Persistent

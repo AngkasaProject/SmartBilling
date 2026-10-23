@@ -1,4 +1,5 @@
 import { Channel, RouterOSClient } from 'routeros-client';
+import { RouterOSAPI } from 'node-routeros';
 import type { RouterConfig } from '../src/types';
 
 // RouterOS uses !empty for a successful query with no rows; node-routeros otherwise throws on it.
@@ -177,6 +178,52 @@ export async function getRouterInterfaces(router: RouterConnection): Promise<str
     return interfaces.map(item => String(item.name)).filter(Boolean);
   } finally {
     await client.close();
+  }
+}
+
+export async function getRouterInterfaceTraffic(
+  router: RouterConnection,
+  interfaceName: string
+): Promise<{ rxBitsPerSecond: number; txBitsPerSecond: number }> {
+  const readTraffic = (row: RouterRow) => {
+    const rx = Number(row['rx-bits-per-second'] ?? row.rxBitsPerSecond ?? 0);
+    const tx = Number(row['tx-bits-per-second'] ?? row.txBitsPerSecond ?? 0);
+    if (!Number.isFinite(rx) || !Number.isFinite(tx) || rx < 0 || tx < 0) {
+      throw new Error('RouterOS returned invalid interface traffic counters');
+    }
+    return { rxBitsPerSecond: rx, txBitsPerSecond: tx };
+  };
+
+  if (router.apiType === 'rest') {
+    const rows = await restRequest<RouterRow[]>(router, '/interface/monitor-traffic', 'POST', {
+      interface: interfaceName,
+      once: '',
+    });
+    const row = rows[0];
+    if (!row) throw new Error(`RouterOS returned no traffic data for interface ${interfaceName}`);
+    return readTraffic(row);
+  }
+
+  const api = new RouterOSAPI({
+    host: router.host,
+    port: router.port,
+    user: router.username,
+    password: router.password,
+    timeout: router.timeoutSec,
+    ...(router.apiType === 'api-ssl' ? { tls: {} } : {}),
+  });
+  try {
+    await api.connect();
+    const rows = await api.write([
+      '/interface/monitor-traffic',
+      `=interface=${interfaceName}`,
+      '=once=',
+    ]) as RouterRow[];
+    const row = rows[0];
+    if (!row) throw new Error(`RouterOS returned no traffic data for interface ${interfaceName}`);
+    return readTraffic(row);
+  } finally {
+    await api.close();
   }
 }
 

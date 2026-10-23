@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'crypto';
 import { AppDataSnapshot, AppSettings, Customer, Invoice, PaymentTransaction, Voucher } from '../src/types';
+import { DEFAULT_WHATSAPP_TEMPLATES } from '../src/utils/whatsappTemplates';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,6 +29,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultSsid: '',
   currencySymbol: 'Rp',
   timezone: 'Asia/Jakarta',
+  timeFormat: '24h',
+  whatsappTemplates: DEFAULT_WHATSAPP_TEMPLATES,
 
   mikrotikHost: '',
   mikrotikPort: 8728,
@@ -46,7 +49,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoSendIsolir: true,
   autoSendReceipt: false,
 
-  paymentProvider: 'midtrans',
+  paymentProvider: 'none',
   paymentIsProduction: false,
   paymentServerKey: '',
   paymentClientKey: '',
@@ -108,6 +111,12 @@ function initSchema(database: Database): void {
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS payment_gateway_credentials (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      secret TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
 
@@ -334,6 +343,71 @@ function encryptRouterSecret(password: string, material = loadEncryptionKeyMater
   return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64');
 }
 
+export interface PaymentGatewayCredentials {
+  provider: 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay';
+  isProduction: boolean;
+  serverKey?: string;
+  clientKey?: string;
+  dokuClientId?: string;
+  dokuSecretKey?: string;
+  xenditApiKey?: string;
+  xenditCallbackToken?: string;
+  tripayMerchantCode?: string;
+  tripayApiKey?: string;
+  tripayPrivateKey?: string;
+  tripayPaymentMethod?: string;
+}
+
+function isPaymentGatewayCredentials(value: unknown): value is PaymentGatewayCredentials {
+  if (typeof value !== 'object' || value === null) return false;
+  const credentials = value as Record<string, unknown>;
+  return (
+    (credentials.provider === 'midtrans' ||
+      credentials.provider === 'doku' ||
+      credentials.provider === 'xendit' ||
+      credentials.provider === 'tripay' ||
+      credentials.provider === 'none') &&
+    typeof credentials.isProduction === 'boolean' &&
+    ['serverKey', 'clientKey', 'dokuClientId', 'dokuSecretKey', 'xenditApiKey', 'xenditCallbackToken', 'tripayMerchantCode', 'tripayApiKey', 'tripayPrivateKey', 'tripayPaymentMethod'].every(key =>
+      credentials[key] === undefined || typeof credentials[key] === 'string'
+    )
+  );
+}
+
+export async function savePaymentGatewayCredentialsDb(
+  credentials: PaymentGatewayCredentials
+): Promise<void> {
+  const database = await getDb();
+  database.run(
+    'INSERT OR REPLACE INTO payment_gateway_credentials (id, secret, updated_at) VALUES (1, ?, ?)',
+    [encryptRouterSecret(JSON.stringify(credentials)), new Date().toISOString()]
+  );
+  saveDbToDisk();
+}
+
+export async function getPaymentGatewayCredentialsDb(): Promise<PaymentGatewayCredentials | null> {
+  const database = await getDb();
+  const result = database.exec('SELECT secret FROM payment_gateway_credentials WHERE id = 1');
+  const secret = result[0]?.values[0]?.[0];
+  if (typeof secret !== 'string') return null;
+  const compatibilityKeys = ENCRYPTION_KEY_PLACEHOLDERS.has(process.env.APP_ENCRYPTION_KEY?.trim() || '')
+    ? [Buffer.from(process.env.APP_ENCRYPTION_KEY!.trim(), 'utf8')]
+    : [];
+  const decoded = decryptRouterSecret(secret, [
+    loadEncryptionKeyMaterial(),
+    ...previousEncryptionKeys,
+    ...compatibilityKeys,
+  ]);
+  const credentials: unknown = JSON.parse(decoded);
+  if (typeof credentials === 'object' && credentials !== null && 'provider' in credentials && credentials.provider === 'manual') {
+    credentials.provider = 'none';
+  }
+  if (!isPaymentGatewayCredentials(credentials)) {
+    throw new Error('Stored payment gateway configuration is invalid');
+  }
+  return credentials;
+}
+
 function writeEncryptionKeyring(active: Buffer, previous: Buffer[] = []): void {
   const keyPath = encryptionKeyPath();
   const temporaryPath = `${keyPath}.${randomBytes(6).toString('hex')}.tmp`;
@@ -368,6 +442,10 @@ export async function rotateEncryptionKeyDb(): Promise<{ key: string }> {
 
   const result = database.exec('SELECT router_id, secret FROM router_credentials');
   const rows = result[0]?.values ?? [];
+  const paymentResult = database.exec('SELECT secret FROM payment_gateway_credentials WHERE id = 1');
+  const paymentSecret = paymentResult[0]?.values[0]?.[0];
+  const portalSessionResult = database.exec('SELECT value FROM app_settings WHERE key = ?', ['portal_session_secret']);
+  const portalSessionSecret = portalSessionResult[0]?.values[0]?.[0];
   database.run('BEGIN TRANSACTION');
   try {
     for (const [routerId, secret] of rows) {
@@ -375,6 +453,20 @@ export async function rotateEncryptionKeyDb(): Promise<{ key: string }> {
       database.run(
         'UPDATE router_credentials SET secret = ?, updated_at = ? WHERE router_id = ?',
         [encryptRouterSecret(password, newMaterial), new Date().toISOString(), String(routerId)]
+      );
+    }
+    if (typeof paymentSecret === 'string') {
+      const credentials = decryptRouterSecret(paymentSecret, [oldMaterial, ...previous]);
+      database.run(
+        'UPDATE payment_gateway_credentials SET secret = ?, updated_at = ? WHERE id = 1',
+        [encryptRouterSecret(credentials, newMaterial), new Date().toISOString()]
+      );
+    }
+    if (typeof portalSessionSecret === 'string') {
+      const secret = decryptRouterSecret(portalSessionSecret, [oldMaterial, ...previous]);
+      database.run(
+        'UPDATE app_settings SET value = ?, updated_at = ? WHERE key = ?',
+        [encryptRouterSecret(secret, newMaterial), new Date().toISOString(), 'portal_session_secret']
       );
     }
     saveDbToDisk();
@@ -550,6 +642,32 @@ export async function getOrCreatePortalLinkSecretDb(): Promise<string> {
   database.run(
     'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
     ['portal_payment_link_secret', secret, new Date().toISOString()]
+  );
+  saveDbToDisk();
+  return secret;
+}
+
+export async function getPortalSessionSecretDb(): Promise<string | null> {
+  const database = await getDb();
+  const result = database.exec('SELECT value FROM app_settings WHERE key = ?', ['portal_session_secret']);
+  const encryptedSecret = result[0]?.values[0]?.[0];
+  if (typeof encryptedSecret !== 'string') return null;
+  const compatibilityKeys = ENCRYPTION_KEY_PLACEHOLDERS.has(process.env.APP_ENCRYPTION_KEY?.trim() || '')
+    ? [Buffer.from(process.env.APP_ENCRYPTION_KEY!.trim(), 'utf8')]
+    : [];
+  return decryptRouterSecret(encryptedSecret, [
+    loadEncryptionKeyMaterial(),
+    ...previousEncryptionKeys,
+    ...compatibilityKeys,
+  ]);
+}
+
+export async function generatePortalSessionSecretDb(): Promise<string> {
+  const database = await getDb();
+  const secret = randomBytes(48).toString('base64url');
+  database.run(
+    'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
+    ['portal_session_secret', encryptRouterSecret(secret), new Date().toISOString()]
   );
   saveDbToDisk();
   return secret;

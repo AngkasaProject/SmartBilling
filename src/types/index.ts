@@ -146,7 +146,7 @@ export interface WhatsAppLog {
 }
 
 export interface PaymentGatewayConfig {
-  provider: 'midtrans' | 'xendit' | 'tripay';
+  provider: 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay';
   isProduction: boolean;
   serverKey: string;
   clientKey: string;
@@ -160,11 +160,15 @@ export interface PaymentGatewayConfig {
 export interface ManualPaymentMethod {
   id: string;
   name: string;
+  accountHolder?: string;
   serviceName?: string;
   accountNumber?: string;
   instructions: string;
   enabled: boolean;
 }
+
+export type WhatsAppTemplateKey = 'reminder' | 'isolir' | 'paymentSuccess' | 'manualInvoice' | 'manualVoucher' | 'voucherDelivery';
+export type WhatsAppTemplates = Record<WhatsAppTemplateKey, string>;
 
 export interface WhatsAppGatewayConfig {
   provider: 'openwa' | 'fonnte' | 'wablas' | 'baileys';
@@ -186,6 +190,7 @@ export interface WhatsAppGatewayConfig {
 export interface PaymentTransaction {
   id: string;
   orderId: string;
+  paymentCode?: string;
   orderType: 'invoice' | 'voucher';
   amount: number;
   customerName: string;
@@ -232,6 +237,8 @@ export interface AppSettings {
   defaultSsid: string;
   currencySymbol: string;
   timezone: string;
+  timeFormat: '24h' | '12h';
+  whatsappTemplates: WhatsAppTemplates;
 
   // 2. MikroTik Router Connection
   mikrotikHost: string;
@@ -253,7 +260,7 @@ export interface AppSettings {
   autoSendReceipt: boolean;
 
   // 4. Payment Gateway (Midtrans / Xendit / Tripay)
-  paymentProvider: 'midtrans' | 'xendit' | 'tripay';
+  paymentProvider: 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay';
   paymentIsProduction: boolean;
   paymentServerKey: string;
   paymentClientKey: string;

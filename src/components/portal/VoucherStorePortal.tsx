@@ -37,6 +37,7 @@ export const VoucherStorePortal: React.FC<Props> = ({
     Array<{
       id: string;
       name: string;
+      accountHolder?: string;
       serviceName?: string;
       accountNumber?: string;
       instructions: string;
@@ -47,11 +48,10 @@ export const VoucherStorePortal: React.FC<Props> = ({
   const [buyerName, setBuyerName] = useState("");
   const [buyerPhone, setBuyerPhone] = useState("");
   const [buyerEmail, setBuyerEmail] = useState("");
-  const [paymentMode, setPaymentMode] = useState<"automatic" | "manual">(
-    "automatic",
-  );
+  const [paymentMode, setPaymentMode] = useState<"automatic" | "manual">("manual");
   const [manualMethodId, setManualMethodId] = useState("");
   const [orderId, setOrderId] = useState("");
+  const [paymentCode, setPaymentCode] = useState("");
   const [orderStatus, setOrderStatus] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [operatorUrl, setOperatorUrl] = useState("");
@@ -82,7 +82,7 @@ export const VoucherStorePortal: React.FC<Props> = ({
         setOperatorWhatsapp(result.operatorWhatsapp || "");
         setAutomaticAvailable(Boolean(result.automaticAvailable));
         setManualMethodId(result.manualMethods?.[0]?.id || "");
-        setPaymentMode(result.automaticAvailable ? "automatic" : "manual");
+        setPaymentMode(result.manualMethods?.length ? "manual" : "automatic");
       })
       .catch((fetchError) =>
         setCheckoutError(
@@ -153,10 +153,18 @@ export const VoucherStorePortal: React.FC<Props> = ({
       if (!response.ok)
         throw new Error(result.error || `HTTP ${response.status}`);
       setOrderId(result.orderId);
+      setPaymentCode(result.paymentCode || result.orderId);
       setOrderStatus(result.status);
-      setExpiresAt(result.expiresAt || "");
+      setExpiresAt(result.expiresAtFormatted || result.expiresAt || "");
       setOperatorUrl(result.operatorUrl || "");
-      setOrderPaymentInstructions(result.method?.instructions || "");
+      setOrderPaymentInstructions([
+        result.method?.name,
+        result.method?.accountNumber,
+        result.method?.accountHolder || result.method?.serviceName
+          ? `Atas nama: ${result.method.accountHolder || result.method.serviceName}`
+          : '',
+        result.method?.instructions,
+      ].filter(Boolean).join('\n'));
       if (result.redirectUrl) {
         window.location.assign(result.redirectUrl);
         return;
@@ -270,7 +278,7 @@ export const VoucherStorePortal: React.FC<Props> = ({
                 Voucher Anda
               </h1>
               <p className="mt-1 text-[12.5px] text-slate-400 font-mono break-all">
-                {orderId}
+                {paymentCode || orderId}
               </p>
             </div>
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-400/20 to-indigo-600/5 border border-white/[0.08] flex items-center justify-center">
@@ -305,11 +313,11 @@ export const VoucherStorePortal: React.FC<Props> = ({
                     Kode bayar:{" "}
                     <button
                       type="button"
-                      onClick={() => handleCopy(orderId, "orderId")}
+                      onClick={() => handleCopy(paymentCode || orderId, "paymentCode")}
                       className="inline-flex items-center gap-1.5 font-mono text-amber-100 hover:text-white bg-white/[0.06] hover:bg-white/[0.1] px-2 py-0.5 rounded-md transition active:scale-95"
                     >
-                      {orderId}
-                      {copiedField === "orderId" ? (
+                      {paymentCode || orderId}
+                      {copiedField === "paymentCode" ? (
                         <CheckCheck className="w-3 h-3 text-emerald-400" />
                       ) : (
                         <Copy className="w-3 h-3 opacity-60" />
@@ -792,8 +800,11 @@ export const VoucherStorePortal: React.FC<Props> = ({
                           (item) => item.id === manualMethodId,
                         );
                         return [
-                          method?.serviceName,
+                          method?.name,
                           method?.accountNumber,
+                          method?.accountHolder || method?.serviceName
+                            ? `Atas nama: ${method.accountHolder || method.serviceName}`
+                            : '',
                           method?.instructions,
                         ]
                           .filter(Boolean)

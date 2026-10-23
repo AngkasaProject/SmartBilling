@@ -1,6 +1,6 @@
 # SmartBilling
 
-Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, invoice, dan router RouterOS. Portal publik menampilkan paket dan menyediakan pemeriksaan status serta pembayaran invoice melalui Midtrans Snap jika dikonfigurasi. WhatsApp terhubung ke layanan eksternal Fonnte atau OpenWA melalui REST API.
+Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, invoice, dan router RouterOS. Portal publik menampilkan paket dan menyediakan pembayaran manual serta maksimal satu gateway otomatis addon (Midtrans, DOKU, Xendit, atau Tripay). WhatsApp terhubung ke layanan eksternal Fonnte atau OpenWA melalui REST API.
 
 ---
 
@@ -12,7 +12,7 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 5. [Konfigurasi WhatsApp Gateway (Fonnte/OpenWA)](#-konfigurasi-whatsapp-gateway-fonnteopenwa)
 6. [Panduan Integrasi Login Page Hotspot MikroTik](#-panduan-integrasi-login-page-hotspot-mikrotik)
 7. [Operasi Isolir PPPoE MikroTik](#-operasi-isolir-pppoe-mikrotik)
-8. [Pembayaran Invoice dengan Midtrans Snap](#-pembayaran-invoice-dengan-midtrans-snap)
+8. [Pembayaran Invoice](#-pembayaran-invoice)
 9. [Troubleshooting & FAQ](#-troubleshooting--faq)
 
 ---
@@ -35,14 +35,15 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 
 - **🛒 Portal publik paket dan pelanggan**:
   - Halaman awal menampilkan profil hotspot dari data operator serta pemeriksaan status langganan dengan ID pelanggan dan nomor WhatsApp.
-  - Invoice dapat dibayar melalui Midtrans Snap jika dikonfigurasi atau melalui instruksi pembayaran manual. Metode manual menghasilkan kode bayar dan tautan WhatsApp operator untuk konfirmasi; admin memverifikasi pembayaran sebelum menyetujui.
+  - Pembayaran manual yang dikonfigurasi operator selalu tersedia. Sebagai addon, aktifkan maksimal satu gateway otomatis: Midtrans Snap, DOKU Checkout, Xendit, atau Tripay.
+  - Kredensial gateway otomatis diatur melalui menu Pembayaran dan disimpan terenkripsi di server. Pembayaran manual memakai instruksi yang disiapkan operator, kode pesanan, serta persetujuan manual.
   - Saat pelanggan tidak aktif atau memasuki tanggal jatuh tempo, portal membuat invoice bulanan bila belum ada dan menampilkan flow pembayaran. Pelanggan yang masih aktif tidak diberi tombol bayar.
   - Tautan invoice bertanda tangan memungkinkan pelanggan membuka tagihan tertentu tanpa menampilkan ID pelanggan di tautan.
 
 - **🎫 Penjualan voucher hotspot**:
   - Buat profil layanan di menu Voucher: pilih router dan profil RouterOS tersinkron, lalu tetapkan kecepatan, masa penggunaan (1 jam, 12 jam, 1 hari, 1 minggu, 2 minggu, atau 1 bulan), perangkat bersama, dan batas kuota. Profil RouterOS baru dapat dibuat dari form yang sama.
   - Buat paket jual dengan memilih profil layanan dan menetapkan harga. Paket dan generator voucher tersedia sebagai dialog agar halaman administrasi tetap ringkas.
-  - Pelanggan membayar melalui Midtrans Snap atau metode manual yang diatur operator. Pembayaran manual menghasilkan kode bayar dan tautan WhatsApp operator; pesanan berakhir setelah 60 menit secara default (dapat diubah). Admin mengonfirmasi transaksi sebelum voucher diprovisikan.
+  - Pelanggan memilih pembayaran manual atau gateway otomatis yang aktif. Pesanan manual menghasilkan kode dan tautan WhatsApp operator; voucher diprovisikan setelah admin mengonfirmasi pembayaran.
   - Voucher dibuat pada MikroTik hanya setelah pembayaran otomatis terverifikasi atau operator mengonfirmasi transaksi manual. Status pesanan dan kode voucher ditampilkan di portal pelanggan.
 
 - **📱 Template Hotspot Captive Portal MikroTik Siap Pakai**:
@@ -168,13 +169,10 @@ Gunakan `npm run dev` untuk menjalankan Vite (port `3000`) dan backend Express/S
    FONNTE_API_URL="https://api.fonnte.com/send"
    FONNTE_TOKEN=""
 
-   # Pembayaran Midtrans Snap
+   # APP_URL wajib untuk link pembayaran/portal publik; gunakan HTTPS untuk production.
    APP_URL="https://billing.domain-anda"
-   PAYMENT_GATEWAY="midtrans"
-   MIDTRANS_SERVER_KEY=""
-   MIDTRANS_CLIENT_KEY=""
-   MIDTRANS_IS_PRODUCTION=false
    ```
+   Pilih gateway dan masukkan kredensial akun setelah login melalui **Admin > Pembayaran**.
 
 2. **Jalankan Docker Compose**:
    ```bash
@@ -261,11 +259,19 @@ Uji portal dari perangkat yang belum login. Untuk pembayaran otomatis, hostname 
 
 Isolir manual di menu pelanggan mengubah properti `disabled` pada PPP secret yang dipilih setelah RouterOS mengonfirmasi perubahan. Aktivasi manual dari daftar pelanggan menggunakan operasi yang sama. Scheduler isolir otomatis dan redirect ke halaman tagihan belum diimplementasikan; jangan mengandalkan aplikasi ini untuk memutus pelanggan otomatis karena jatuh tempo.
 
-## 💳 Pembayaran invoice dengan Midtrans Snap
+## 💳 Pembayaran Invoice
 
-Konfigurasikan `APP_URL`, `PAYMENT_GATEWAY=midtrans`, `MIDTRANS_SERVER_KEY`, dan mode `MIDTRANS_IS_PRODUCTION` di environment server. Set URL notifikasi Midtrans menjadi `https://domain-anda/api/payment/webhook`. `MIDTRANS_CLIENT_KEY` dapat disimpan untuk referensi dashboard; kredensial rahasia tidak dikirim ke browser.
+Menu **Pembayaran** mengatur metode manual dan addon gateway otomatis secara terpisah:
 
-Pelanggan membuka portal publik, memasukkan ID pelanggan dan nomor WhatsApp terdaftar, lalu memilih **Bayar Tagihan** pada invoice yang belum lunas. Aplikasi membuat checkout Snap; invoice hanya ditandai lunas setelah signature webhook Midtrans diverifikasi dan nominal cocok. Gunakan HTTPS untuk produksi dan uji dahulu dengan kredensial sandbox. Provider selain Midtrans belum didukung checkout.
+- **Pembayaran manual** selalu berdiri sendiri. Konfigurasikan satu atau lebih metode (misalnya transfer bank, dompet digital, atau QRIS statis), instruksi, dan batas waktu. Admin tetap harus memverifikasi pembayaran sebelum invoice ditandai lunas atau voucher dibuat.
+- **Gateway otomatis (addon)**: aktifkan maksimal satu provider, atau nonaktifkan semua gateway otomatis.
+  - **Midtrans** — Server Key wajib, Client Key opsional; pilih sandbox atau production.
+  - **DOKU** — Client ID dan Secret Key; pilih sandbox atau production.
+  - **Custom** — adapter Xendit (API Key dan Callback Token) atau Tripay (Merchant Code, API Key, Private Key, dan kode metode pembayaran).
+
+Kredensial online disimpan terenkripsi menggunakan kunci aplikasi yang sama dengan kredensial router. Cadangkan `data/router-secrets.key` bersama database bila `APP_ENCRYPTION_KEY` tidak ditetapkan melalui environment. Gateway otomatis memerlukan `APP_URL` HTTPS yang dapat diakses publik.
+
+Setelah konfigurasi gateway disimpan, daftarkan Notification/Webhook URL yang tampil di menu **Pembayaran** pada dashboard provider. Invoice dan voucher otomatis hanya diproses setelah callback provider tervalidasi dan nominal cocok. Uji dengan sandbox/test mode terlebih dahulu sebelum beralih ke production. Pengaturan melalui panel menjadi konfigurasi aktif; variabel Midtrans di `.env` hanya dipakai sebagai fallback untuk instalasi lama yang belum menyimpan pilihan gateway.
 
 ---
 

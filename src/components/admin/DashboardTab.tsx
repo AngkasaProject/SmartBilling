@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Customer, Invoice, Voucher, RouterConfig } from '../../types';
 import { StorageService } from '../../services/storage';
 import {
@@ -16,6 +16,207 @@ import {
   CreditCard,
   Wifi
 } from 'lucide-react';
+
+interface TrafficSample {
+  sampledAt: string;
+  rxBitsPerSecond: number;
+  txBitsPerSecond: number;
+}
+
+function formatBitrate(bitsPerSecond: number): string {
+  if (bitsPerSecond >= 1_000_000_000) return `${(bitsPerSecond / 1_000_000_000).toFixed(2)} Gbps`;
+  if (bitsPerSecond >= 1_000_000) return `${(bitsPerSecond / 1_000_000).toFixed(2)} Mbps`;
+  if (bitsPerSecond >= 1_000) return `${(bitsPerSecond / 1_000).toFixed(1)} Kbps`;
+  return `${Math.round(bitsPerSecond)} bps`;
+}
+
+const InterfaceTrafficPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers }) => {
+  const connectedRouters = routers.filter(router => router.status === 'connected');
+  const [selectedRouterId, setSelectedRouterId] = useState('');
+  const [interfaces, setInterfaces] = useState<string[]>([]);
+  const [selectedInterface, setSelectedInterface] = useState('');
+  const [samples, setSamples] = useState<TrafficSample[]>([]);
+  const [error, setError] = useState('');
+  const [loadingInterfaces, setLoadingInterfaces] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    if (!connectedRouters.some(router => router.id === selectedRouterId)) {
+      setSelectedRouterId(connectedRouters[0]?.id || '');
+    }
+  }, [connectedRouters, selectedRouterId]);
+
+  useEffect(() => {
+    if (!selectedRouterId) {
+      setInterfaces([]);
+      setSelectedInterface('');
+      setSamples([]);
+      return;
+    }
+    let active = true;
+    setLoadingInterfaces(true);
+    setError('');
+    setSamples([]);
+    fetch(`/api/mikrotik/interfaces?routerId=${encodeURIComponent(selectedRouterId)}`)
+      .then(async response => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (!Array.isArray(result.interfaces)) throw new Error('Daftar interface dari router tidak valid');
+        if (!active) return;
+        const nextInterfaces = result.interfaces.filter((item: unknown): item is string => typeof item === 'string' && item.length > 0);
+        setInterfaces(nextInterfaces);
+        setSelectedInterface(current => nextInterfaces.includes(current) ? current : nextInterfaces[0] || '');
+      })
+      .catch(fetchError => {
+        if (active) setError(fetchError instanceof Error ? fetchError.message : String(fetchError));
+      })
+      .finally(() => {
+        if (active) setLoadingInterfaces(false);
+      });
+    return () => { active = false; };
+  }, [selectedRouterId]);
+
+  useEffect(() => {
+    if (!selectedRouterId || !selectedInterface) return;
+    let active = true;
+    let timer: number | undefined;
+    const sample = async () => {
+      try {
+        const query = new URLSearchParams({ routerId: selectedRouterId, interface: selectedInterface });
+        const response = await fetch(`/api/mikrotik/interface-traffic?${query}`);
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (
+          typeof result.sampledAt !== 'string' ||
+          typeof result.rxBitsPerSecond !== 'number' ||
+          typeof result.txBitsPerSecond !== 'number'
+        ) throw new Error('Data trafik router tidak valid');
+        if (!active) return;
+        setError('');
+        setSamples(current => [...current, result as TrafficSample].slice(-30));
+      } catch (fetchError) {
+        if (active) setError(fetchError instanceof Error ? fetchError.message : String(fetchError));
+      } finally {
+        if (active) timer = window.setTimeout(() => void sample(), 2000);
+      }
+    };
+    setSamples([]);
+    void sample();
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [selectedRouterId, selectedInterface, refreshKey]);
+
+  const latest = samples[samples.length - 1];
+  const maxRate = Math.max(1, ...samples.flatMap(sample => [sample.rxBitsPerSecond, sample.txBitsPerSecond])) * 1.15;
+  const chartWidth = 640;
+  const chartHeight = 164;
+  const pointFor = (value: number, index: number) => {
+    const x = samples.length < 2 ? chartWidth : (index / (samples.length - 1)) * chartWidth;
+    const y = chartHeight - (value / maxRate) * (chartHeight - 12) - 6;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  };
+  const rxPoints = samples.map((sample, index) => pointFor(sample.rxBitsPerSecond, index)).join(' ');
+  const txPoints = samples.map((sample, index) => pointFor(sample.txBitsPerSecond, index)).join(' ');
+
+  return (
+    <section className="lg:col-span-2 bg-slate-900/90 border border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xl">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <Activity className="w-4 h-4 text-indigo-400" />
+            <h3 className="text-base font-bold text-foreground">Pemantauan Trafik Interface</h3>
+            {latest && <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" aria-label="Live" />}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">Kecepatan Rx/Tx aktual dari RouterOS, diperbarui setiap 2 detik.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <label className="sr-only" htmlFor="traffic-router">Pilih router</label>
+          <select
+            id="traffic-router"
+            value={selectedRouterId}
+            onChange={event => setSelectedRouterId(event.target.value)}
+            disabled={!connectedRouters.length}
+            className="min-w-36 rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground"
+          >
+            {connectedRouters.length
+              ? connectedRouters.map(router => <option key={router.id} value={router.id}>{router.name}</option>)
+              : <option value="">Tidak ada router online</option>}
+          </select>
+          <label className="sr-only" htmlFor="traffic-interface">Pilih interface</label>
+          <select
+            id="traffic-interface"
+            value={selectedInterface}
+            onChange={event => setSelectedInterface(event.target.value)}
+            disabled={!interfaces.length || loadingInterfaces}
+            className="min-w-36 rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground"
+          >
+            {interfaces.length
+              ? interfaces.map(name => <option key={name} value={name}>{name}</option>)
+              : <option value="">{loadingInterfaces ? 'Memuat interface...' : 'Pilih interface'}</option>}
+          </select>
+          <button
+            type="button"
+            onClick={() => setRefreshKey(current => current + 1)}
+            disabled={!selectedInterface}
+            className="rounded-lg border border-border bg-secondary px-3 py-2 text-xs font-semibold text-secondary-foreground hover:bg-muted disabled:opacity-50"
+          >Perbarui</button>
+        </div>
+      </div>
+
+      {error && <p role="alert" className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">{error}</p>}
+
+      {latest ? (
+        <>
+          <div className="mt-5 grid grid-cols-2 gap-3">
+            <div className="rounded-xl border border-border bg-background p-3">
+              <div className="text-[11px] text-muted-foreground">Download · Rx</div>
+              <div className="mt-1 text-lg font-bold text-emerald-400">{formatBitrate(latest.rxBitsPerSecond)}</div>
+            </div>
+            <div className="rounded-xl border border-border bg-background p-3">
+              <div className="text-[11px] text-muted-foreground">Upload · Tx</div>
+              <div className="mt-1 text-lg font-bold text-blue-400">{formatBitrate(latest.txBitsPerSecond)}</div>
+            </div>
+          </div>
+          <div className="mt-4 rounded-xl border border-border bg-background p-3">
+            <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label={`Grafik trafik ${selectedInterface}`} className="h-40 w-full overflow-visible">
+              {[0, 1, 2, 3].map(line => {
+                const y = (chartHeight / 3) * line;
+                return <line key={line} x1="0" x2={chartWidth} y1={y} y2={y} className="stroke-slate-700" strokeWidth="1" strokeDasharray="4 5" />;
+              })}
+              {samples.length > 1 && (
+                <>
+                  <polyline points={rxPoints} fill="none" className="stroke-emerald-500" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                  <polyline points={txPoints} fill="none" className="stroke-blue-500" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                </>
+              )}
+              {samples.length === 1 && (
+                <>
+                  <circle cx={chartWidth} cy={pointFor(latest.rxBitsPerSecond, 0).split(',')[1]} r="5" className="fill-emerald-500" />
+                  <circle cx={chartWidth} cy={pointFor(latest.txBitsPerSecond, 0).split(',')[1]} r="5" className="fill-blue-500" />
+                </>
+              )}
+            </svg>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-muted-foreground">
+              <div className="flex items-center gap-4">
+                <span className="flex items-center gap-1.5"><i className="h-2 w-2 rounded-full bg-emerald-500" /> Download</span>
+                <span className="flex items-center gap-1.5"><i className="h-2 w-2 rounded-full bg-blue-500" /> Upload</span>
+              </div>
+              <span>Terakhir diperbarui {new Date(latest.sampledAt).toLocaleTimeString('id-ID')}</span>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="mt-5 grid min-h-48 place-items-center rounded-xl border border-dashed border-border bg-background p-6 text-center">
+          {connectedRouters.length && selectedInterface
+            ? <p className="text-sm text-muted-foreground">Mengambil sampel trafik dari {selectedInterface}...</p>
+            : <p className="text-sm text-muted-foreground">Pilih router yang online dan interface untuk mulai memantau trafik.</p>}
+        </div>
+      )}
+    </section>
+  );
+};
 
 interface Props {
   customers: Customer[];
@@ -176,15 +377,7 @@ export const DashboardTab: React.FC<Props> = ({
 
       {/* Router telemetry */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
-          <div className="flex items-center gap-2 mb-3">
-            <Activity className="w-4 h-4 text-indigo-400" />
-            <h3 className="text-base font-bold text-white">Trafik Interface Router</h3>
-          </div>
-          <p className="text-xs text-slate-400">
-            Telemetri Rx/Tx per interface belum tersedia. Grafik simulasi telah dihapus agar dashboard tidak menampilkan trafik fiktif.
-          </p>
-        </div>
+        <InterfaceTrafficPanel routers={routers} />
 
         {/* Router status */}
         <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col justify-between">

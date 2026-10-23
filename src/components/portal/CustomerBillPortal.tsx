@@ -34,6 +34,7 @@ interface CustomerBillPortalProps {
 interface ManualPaymentOption {
   id: string;
   name: string;
+  accountHolder?: string;
   serviceName?: string;
   accountNumber?: string;
   instructions: string;
@@ -45,6 +46,7 @@ export const CustomerBillPortal: React.FC<CustomerBillPortalProps> = ({ showNavi
   const [customer, setCustomer] = useState<PublicCustomer | null>(null);
   const [invoices, setInvoices] = useState<PublicInvoice[]>([]);
   const [paymentAvailable, setPaymentAvailable] = useState(false);
+  const [paymentProvider, setPaymentProvider] = useState('');
   const [manualPaymentOptions, setManualPaymentOptions] = useState<ManualPaymentOption[]>([]);
   const [selectedInvoice, setSelectedInvoice] = useState<PublicInvoice | null>(null);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('');
@@ -67,6 +69,7 @@ export const CustomerBillPortal: React.FC<CustomerBillPortalProps> = ({ showNavi
         if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
         setManualPaymentOptions(result.manualMethods || []);
         setPaymentAvailable(Boolean(result.automaticAvailable));
+        setPaymentProvider(typeof result.provider === 'string' ? result.provider : '');
         setOperatorWhatsapp(result.operatorWhatsapp || '');
       })
       .catch(optionError => setError(optionError instanceof Error ? optionError.message : String(optionError)));
@@ -141,7 +144,7 @@ export const CustomerBillPortal: React.FC<CustomerBillPortalProps> = ({ showNavi
         window.location.assign(result.redirectUrl);
       } else {
         setNotice(result.message || 'Kode bayar dibuat. Hubungi operator untuk konfirmasi pembayaran.');
-        setPaymentOrderCode(result.orderId || '');
+        setPaymentOrderCode(result.paymentCode || result.orderId || '');
         setOperatorUrl(result.operatorUrl || (operatorWhatsapp
           ? `https://wa.me/${operatorWhatsapp}?text=${encodeURIComponent(`Halo operator, saya ingin konfirmasi pembayaran invoice ${selectedInvoice.invoiceNumber}.`)}`
           : ''));
@@ -303,7 +306,7 @@ export const CustomerBillPortal: React.FC<CustomerBillPortalProps> = ({ showNavi
                   onClick={() => void handlePayInvoice('automatic')}
                   className="mt-5 w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"
                 >
-                  {payingInvoiceId ? 'Menyiapkan checkout...' : 'Bayar otomatis dengan Midtrans'}
+                  {payingInvoiceId ? 'Menyiapkan checkout...' : `Bayar otomatis dengan ${paymentProvider ? paymentProvider.toUpperCase() : 'gateway'}`}
                 </button>
               )}
               {manualPaymentOptions.length > 0 && (
@@ -316,7 +319,12 @@ export const CustomerBillPortal: React.FC<CustomerBillPortalProps> = ({ showNavi
                   <p className="whitespace-pre-wrap rounded-xl border border-slate-800 bg-slate-950 p-3 text-xs text-slate-300">
                     {(() => {
                       const method = manualPaymentOptions.find(item => item.id === selectedPaymentMethod);
-                      return [method?.serviceName, method?.accountNumber, method?.instructions].filter(Boolean).join('\n');
+                      return [
+                        method?.name,
+                        method?.accountNumber,
+                        method?.accountHolder || method?.serviceName ? `Atas nama: ${method.accountHolder || method.serviceName}` : '',
+                        method?.instructions,
+                      ].filter(Boolean).join('\n');
                     })()}
                   </p>
                   <button

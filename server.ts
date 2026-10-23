@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createHash, createHmac, randomBytes, randomUUID, randomInt, scryptSync, timingSafeEqual } from 'crypto';
+import { renderWhatsAppTemplate } from './src/utils/whatsappTemplates';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { AppDataSnapshot, Customer, HotspotProfile, HotspotServiceProfile, HotspotValidityPreset, Invoice, ManualPaymentMethod, PaymentTransaction, RouterConfig, Voucher } from './src/types/index.js';
@@ -30,12 +31,18 @@ import {
   getEncryptionKeyInfo,
   rotateEncryptionKeyDb,
   getOrCreatePortalLinkSecretDb,
+  getPortalSessionSecretDb,
+  generatePortalSessionSecretDb,
+  getPaymentGatewayCredentialsDb,
+  savePaymentGatewayCredentialsDb,
+  PaymentGatewayCredentials,
 } from './server/db.js';
 import {
   addPppoeSecret,
   configurePppoeServer,
   deletePppoeSecret,
   getRouterInterfaces,
+  getRouterInterfaceTraffic,
   getRouterPools,
   getPppProfiles,
   getHotspotUserProfiles,
@@ -314,7 +321,354 @@ async function startServer() {
     }
   }
 
-  app.use(express.json({ limit: '5mb' }));
+  function formatDateTime(value: string, timezone: string, timeFormat: '24h' | '12h' = '24h'): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    try {
+      return new Intl.DateTimeFormat('id-ID', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: timeFormat === '12h',
+        timeZone: timezone,
+        timeZoneName: 'short',
+      }).format(date);
+    } catch {
+      return new Intl.DateTimeFormat('id-ID', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: timeFormat === '12h',
+        timeZone: 'Asia/Jakarta',
+        timeZoneName: 'short',
+      }).format(date);
+    }
+  }
+
+  function createPaymentCode(transactions: PaymentTransaction[], prefix: 'SBM' | 'SBV'): string {
+    const existing = new Set(transactions.map(transaction => transaction.paymentCode).filter(Boolean));
+    let code = '';
+    do {
+      code = `${prefix}-${randomBytes(6).toString('hex').toUpperCase()}`;
+    } while (existing.has(code));
+    return code;
+  }
+
+  function normalizeOpenWaSessionStatus(value: unknown): { status?: 'connected' | 'disconnected' | 'scan_qr' | 'starting'; phone?: string } {
+    const candidates: unknown[] = [value];
+    const visited = new Set<object>();
+    while (candidates.length) {
+      const candidate = candidates.shift();
+      if (!isRecord(candidate) || visited.has(candidate)) continue;
+      visited.add(candidate);
+      for (const key of ['status', 'state', 'sessionStatus', 'connectionStatus']) {
+        const rawStatus = candidate[key];
+        if (typeof rawStatus === 'string') {
+          const normalized = rawStatus.toLowerCase().replace(/[\s-]+/g, '_');
+          if (['connected', 'ready', 'authenticated', 'online', 'open'].includes(normalized)) {
+            return { status: 'connected', phone: typeof candidate.phone === 'string' ? candidate.phone : undefined };
+          }
+          if (['disconnected', 'offline', 'closed', 'not_connected', 'stopped'].includes(normalized)) {
+            return { status: 'disconnected', phone: typeof candidate.phone === 'string' ? candidate.phone : undefined };
+          }
+          if (['scan_qr', 'qr', 'qr_required', 'pairing'].includes(normalized)) {
+            return { status: 'scan_qr', phone: typeof candidate.phone === 'string' ? candidate.phone : undefined };
+          }
+          if (['starting', 'initializing', 'connecting', 'authenticating'].includes(normalized)) {
+            return { status: 'starting', phone: typeof candidate.phone === 'string' ? candidate.phone : undefined };
+          }
+        }
+      }
+      if (candidate.connected === true || candidate.isConnected === true) {
+        return { status: 'connected', phone: typeof candidate.phone === 'string' ? candidate.phone : undefined };
+      }
+      if (candidate.connected === false || candidate.isConnected === false) {
+        return { status: 'disconnected', phone: typeof candidate.phone === 'string' ? candidate.phone : undefined };
+      }
+      for (const key of ['data', 'session', 'instance', 'result']) {
+        if (candidate[key] && typeof candidate[key] === 'object') candidates.push(candidate[key]);
+      }
+    }
+    return {};
+  }
+
+  async function paymentGatewayCredentials(): Promise<PaymentGatewayCredentials> {
+    const saved = await getPaymentGatewayCredentialsDb();
+    if (saved) return saved;
+    const legacyMidtransEnabled =
+      (!process.env.PAYMENT_GATEWAY || process.env.PAYMENT_GATEWAY === 'midtrans') &&
+      Boolean(process.env.MIDTRANS_SERVER_KEY);
+    return {
+      provider: legacyMidtransEnabled ? 'midtrans' : 'none',
+      isProduction: process.env.MIDTRANS_IS_PRODUCTION === 'true',
+      serverKey: process.env.MIDTRANS_SERVER_KEY || '',
+      clientKey: process.env.MIDTRANS_CLIENT_KEY || '',
+    };
+  }
+
+  function paymentGatewayReady(config: PaymentGatewayCredentials): boolean {
+    if (!configuredPaymentAppUrl()) return false;
+    if (config.provider === 'midtrans') return Boolean(config.serverKey);
+    if (config.provider === 'doku') return Boolean(config.dokuClientId && config.dokuSecretKey);
+    if (config.provider === 'xendit') return Boolean(config.xenditApiKey && config.xenditCallbackToken);
+    if (config.provider === 'tripay') {
+      return Boolean(config.tripayMerchantCode && config.tripayApiKey && config.tripayPrivateKey);
+    }
+    return false;
+  }
+
+  async function createOnlineCheckout(input: {
+    config: PaymentGatewayCredentials;
+    orderId: string;
+    amount: number;
+    itemId: string;
+    itemName: string;
+    customerName: string;
+    customerPhone: string;
+    customerEmail?: string;
+    returnUrl: string;
+  }): Promise<{ redirectUrl: string; provider: 'midtrans' | 'doku' | 'xendit' | 'tripay' }> {
+    const { config } = input;
+    if (config.provider === 'midtrans' && config.serverKey) {
+      const response = await fetch(
+        config.isProduction
+          ? 'https://app.midtrans.com/snap/v1/transactions'
+          : 'https://app.sandbox.midtrans.com/snap/v1/transactions',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Basic ${Buffer.from(`${config.serverKey}:`).toString('base64')}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            transaction_details: { order_id: input.orderId, gross_amount: input.amount },
+            item_details: [{
+              id: input.itemId.slice(0, 50),
+              price: input.amount,
+              quantity: 1,
+              name: input.itemName.slice(0, 50),
+            }],
+            customer_details: {
+              first_name: input.customerName.slice(0, 50),
+              email: input.customerEmail || undefined,
+              phone: input.customerPhone,
+            },
+            callbacks: { finish: input.returnUrl },
+            expiry: { unit: 'minute', duration: 1440 },
+          }),
+          signal: AbortSignal.timeout(15000),
+        }
+      );
+      const payload: unknown = await response.json();
+      const redirectUrl = isRecord(payload) ? payload.redirect_url : undefined;
+      if (!response.ok || typeof redirectUrl !== 'string') {
+        const messages = isRecord(payload) && Array.isArray(payload.error_messages)
+          ? payload.error_messages.filter((message): message is string => typeof message === 'string').join('; ')
+          : `HTTP ${response.status}`;
+        throw new Error(`Midtrans gagal membuat checkout: ${messages}`);
+      }
+      const parsedUrl = new URL(redirectUrl);
+      if (
+        parsedUrl.protocol !== 'https:' ||
+        !['app.midtrans.com', 'app.sandbox.midtrans.com'].includes(parsedUrl.hostname)
+      ) {
+        throw new Error('Midtrans mengembalikan URL checkout yang tidak valid');
+      }
+      return { redirectUrl: parsedUrl.toString(), provider: 'midtrans' };
+    }
+
+    if (config.provider === 'doku' && config.dokuClientId && config.dokuSecretKey) {
+      const endpoint = config.isProduction
+        ? 'https://api.doku.com/checkout/v1/payment'
+        : 'https://api-sandbox.doku.com/checkout/v1/payment';
+      const requestTarget = '/checkout/v1/payment';
+      const body = JSON.stringify({
+        order: {
+          amount: input.amount,
+          invoice_number: input.orderId,
+          callback_url: input.returnUrl,
+          currency: 'IDR',
+          line_items: [{
+            id: input.itemId.slice(0, 50),
+            name: input.itemName.slice(0, 50),
+            quantity: 1,
+            price: input.amount,
+          }],
+        },
+        payment: { payment_due_date: 1440 },
+        customer: {
+          name: input.customerName.slice(0, 50),
+          phone: input.customerPhone,
+          ...(input.customerEmail ? { email: input.customerEmail } : {}),
+        },
+      });
+      const requestId = randomUUID();
+      const requestTimestamp = new Date().toISOString();
+      const digest = createHash('sha256').update(body).digest('base64');
+      const signatureComponent = [
+        `Client-Id:${config.dokuClientId}`,
+        `Request-Id:${requestId}`,
+        `Request-Timestamp:${requestTimestamp}`,
+        `Request-Target:${requestTarget}`,
+        `Digest:${digest}`,
+      ].join('\n');
+      const signature = createHmac('sha256', config.dokuSecretKey)
+        .update(signatureComponent)
+        .digest('base64');
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Client-Id': config.dokuClientId,
+          'Request-Id': requestId,
+          'Request-Timestamp': requestTimestamp,
+          Signature: `HMACSHA256=${signature}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body,
+        signal: AbortSignal.timeout(15000),
+      });
+      const payload: unknown = await response.json();
+      const payment = isRecord(payload) && isRecord(payload.response)
+        ? payload.response.payment
+        : undefined;
+      const paymentUrl = isRecord(payment) ? payment.url : undefined;
+      if (!response.ok || typeof paymentUrl !== 'string') {
+        const message = isRecord(payload) && typeof payload.message === 'string'
+          ? payload.message
+          : `HTTP ${response.status}`;
+        throw new Error(`DOKU gagal membuat checkout: ${message}`);
+      }
+      const parsedUrl = new URL(paymentUrl);
+      if (parsedUrl.protocol !== 'https:' || !parsedUrl.hostname.endsWith('.doku.com')) {
+        throw new Error('DOKU mengembalikan URL checkout yang tidak valid');
+      }
+      return { redirectUrl: parsedUrl.toString(), provider: 'doku' };
+    }
+
+    if (config.provider === 'xendit' && config.xenditApiKey && config.xenditCallbackToken) {
+      const body = {
+        external_id: input.orderId,
+        amount: input.amount,
+        currency: 'IDR',
+        description: input.itemName.slice(0, 255),
+        invoice_duration: 86400,
+        success_redirect_url: input.returnUrl,
+        failure_redirect_url: input.returnUrl,
+        ...(input.customerEmail ? { payer_email: input.customerEmail } : {}),
+        customer: {
+          given_names: input.customerName.slice(0, 255),
+          mobile_number: input.customerPhone,
+          ...(input.customerEmail ? { email: input.customerEmail } : {}),
+        },
+        items: [{
+          name: input.itemName.slice(0, 255),
+          quantity: 1,
+          price: input.amount,
+        }],
+      };
+      const response = await fetch('https://api.xendit.co/v2/invoices', {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${config.xenditApiKey}:`).toString('base64')}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      });
+      const payload: unknown = await response.json();
+      const invoiceUrl = isRecord(payload) ? payload.invoice_url : undefined;
+      if (!response.ok || typeof invoiceUrl !== 'string') {
+        const message = isRecord(payload) && typeof payload.message === 'string'
+          ? payload.message
+          : `HTTP ${response.status}`;
+        throw new Error(`Xendit gagal membuat invoice: ${message}`);
+      }
+      const parsedUrl = new URL(invoiceUrl);
+      if (
+        parsedUrl.protocol !== 'https:' ||
+        (parsedUrl.hostname !== 'xendit.co' && !parsedUrl.hostname.endsWith('.xendit.co'))
+      ) {
+        throw new Error('Xendit mengembalikan URL pembayaran yang tidak valid');
+      }
+      return { redirectUrl: parsedUrl.toString(), provider: 'xendit' };
+    }
+
+    if (
+      config.provider === 'tripay' &&
+      config.tripayMerchantCode &&
+      config.tripayApiKey &&
+      config.tripayPrivateKey
+    ) {
+      const endpoint = config.isProduction
+        ? 'https://tripay.co.id/api/transaction/create'
+        : 'https://tripay.co.id/api-sandbox/transaction/create';
+      const signature = createHmac('sha256', config.tripayPrivateKey)
+        .update(`${config.tripayMerchantCode}${input.orderId}${input.amount}`)
+        .digest('hex');
+      const body = {
+        method: config.tripayPaymentMethod || 'QRIS',
+        merchant_ref: input.orderId,
+        amount: input.amount,
+        customer_name: input.customerName.slice(0, 100),
+        customer_email: input.customerEmail || 'customer@example.com',
+        order_items: [{
+          sku: input.itemId.slice(0, 50),
+          name: input.itemName.slice(0, 100),
+          price: input.amount,
+          quantity: 1,
+        }],
+        callback_url: `${new URL(input.returnUrl).origin}/api/payment/webhook`,
+        return_url: input.returnUrl,
+        expired_time: Math.floor(Date.now() / 1000) + 86400,
+        signature,
+      };
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.tripayApiKey}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000),
+      });
+      const payload: unknown = await response.json();
+      const data = isRecord(payload) ? payload.data : undefined;
+      const checkoutUrl = isRecord(data) ? data.checkout_url : undefined;
+      if (!response.ok || !isRecord(payload) || payload.success !== true || typeof checkoutUrl !== 'string') {
+        const message = isRecord(payload) && typeof payload.message === 'string'
+          ? payload.message
+          : `HTTP ${response.status}`;
+        throw new Error(`Tripay gagal membuat transaksi: ${message}`);
+      }
+      const parsedUrl = new URL(checkoutUrl);
+      if (
+        parsedUrl.protocol !== 'https:' ||
+        (parsedUrl.hostname !== 'tripay.co.id' && !parsedUrl.hostname.endsWith('.tripay.co.id'))
+      ) {
+        throw new Error('Tripay mengembalikan URL pembayaran yang tidak valid');
+      }
+      return { redirectUrl: parsedUrl.toString(), provider: 'tripay' };
+    }
+
+    throw new Error('Payment gateway otomatis belum dikonfigurasi');
+  }
+
+  app.use(express.json({
+    limit: '5mb',
+    verify: (request, _response, buffer) => {
+      if (request.url?.startsWith('/api/payment/webhook')) {
+        (request as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+      }
+    },
+  }));
 
   const SESSION_COOKIE = 'smartbilling_session';
   const SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
@@ -505,60 +859,36 @@ async function startServer() {
     invoice: Invoice,
     paymentUrl: string,
     settings: Awaited<ReturnType<typeof getAppSettingsDb>>,
-    paymentConfig: AppDataSnapshot['paymentConfig'] | undefined
+    paymentConfig: AppDataSnapshot['paymentConfig'] | undefined,
+    automaticPaymentAvailable: boolean
   ): string {
     const [year, month] = invoice.dueDate.split('-');
     const period = year && month ? `${month}/${year}` : invoice.periodMonth;
     const currency = settings.currencySymbol || 'Rp';
-    const message = [
-      `Halo Bapak/Ibu ${customer.name},`,
-      '',
-      'Ini adalah pengingat sebelum tanggal jatuh tempo/isolir.',
-      '',
-      `📦 Paket: ${customer.servicePackageName || customer.profileName}`,
-      `💰 Total Tagihan: ${currency} ${invoice.totalAmount.toLocaleString('id-ID')}`,
-      `📅 Periode: ${period}`,
-    ];
-    const automaticPaymentAvailable = Boolean(
-      (!process.env.PAYMENT_GATEWAY || process.env.PAYMENT_GATEWAY === 'midtrans') &&
-      process.env.MIDTRANS_SERVER_KEY &&
-      configuredPaymentAppUrl()
-    );
-    if (automaticPaymentAvailable) {
-      message.push(
-        '',
-        '˗ˋˏ$ˎˊ˗➜ Pembayaran Online proses otomatis setiap hari, proses 24 jam. melalui tautan berikut:',
-        paymentUrl
-      );
-    }
+    const manualMethods = (paymentConfig?.manualPaymentMethods || []).filter(isManualPaymentMethodReady);
+    const paymentOptions = manualMethods.map(method => [
+      `${method.name}${method.accountNumber ? `: ${method.accountNumber}` : ''}`,
+      method.accountHolder || method.serviceName
+        ? `Atas nama: ${method.accountHolder || method.serviceName}`
+        : '',
+      method.instructions.trim(),
+    ].filter(Boolean).join('\n')).join('\n\n');
+    const paymentLink = automaticPaymentAvailable
+      ? `Pembayaran online tersedia 24 jam melalui tautan berikut:\n${paymentUrl}`
+      : `Rincian tagihan dan pilihan pembayaran:\n${paymentUrl}`;
+    const options = [paymentLink, paymentOptions].filter(Boolean).join('\n\n');
+    return renderWhatsAppTemplate('reminder', settings.whatsappTemplates, {
+      customer_name: customer.name,
+      business_name: settings.companyName.trim() || settings.brandName.trim() || settings.appName,
+      invoice_number: invoice.invoiceNumber,
+      package_name: customer.servicePackageName || customer.profileName,
+      period,
+      amount: `${currency} ${invoice.totalAmount.toLocaleString('id-ID')}`,
+      due_date: invoice.dueDate,
+      payment_url: paymentUrl,
+      payment_options: options,
+    });
 
-    const manualMethods = (paymentConfig?.manualPaymentMethods || []).filter(method => method.enabled);
-    if (manualMethods.length) {
-      message.push('', '🏛️➜ Pembayaran Manual');
-      for (const method of manualMethods) {
-        const title = method.serviceName?.trim() || method.name;
-        message.push('', `${title} : ${method.accountNumber || '-'}`);
-        if (method.instructions.trim()) message.push(method.instructions.trim());
-      }
-      if (settings.phoneContact.trim()) {
-        message.push('', `📲 Kirim bukti transfer atau konfirmasi pembayaran ke ${settings.phoneContact}.`);
-      }
-    }
-
-    if (settings.officeAddress.trim()) {
-      message.push(
-        '',
-        '💵➜ Untuk pembayaran cash bisa langsung ke kantor',
-        settings.officeAddress.trim()
-      );
-    }
-    message.push(
-      '',
-      'Terima kasih atas kerja samanya.',
-      'Salam,',
-      settings.companyName.trim() || settings.brandName.trim() || settings.appName
-    );
-    return message.join('\n');
   }
 
   const invoiceGenerationInProgress = new Map<string, Promise<Invoice | null>>();
@@ -756,11 +1086,15 @@ async function startServer() {
       updatedVouchers
     );
 
-    const deliveryMessage =
-      `Pembayaran berhasil. Voucher hotspot ${voucher.profileName}:\n` +
-      `Username: ${voucher.code}\nPassword: ${voucher.password || voucher.code}\n` +
-      `Masa penggunaan: ${voucher.validityDuration}\n` +
-      `Kode sudah aktif di router. Gunakan pada halaman login hotspot.`;
+    const settings = await getAppSettingsDb();
+    const deliveryMessage = renderWhatsAppTemplate('voucherDelivery', settings.whatsappTemplates, {
+      customer_name: transaction.customerName,
+      business_name: settings.companyName.trim() || settings.brandName.trim() || settings.appName,
+      package_name: voucher.profileName,
+      voucher_code: voucher.code,
+      voucher_password: voucher.password || voucher.code,
+      validity: voucher.validityDuration,
+    });
     try {
       const sent = await sendWhatsAppMessage(transaction.customerPhone, deliveryMessage);
       await recordWhatsAppLog(transaction.customerPhone, transaction.customerName, 'voucher_delivery', deliveryMessage, 'sent', JSON.stringify(sent.data));
@@ -834,7 +1168,14 @@ async function startServer() {
       const token = createPortalLinkToken({ invoiceId: invoice.id }, Date.now() + 30 * 24 * 60 * 60 * 1000, await getOrCreatePortalLinkSecretDb());
       const appUrl = configuredPaymentAppUrl();
       const billingUrl = appUrl ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(token)}` : '';
-      const message = `Pembayaran invoice ${invoice.invoiceNumber} telah disetujui. Masa aktif layanan hingga ${customer.expiredDate}.${billingUrl ? ` Cek detail atau bayar tagihan berikutnya: ${billingUrl}` : ''}`;
+      const settings = await getAppSettingsDb();
+      const message = renderWhatsAppTemplate('paymentSuccess', settings.whatsappTemplates, {
+        customer_name: customer.name,
+        business_name: settings.companyName.trim() || settings.brandName.trim() || settings.appName,
+        invoice_number: invoice.invoiceNumber,
+        amount: `${settings.currencySymbol || 'Rp'} ${invoice.totalAmount.toLocaleString('id-ID')}`,
+        service_until: customer.expiredDate,
+      }) + (billingUrl ? `\n\nLihat tagihan berikutnya:\n${billingUrl}` : '');
       try {
         const sent = await sendWhatsAppMessage(customer.phone, message);
         await recordWhatsAppLog(customer.phone, customer.name, 'payment_success', message, 'sent', JSON.stringify(sent.data));
@@ -863,6 +1204,23 @@ async function startServer() {
   });
 
   const publicLookupAttempts = new Map<string, { count: number; resetAt: number }>();
+  const isManualPaymentMethodReady = (method: ManualPaymentMethod): boolean => {
+    const accountHolder = method.accountHolder || method.serviceName;
+    if (
+      !method.enabled ||
+      typeof method.name !== 'string' ||
+      typeof accountHolder !== 'string' ||
+      typeof method.accountNumber !== 'string' ||
+      typeof method.instructions !== 'string'
+    ) return false;
+    return Boolean(
+      method.name.trim() &&
+      accountHolder.trim() &&
+      method.accountNumber.trim() &&
+      method.instructions.trim()
+    );
+  };
+
   app.get('/api/portal/vouchers', async (_req, res) => {
     try {
       const stored = await getAppDataDb();
@@ -882,16 +1240,14 @@ async function startServer() {
     try {
       const stored = await getAppDataDb();
       const config = stored.data.paymentConfig;
+      const gateway = await paymentGatewayCredentials();
       const settings = await getAppSettingsDb();
       const operatorPhone = settings.phoneContact.replace(/[^0-9]/g, '');
       res.setHeader('Cache-Control', 'no-store');
       res.json({
-        automaticAvailable: Boolean(
-          (!process.env.PAYMENT_GATEWAY || process.env.PAYMENT_GATEWAY === 'midtrans') &&
-          process.env.MIDTRANS_SERVER_KEY &&
-          configuredPaymentAppUrl()
-        ),
-        manualMethods: (config?.manualPaymentMethods || []).filter(method => method.enabled),
+        automaticAvailable: paymentGatewayReady(gateway),
+        provider: gateway.provider,
+        manualMethods: (config?.manualPaymentMethods || []).filter(isManualPaymentMethodReady),
         timeoutMinutes: config?.manualTimeoutMinutes ?? 60,
         operatorWhatsapp: operatorPhone
           ? (operatorPhone.startsWith('0') ? `62${operatorPhone.slice(1)}` : operatorPhone)
@@ -930,6 +1286,8 @@ async function startServer() {
     }
     try {
       const stored = await getAppDataDb();
+      const appSettings = await getAppSettingsDb();
+      const gateway = await paymentGatewayCredentials();
       const profile = (stored.data.hotspotProfiles || []).find(item =>
         item.id === profileId && item.enabled !== false
       );
@@ -940,14 +1298,12 @@ async function startServer() {
       const paymentConfig = stored.data.paymentConfig;
       let manualMethod: ManualPaymentMethod | undefined;
       if (paymentMode === 'manual') {
-        manualMethod = paymentConfig?.manualPaymentMethods?.find(method => method.id === methodId && method.enabled);
+        manualMethod = paymentConfig?.manualPaymentMethods?.find(method =>
+          method.id === methodId && isManualPaymentMethodReady(method)
+        );
         if (!manualMethod) return res.status(400).json({ error: 'Pilih metode pembayaran manual yang tersedia' });
-      } else if (
-        !process.env.MIDTRANS_SERVER_KEY ||
-        !configuredPaymentAppUrl() ||
-        (process.env.PAYMENT_GATEWAY && process.env.PAYMENT_GATEWAY !== 'midtrans')
-      ) {
-        return res.status(503).json({ error: 'Pembayaran otomatis belum tersedia. Pilih metode manual atau hubungi operator.' });
+      } else if (!paymentGatewayReady(gateway)) {
+        return res.status(503).json({ error: 'Gateway otomatis belum siap. Hubungi operator.' });
       }
       if (!Number.isSafeInteger(profile.price) || profile.price <= 0) {
         return res.status(400).json({ error: 'Harga paket tidak valid untuk checkout' });
@@ -959,10 +1315,18 @@ async function startServer() {
       const expiresMinutes = Math.max(1, Math.min(1440, Number(paymentConfig?.manualTimeoutMinutes) || 60));
       const expiresAt = new Date(now.getTime() + (paymentMode === 'manual' ? expiresMinutes : 1440) * 60_000).toISOString();
       const vouchers = stored.data.vouchers || [];
+      const voucherPrefix = /^[A-Z0-9-]{0,12}$/.test(appSettings.defaultVoucherPrefix)
+        ? appSettings.defaultVoucherPrefix
+        : 'NET-';
+      const voucherLength = Number.isInteger(appSettings.voucherLength) && appSettings.voucherLength >= 4 && appSettings.voucherLength <= 8
+        ? appSettings.voucherLength
+        : 5;
       let code: string;
       do {
-        code = `SB-${randomBytes(4).toString('hex').toUpperCase()}`;
+        code = `${voucherPrefix}${Array.from({ length: voucherLength }, () => randomInt(0, 10)).join('')}`;
       } while (vouchers.some(item => item.code === code));
+      const transactions = stored.data.transactions || [];
+      const paymentCode = paymentMode === 'manual' ? createPaymentCode(transactions, 'SBV') : undefined;
       const voucher: Voucher = {
         id: randomUUID(),
         code,
@@ -977,21 +1341,23 @@ async function startServer() {
         batchCode: orderId,
         createdAt,
         customerPhone: phone.trim(),
-        paymentMethod: paymentMode === 'manual' ? manualMethod!.name : 'midtrans',
+        paymentMethod: paymentMode === 'manual' ? manualMethod!.name : gateway.provider,
         routerId: profile.routerId,
         orderId,
       };
-      const transactions = stored.data.transactions || [];
       const transaction: PaymentTransaction = {
         id: randomUUID(),
         orderId,
+        ...(paymentCode ? { paymentCode } : {}),
         orderType: 'voucher',
         amount: profile.price,
         customerName: customerName.trim(),
         customerPhone: phone.trim(),
         customerEmail: typeof email === 'string' && email.trim() ? email.trim() : undefined,
-        paymentMethod: paymentMode === 'manual' ? 'manual' : 'midtrans',
-        paymentChannel: paymentMode === 'manual' ? manualMethod!.id : 'snap',
+        paymentMethod: paymentMode === 'manual' ? 'manual' : gateway.provider,
+        paymentChannel: paymentMode === 'manual'
+          ? manualMethod!.id
+          : gateway.provider === 'midtrans' ? 'snap' : 'checkout',
         status: 'pending',
         expiryMinutes: paymentMode === 'manual' ? expiresMinutes : 1440,
         createdAt,
@@ -1007,71 +1373,64 @@ async function startServer() {
           ? (operatorPhone.startsWith('0') ? `62${operatorPhone.slice(1)}` : operatorPhone)
           : '';
         const contactMessage =
-          `Halo operator, saya ingin konfirmasi pembayaran voucher.\n` +
-          `Kode bayar: ${orderId}\nPaket: ${profile.name}\nNominal: Rp ${profile.price.toLocaleString('id-ID')}\n` +
-          `Metode: ${manualMethod!.name}\nNama: ${customerName.trim()}\nNomor: ${phone.trim()}`;
+          `Yth. Operator, saya ingin mengonfirmasi pembayaran voucher.\n\n` +
+          `Kode pembayaran: ${paymentCode}\nPaket: ${profile.name}\nNominal: Rp ${profile.price.toLocaleString('id-ID')}\n` +
+          `Metode: ${manualMethod!.name}\nNama pelanggan: ${customerName.trim()}\nNomor WhatsApp: ${phone.trim()}`;
         const operatorUrl = operatorWhatsapp
           ? `https://wa.me/${operatorWhatsapp}?text=${encodeURIComponent(contactMessage)}`
           : '';
         try {
           await sendWhatsAppMessage(
             phone,
-            `Pesanan voucher ${profile.name} (${orderId}) dibuat. Kode bayar: ${orderId}. ` +
-            `Nominal Rp ${profile.price.toLocaleString('id-ID')} melalui ${manualMethod!.name}. ` +
-            `${manualMethod!.instructions} Selesaikan pembayaran lalu konfirmasi ke operator melalui ${operatorUrl || 'nomor WhatsApp operator yang tersedia'}. ` +
-            `Batas waktu: ${expiresAt}. Voucher aktif setelah pembayaran diverifikasi.`
+            renderWhatsAppTemplate('manualVoucher', appSettings.whatsappTemplates, {
+              customer_name: customerName.trim(),
+              business_name: appSettings.companyName.trim() || appSettings.brandName.trim() || appSettings.appName,
+              package_name: profile.name,
+              payment_code: paymentCode || orderId,
+              amount: `${appSettings.currencySymbol || 'Rp'} ${profile.price.toLocaleString('id-ID')}`,
+              method: manualMethod!.name,
+              account_holder: manualMethod!.accountHolder || manualMethod!.serviceName || '-',
+              account_number: manualMethod!.accountNumber || '-',
+              notes: manualMethod!.instructions,
+              expires_at: formatDateTime(expiresAt, appSettings.timezone, appSettings.timeFormat),
+              operator_url: operatorUrl || 'Hubungi nomor WhatsApp operator yang tersedia.',
+            })
           );
         } catch (error) {
           console.error(`[WhatsApp] Could not send manual voucher payment instructions for ${orderId}:`, error);
         }
         return res.status(201).json({
           orderId,
+          paymentCode,
           status: 'pending',
           method: manualMethod,
           amount: profile.price,
           expiresAt,
+          expiresAtFormatted: formatDateTime(expiresAt, appSettings.timezone, appSettings.timeFormat),
           operatorUrl,
           message: 'Pesanan dibuat. Gunakan kode bayar dan hubungi operator melalui WhatsApp untuk konfirmasi pembayaran.',
         });
       }
 
       const appUrl = configuredPaymentAppUrl()!;
-      const response = await fetch(
-        process.env.MIDTRANS_IS_PRODUCTION === 'true'
-          ? 'https://app.midtrans.com/snap/v1/transactions'
-          : 'https://app.sandbox.midtrans.com/snap/v1/transactions',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Basic ${Buffer.from(`${process.env.MIDTRANS_SERVER_KEY}:`).toString('base64')}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          body: JSON.stringify({
-            transaction_details: { order_id: orderId, gross_amount: profile.price },
-            item_details: [{ id: profile.id.slice(0, 50), price: profile.price, quantity: 1, name: `Voucher ${profile.name}`.slice(0, 50) }],
-            customer_details: {
-              first_name: customerName.trim().slice(0, 50),
-              email: typeof email === 'string' ? email.trim() || undefined : undefined,
-              phone: phone.trim(),
-            },
-            callbacks: { finish: `${appUrl.origin}/?payment=complete` },
-            expiry: { unit: 'minute', duration: 1440 },
-          }),
-          signal: AbortSignal.timeout(15000),
-        }
-      );
-      const payload = await response.json() as { redirect_url?: string; error_messages?: string[] };
-      if (!response.ok || typeof payload.redirect_url !== 'string') {
-        const providerError = Array.isArray(payload.error_messages) ? payload.error_messages.join('; ') : `HTTP ${response.status}`;
-        return res.status(502).json({ error: `Midtrans gagal membuat checkout: ${providerError}` });
-      }
-      const redirectUrl = new URL(payload.redirect_url);
-      if (redirectUrl.protocol !== 'https:' ||
-        !['app.midtrans.com', 'app.sandbox.midtrans.com'].includes(redirectUrl.hostname)) {
-        return res.status(502).json({ error: 'Midtrans returned an unexpected checkout URL' });
-      }
-      transaction.paymentUrl = redirectUrl.toString();
+      const checkout = await createOnlineCheckout({
+        config: gateway,
+        orderId,
+        amount: profile.price,
+        itemId: profile.id,
+        itemName: `Voucher ${profile.name}`,
+        customerName: customerName.trim(),
+        customerPhone: phone.trim(),
+        customerEmail: typeof email === 'string' ? email.trim() || undefined : undefined,
+        returnUrl: `${appUrl.origin}/?payment=complete`,
+      });
+      transaction.paymentMethod = checkout.provider;
+      transaction.paymentChannel = checkout.provider === 'midtrans'
+        ? 'snap'
+        : checkout.provider === 'doku'
+          ? 'checkout'
+          : checkout.provider;
+      transaction.paymentUrl = checkout.redirectUrl;
       await saveVoucherOrderDb([voucher, ...vouchers], [transaction, ...transactions]);
       res.status(201).json({ orderId, redirectUrl: transaction.paymentUrl, status: 'pending' });
     } catch (error) {
@@ -1108,41 +1467,57 @@ async function startServer() {
 
   app.put('/api/payment/manual-options', requireAdminSession, async (req, res) => {
     const { manualPaymentMethods, manualTimeoutMinutes } = req.body || {};
-    if (
-      !Array.isArray(manualPaymentMethods) ||
-      manualPaymentMethods.length > 8 ||
-      !Number.isInteger(manualTimeoutMinutes) ||
-      manualTimeoutMinutes < 1 || manualTimeoutMinutes > 1440 ||
-      manualPaymentMethods.some((method: unknown) =>
-        !isRecord(method) ||
-        typeof method.id !== 'string' || !/^[a-z0-9-]{1,32}$/.test(method.id) ||
-        typeof method.name !== 'string' || !method.name.trim() || method.name.length > 64 ||
-        (method.serviceName !== undefined && (typeof method.serviceName !== 'string' || method.serviceName.length > 64)) ||
-        (method.accountNumber !== undefined && (typeof method.accountNumber !== 'string' || method.accountNumber.length > 64)) ||
-        typeof method.instructions !== 'string' || method.instructions.length > 1000 ||
-        (method.enabled && (!method.instructions.trim() || !String(method.serviceName || '').trim() || !String(method.accountNumber || '').trim())) ||
-        typeof method.enabled !== 'boolean'
-      )
-    ) {
-      return res.status(400).json({ error: 'Lengkapi nama layanan, nomor rekening/akun, instruksi, dan batas waktu pembayaran manual yang valid' });
+    if (!Array.isArray(manualPaymentMethods) || manualPaymentMethods.length > 8) {
+      return res.status(400).json({ error: 'Maksimal 8 metode pembayaran manual dapat disimpan' });
+    }
+    if (!Number.isInteger(manualTimeoutMinutes) || manualTimeoutMinutes < 1 || manualTimeoutMinutes > 1440) {
+      return res.status(400).json({ error: 'Batas waktu pembayaran harus berupa bilangan bulat antara 1 dan 1440 menit' });
+    }
+    if (manualPaymentMethods.some((method: unknown) =>
+      !isRecord(method) ||
+      typeof method.id !== 'string' || !/^[a-z0-9-]{1,32}$/.test(method.id) ||
+      typeof method.name !== 'string' || !method.name.trim() || method.name.length > 64 ||
+      (method.accountHolder !== undefined && (typeof method.accountHolder !== 'string' || method.accountHolder.length > 100)) ||
+      (method.serviceName !== undefined && (typeof method.serviceName !== 'string' || method.serviceName.length > 64)) ||
+      (method.accountNumber !== undefined && (typeof method.accountNumber !== 'string' || method.accountNumber.length > 500)) ||
+      (method.instructions !== undefined && (typeof method.instructions !== 'string' || method.instructions.length > 1000)) ||
+      typeof method.enabled !== 'boolean'
+    )) {
+      return res.status(400).json({ error: 'Data metode pembayaran tidak valid. Periksa metode, nomor rekening/akun, atas nama, catatan, dan statusnya.' });
     }
     const ids = manualPaymentMethods.map((method: ManualPaymentMethod) => method.id);
     if (new Set(ids).size !== ids.length) return res.status(400).json({ error: 'ID metode pembayaran tidak boleh duplikat' });
     try {
       const stored = await getAppDataDb();
-      const paymentConfig = {
-        ...stored.data.paymentConfig,
-        manualPaymentMethods: manualPaymentMethods.map((method: ManualPaymentMethod) => ({
+      const normalizedMethods = manualPaymentMethods.map((method: ManualPaymentMethod) => {
+        const normalized = {
           ...method,
           name: method.name.trim(),
-          serviceName: method.serviceName?.trim() || '',
+          accountHolder: method.accountHolder?.trim() || method.serviceName?.trim() || '',
           accountNumber: method.accountNumber?.trim() || '',
-          instructions: method.instructions.trim(),
-        })),
+          instructions: method.instructions?.trim() || '',
+        };
+        return {
+          ...normalized,
+          enabled: isManualPaymentMethodReady({ ...normalized, enabled: method.enabled }),
+        };
+      });
+      const disabledIncompleteMethodIds = normalizedMethods
+        .filter((method: ManualPaymentMethod, index: number) =>
+          manualPaymentMethods[index].enabled && !method.enabled
+        )
+        .map((method: ManualPaymentMethod) => method.id);
+      const paymentConfig = {
+        ...stored.data.paymentConfig,
+        manualPaymentMethods: normalizedMethods,
         manualTimeoutMinutes,
       };
       await saveAppDataCollectionDb('paymentConfig', paymentConfig as AppDataSnapshot['paymentConfig']);
-      res.json({ manualPaymentMethods: paymentConfig.manualPaymentMethods, manualTimeoutMinutes });
+      res.json({
+        manualPaymentMethods: paymentConfig.manualPaymentMethods,
+        manualTimeoutMinutes,
+        disabledIncompleteMethodIds,
+      });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -1522,11 +1897,7 @@ async function startServer() {
           status: publicStatus,
         },
         invoices,
-        paymentAvailable: Boolean(
-          process.env.MIDTRANS_SERVER_KEY &&
-          configuredPaymentAppUrl() &&
-          (!process.env.PAYMENT_GATEWAY || process.env.PAYMENT_GATEWAY === 'midtrans')
-        ),
+        paymentAvailable: paymentGatewayReady(await paymentGatewayCredentials()),
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1571,11 +1942,7 @@ async function startServer() {
         invoices: currentInvoices.map(({ id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod }) => ({
           id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod,
         })),
-        paymentAvailable: Boolean(
-          process.env.MIDTRANS_SERVER_KEY &&
-          configuredPaymentAppUrl() &&
-          (!process.env.PAYMENT_GATEWAY || process.env.PAYMENT_GATEWAY === 'midtrans')
-        ),
+        paymentAvailable: paymentGatewayReady(await paymentGatewayCredentials()),
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -1605,7 +1972,8 @@ async function startServer() {
           invoice,
           url,
           await getAppSettingsDb(),
-          latest.data.paymentConfig
+          latest.data.paymentConfig,
+          paymentGatewayReady(await paymentGatewayCredentials())
         )
         : undefined;
       res.json({ url, invoice, message });
@@ -1727,6 +2095,7 @@ async function startServer() {
 
     try {
       const stored = await getAppDataDb();
+      const gateway = await paymentGatewayCredentials();
       const customers = stored.data.customers || [];
       let customer: Customer | undefined;
       if (typeof portalToken === 'string') {
@@ -1762,7 +2131,7 @@ async function startServer() {
       }
       if (paymentMode === 'manual') {
         const paymentConfig = stored.data.paymentConfig;
-        const method = paymentConfig?.manualPaymentMethods?.find(item => item.id === methodId && item.enabled);
+        const method = paymentConfig?.manualPaymentMethods?.find(item => item.id === methodId && isManualPaymentMethodReady(item));
         if (!method) return res.status(400).json({ error: 'Pilih metode pembayaran manual yang tersedia' });
         const existingManualRequest = (stored.data.transactions || []).find(item =>
           item.invoiceId === invoice.id &&
@@ -1770,13 +2139,18 @@ async function startServer() {
           item.status === 'pending'
         );
         if (existingManualRequest) {
-          return res.status(409).json({ error: `Pembayaran manual sudah menunggu persetujuan (${existingManualRequest.orderId})` });
+          return res.status(409).json({ error: `Pembayaran manual sudah menunggu persetujuan (${existingManualRequest.paymentCode || 'kode tersimpan'})` });
         }
         const timeoutMinutes = Math.max(1, Math.min(1440, Number(paymentConfig?.manualTimeoutMinutes) || 60));
         const createdAt = new Date();
+        const transactions = stored.data.transactions || [];
+        const orderId = `SBM-${randomUUID()}`;
+        const paymentCode = createPaymentCode(transactions, 'SBM');
+        const expiresAt = new Date(createdAt.getTime() + timeoutMinutes * 60_000).toISOString();
         const transaction: PaymentTransaction = {
           id: randomUUID(),
-          orderId: `SBM-${randomUUID()}`,
+          orderId,
+          paymentCode,
           orderType: 'invoice',
           amount: invoice.totalAmount,
           customerName: customer.name,
@@ -1787,28 +2161,38 @@ async function startServer() {
           status: 'pending',
           expiryMinutes: timeoutMinutes,
           createdAt: createdAt.toISOString(),
-          expiresAt: new Date(createdAt.getTime() + timeoutMinutes * 60_000).toISOString(),
+          expiresAt,
           invoiceId: invoice.id,
         };
-        await saveAppDataCollectionDb('transactions', [transaction, ...(stored.data.transactions || [])]);
+        await saveAppDataCollectionDb('transactions', [transaction, ...transactions]);
         const appSettings = await getAppSettingsDb();
         const operatorNumber = appSettings.phoneContact.replace(/[^0-9]/g, '');
         const operatorWhatsapp = operatorNumber
           ? (operatorNumber.startsWith('0') ? `62${operatorNumber.slice(1)}` : operatorNumber)
           : '';
         const contactMessage =
-          `Halo operator, saya ingin konfirmasi pembayaran tagihan.\nKode bayar: ${transaction.orderId}\n` +
-          `Invoice: ${invoice.invoiceNumber}\nNominal: Rp ${invoice.totalAmount.toLocaleString('id-ID')}\n` +
-          `Metode: ${method.name}\nNama: ${customer.name}\nNomor: ${customer.phone}`;
+          `Yth. Operator, saya ingin mengonfirmasi pembayaran tagihan.\n\nKode pembayaran: ${paymentCode}\n` +
+          `Invoice: ${invoice.invoiceNumber}\nNominal: ${appSettings.currencySymbol || 'Rp'} ${invoice.totalAmount.toLocaleString('id-ID')}\n` +
+          `Metode: ${method.name}\nNama pelanggan: ${customer.name}\nNomor WhatsApp: ${customer.phone}`;
         const operatorUrl = operatorWhatsapp
           ? `https://wa.me/${operatorWhatsapp}?text=${encodeURIComponent(contactMessage)}`
           : '';
         try {
           await sendWhatsAppMessage(
             customer.phone,
-            `Permintaan pembayaran invoice ${invoice.invoiceNumber} (${transaction.orderId}) dibuat. Kode bayar: ${transaction.orderId}. ` +
-            `Nominal Rp ${invoice.totalAmount.toLocaleString('id-ID')} melalui ${method.name}. ${method.instructions} ` +
-            `Konfirmasi kepada operator melalui ${operatorUrl || 'nomor WhatsApp operator yang tersedia'}. Batas waktu: ${transaction.expiresAt}.`
+            renderWhatsAppTemplate('manualInvoice', appSettings.whatsappTemplates, {
+              customer_name: customer.name,
+              business_name: appSettings.companyName.trim() || appSettings.brandName.trim() || appSettings.appName,
+              invoice_number: invoice.invoiceNumber,
+              payment_code: paymentCode,
+              amount: `${appSettings.currencySymbol || 'Rp'} ${invoice.totalAmount.toLocaleString('id-ID')}`,
+              method: method.name,
+              account_holder: method.accountHolder || method.serviceName || '-',
+              account_number: method.accountNumber || '-',
+              notes: method.instructions,
+              expires_at: formatDateTime(expiresAt, appSettings.timezone, appSettings.timeFormat),
+              operator_url: operatorUrl || 'Hubungi nomor WhatsApp operator yang tersedia.',
+            })
           );
         } catch (error) {
           console.error(`[WhatsApp] Could not send manual invoice payment instructions for ${transaction.orderId}:`, error);
@@ -1816,16 +2200,17 @@ async function startServer() {
         return res.status(201).json({
           status: 'pending',
           orderId: transaction.orderId,
+          paymentCode,
           expiresAt: transaction.expiresAt,
+          expiresAtFormatted: formatDateTime(expiresAt, appSettings.timezone, appSettings.timeFormat),
           operatorUrl,
           message: 'Kode bayar dibuat. Hubungi operator melalui WhatsApp setelah menyelesaikan transfer.',
         });
       }
 
       const appUrl = configuredPaymentAppUrl();
-      if (!process.env.MIDTRANS_SERVER_KEY || !appUrl ||
-        (process.env.PAYMENT_GATEWAY && process.env.PAYMENT_GATEWAY !== 'midtrans')) {
-        return res.status(503).json({ error: 'Checkout Midtrans belum dikonfigurasi oleh administrator' });
+      if (!paymentGatewayReady(gateway) || !appUrl) {
+        return res.status(503).json({ error: 'Gateway otomatis belum dikonfigurasi oleh administrator' });
       }
       if (paymentCheckoutInProgress.has(invoice.id)) {
         return res.status(409).json({ error: 'Checkout tagihan sedang dibuat. Silakan coba lagi.' });
@@ -1838,50 +2223,17 @@ async function startServer() {
       paymentCheckoutInProgress.add(invoice.id);
       try {
         const orderId = `SB-${randomUUID()}`;
-        const response = await fetch(
-          process.env.MIDTRANS_IS_PRODUCTION === 'true'
-            ? 'https://app.midtrans.com/snap/v1/transactions'
-            : 'https://app.sandbox.midtrans.com/snap/v1/transactions',
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Basic ${Buffer.from(`${process.env.MIDTRANS_SERVER_KEY}:`).toString('base64')}`,
-              'Content-Type': 'application/json',
-              Accept: 'application/json',
-            },
-            body: JSON.stringify({
-              transaction_details: { order_id: orderId, gross_amount: invoice.totalAmount },
-              item_details: [{
-                id: invoice.id.slice(0, 50),
-                price: invoice.totalAmount,
-                quantity: 1,
-                name: `Tagihan ${invoice.invoiceNumber}`.slice(0, 50),
-              }],
-              customer_details: {
-                first_name: customer.name.slice(0, 50),
-                email: customer.email || undefined,
-                phone: customer.phone,
-              },
-              callbacks: {
-                finish: `${appUrl.origin}/portal/billing?payment=complete`,
-              },
-              expiry: { unit: 'minute', duration: 1440 },
-            }),
-            signal: AbortSignal.timeout(15000),
-          }
-        );
-        const payload = await response.json() as { token?: string; redirect_url?: string; error_messages?: string[] };
-        if (!response.ok || typeof payload.redirect_url !== 'string') {
-          const providerError = Array.isArray(payload.error_messages) ? payload.error_messages.join('; ') : `HTTP ${response.status}`;
-          return res.status(502).json({ error: `Midtrans gagal membuat checkout: ${providerError}` });
-        }
-        const redirectUrl = new URL(payload.redirect_url);
-        if (
-          redirectUrl.protocol !== 'https:' ||
-          !['app.midtrans.com', 'app.sandbox.midtrans.com'].includes(redirectUrl.hostname)
-        ) {
-          return res.status(502).json({ error: 'Midtrans mengembalikan URL checkout yang tidak valid' });
-        }
+        const checkout = await createOnlineCheckout({
+          config: gateway,
+          orderId,
+          amount: invoice.totalAmount,
+          itemId: invoice.id,
+          itemName: `Tagihan ${invoice.invoiceNumber}`,
+          customerName: customer.name,
+          customerPhone: customer.phone,
+          customerEmail: customer.email || undefined,
+          returnUrl: `${appUrl.origin}/portal/billing?payment=complete`,
+        });
 
         const transaction: PaymentTransaction = {
           id: randomUUID(),
@@ -1891,10 +2243,14 @@ async function startServer() {
           customerName: customer.name,
           customerPhone: customer.phone,
           customerEmail: customer.email || undefined,
-          paymentMethod: 'midtrans',
-          paymentChannel: 'snap',
+          paymentMethod: checkout.provider,
+          paymentChannel: checkout.provider === 'midtrans'
+            ? 'snap'
+            : checkout.provider === 'doku'
+              ? 'checkout'
+              : checkout.provider,
           status: 'pending',
-          paymentUrl: redirectUrl.toString(),
+          paymentUrl: checkout.redirectUrl,
           expiryMinutes: 1440,
           createdAt: new Date().toISOString(),
           invoiceId: invoice.id,
@@ -1909,18 +2265,149 @@ async function startServer() {
     }
   });
 
-  app.get('/api/payment/config', requireAdminSession, (_req, res) => {
-    const provider = process.env.PAYMENT_GATEWAY || 'midtrans';
-    const appOrigin = configuredPaymentAppUrl()?.origin || '';
-    res.json({
-      provider,
-      isProduction: process.env.MIDTRANS_IS_PRODUCTION === 'true',
-      serverKeyConfigured: Boolean(process.env.MIDTRANS_SERVER_KEY),
-      clientKeyConfigured: Boolean(process.env.MIDTRANS_CLIENT_KEY),
-      appUrlConfigured: Boolean(appOrigin),
-      checkoutEnabled: provider === 'midtrans' && Boolean(process.env.MIDTRANS_SERVER_KEY && appOrigin),
-      webhookUrl: appOrigin ? `${appOrigin}/api/payment/webhook` : '',
-    });
+  app.get('/api/payment/config', requireAdminSession, async (_req, res) => {
+    try {
+      const config = await paymentGatewayCredentials();
+      const appOrigin = configuredPaymentAppUrl()?.origin || '';
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        provider: config.provider,
+        isProduction: config.isProduction,
+        serverKeyConfigured: Boolean(config.serverKey),
+        clientKeyConfigured: Boolean(config.clientKey),
+        dokuClientIdConfigured: Boolean(config.dokuClientId),
+        dokuSecretKeyConfigured: Boolean(config.dokuSecretKey),
+        xenditApiKeyConfigured: Boolean(config.xenditApiKey),
+        xenditCallbackTokenConfigured: Boolean(config.xenditCallbackToken),
+        tripayMerchantCode: config.tripayMerchantCode || '',
+        tripayApiKeyConfigured: Boolean(config.tripayApiKey),
+        tripayPrivateKeyConfigured: Boolean(config.tripayPrivateKey),
+        tripayPaymentMethod: config.tripayPaymentMethod || 'QRIS',
+        appUrlConfigured: Boolean(appOrigin),
+        checkoutEnabled: paymentGatewayReady(config),
+        webhookUrl: appOrigin ? `${appOrigin}/api/payment/webhook` : '',
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.put('/api/payment/config', requireAdminSession, async (req, res) => {
+    const { provider, isProduction } = req.body || {};
+    if (
+      !['none', 'midtrans', 'doku', 'xendit', 'tripay'].includes(provider) ||
+      typeof isProduction !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'Pilih satu gateway otomatis valid atau nonaktifkan gateway otomatis' });
+    }
+    try {
+      const previous = await paymentGatewayCredentials();
+      const config: PaymentGatewayCredentials = {
+        provider,
+        isProduction,
+      };
+      if (provider === 'midtrans') {
+        const serverKey = req.body.serverKey || (previous.provider === provider ? previous.serverKey : '');
+        const clientKey = req.body.clientKey || (previous.provider === provider ? previous.clientKey : '');
+        if (
+          typeof serverKey !== 'string' || serverKey.length > 512 ||
+          typeof clientKey !== 'string' || clientKey.length > 512 ||
+          !serverKey.trim()
+        ) {
+          return res.status(400).json({ error: 'Server Key Midtrans wajib diisi' });
+        }
+        config.serverKey = serverKey.trim();
+        config.clientKey = clientKey.trim();
+      } else if (provider === 'doku') {
+        const dokuClientId = req.body.dokuClientId || (previous.provider === provider ? previous.dokuClientId : '');
+        const dokuSecretKey = req.body.dokuSecretKey || (previous.provider === provider ? previous.dokuSecretKey : '');
+        if (
+          typeof dokuClientId !== 'string' || dokuClientId.length > 256 ||
+          typeof dokuSecretKey !== 'string' || dokuSecretKey.length > 512 ||
+          !dokuClientId.trim() || !dokuSecretKey.trim()
+        ) {
+          return res.status(400).json({ error: 'Client ID dan Secret Key DOKU wajib diisi' });
+        }
+        config.dokuClientId = dokuClientId.trim();
+        config.dokuSecretKey = dokuSecretKey.trim();
+      } else if (provider === 'xendit') {
+        const xenditApiKey = req.body.xenditApiKey || (previous.provider === provider ? previous.xenditApiKey : '');
+        const xenditCallbackToken = req.body.xenditCallbackToken || (previous.provider === provider ? previous.xenditCallbackToken : '');
+        if (
+          typeof xenditApiKey !== 'string' || xenditApiKey.length > 512 ||
+          typeof xenditCallbackToken !== 'string' || xenditCallbackToken.length > 512 ||
+          !xenditApiKey.trim() || !xenditCallbackToken.trim()
+        ) {
+          return res.status(400).json({ error: 'API Key dan Callback Token Xendit wajib diisi' });
+        }
+        config.xenditApiKey = xenditApiKey.trim();
+        config.xenditCallbackToken = xenditCallbackToken.trim();
+      } else if (provider === 'tripay') {
+        const tripayMerchantCode = req.body.tripayMerchantCode || (previous.provider === provider ? previous.tripayMerchantCode : '');
+        const tripayApiKey = req.body.tripayApiKey || (previous.provider === provider ? previous.tripayApiKey : '');
+        const tripayPrivateKey = req.body.tripayPrivateKey || (previous.provider === provider ? previous.tripayPrivateKey : '');
+        const tripayPaymentMethod = req.body.tripayPaymentMethod || (previous.provider === provider ? previous.tripayPaymentMethod : 'QRIS');
+        if (
+          typeof tripayMerchantCode !== 'string' || tripayMerchantCode.length > 128 || !tripayMerchantCode.trim() ||
+          typeof tripayApiKey !== 'string' || tripayApiKey.length > 512 || !tripayApiKey.trim() ||
+          typeof tripayPrivateKey !== 'string' || tripayPrivateKey.length > 512 || !tripayPrivateKey.trim() ||
+          typeof tripayPaymentMethod !== 'string' || !/^[A-Z0-9_]{2,40}$/.test(tripayPaymentMethod)
+        ) {
+          return res.status(400).json({ error: 'Merchant Code, API Key, Private Key, dan metode pembayaran Tripay wajib valid' });
+        }
+        config.tripayMerchantCode = tripayMerchantCode.trim();
+        config.tripayApiKey = tripayApiKey.trim();
+        config.tripayPrivateKey = tripayPrivateKey.trim();
+        config.tripayPaymentMethod = tripayPaymentMethod;
+      }
+      const credentialsChanged =
+        config.provider !== previous.provider ||
+        config.isProduction !== previous.isProduction ||
+        config.serverKey !== previous.serverKey ||
+        config.dokuClientId !== previous.dokuClientId ||
+        config.dokuSecretKey !== previous.dokuSecretKey ||
+        config.xenditApiKey !== previous.xenditApiKey ||
+        config.xenditCallbackToken !== previous.xenditCallbackToken ||
+        config.tripayMerchantCode !== previous.tripayMerchantCode ||
+        config.tripayApiKey !== previous.tripayApiKey ||
+        config.tripayPrivateKey !== previous.tripayPrivateKey ||
+        config.tripayPaymentMethod !== previous.tripayPaymentMethod;
+      if (credentialsChanged && previous.provider !== 'none') {
+        const stored = await getAppDataDb();
+        const pendingOrders = (stored.data.transactions || []).filter(transaction =>
+          transaction.paymentMethod === previous.provider &&
+          transaction.status === 'pending' &&
+          Boolean(transaction.paymentUrl)
+        );
+        if (pendingOrders.length) {
+          return res.status(409).json({
+            error: `Tidak dapat mengganti gateway karena masih ada ${pendingOrders.length} pembayaran ${previous.provider.toUpperCase()} yang menunggu konfirmasi.`,
+          });
+        }
+      }
+      await savePaymentGatewayCredentialsDb(config);
+      res.json({
+        provider: config.provider,
+        isProduction: config.isProduction,
+        serverKeyConfigured: Boolean(config.serverKey),
+        clientKeyConfigured: Boolean(config.clientKey),
+        dokuClientIdConfigured: Boolean(config.dokuClientId),
+        dokuSecretKeyConfigured: Boolean(config.dokuSecretKey),
+        xenditApiKeyConfigured: Boolean(config.xenditApiKey),
+        xenditCallbackTokenConfigured: Boolean(config.xenditCallbackToken),
+        tripayMerchantCode: config.tripayMerchantCode || '',
+        tripayApiKeyConfigured: Boolean(config.tripayApiKey),
+        tripayPrivateKeyConfigured: Boolean(config.tripayPrivateKey),
+        tripayPaymentMethod: config.tripayPaymentMethod || 'QRIS',
+        appUrlConfigured: Boolean(configuredPaymentAppUrl()),
+        checkoutEnabled: paymentGatewayReady(config),
+        webhookUrl: configuredPaymentAppUrl()
+          ? `${configuredPaymentAppUrl()!.origin}/api/payment/webhook`
+          : '',
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.get('/api/payment/manual-options', requireAdminSession, async (_req, res) => {
@@ -1940,10 +2427,14 @@ async function startServer() {
       const stored = await getAppDataDb();
       const vouchers = stored.data.vouchers || [];
       const invoices = stored.data.invoices || [];
+      const settings = await getAppSettingsDb();
       const requests = (stored.data.transactions || [])
         .filter(transaction => transaction.paymentMethod === 'manual' && transaction.status === 'pending')
         .map(transaction => ({
           ...transaction,
+          expiresAtFormatted: transaction.expiresAt
+            ? formatDateTime(transaction.expiresAt, settings.timezone, settings.timeFormat)
+            : undefined,
           voucher: vouchers.find(voucher => voucher.orderId === transaction.orderId) || null,
           invoice: transaction.invoiceId
             ? invoices.find(invoice => invoice.id === transaction.invoiceId) || null
@@ -2054,6 +2545,42 @@ async function startServer() {
   app.post('/api/settings', requireAdminSession, async (req, res) => {
     try {
       const settingsInput = isRecord(req.body) ? { ...req.body } : {};
+      if (
+        (settingsInput.defaultVoucherPrefix !== undefined &&
+          (typeof settingsInput.defaultVoucherPrefix !== 'string' ||
+            settingsInput.defaultVoucherPrefix.length > 12 ||
+            !/^[A-Z0-9-]*$/i.test(settingsInput.defaultVoucherPrefix))) ||
+        (settingsInput.voucherLength !== undefined &&
+          (!Number.isInteger(settingsInput.voucherLength) ||
+            Number(settingsInput.voucherLength) < 4 ||
+            Number(settingsInput.voucherLength) > 8))
+      ) {
+        return res.status(400).json({ error: 'Format voucher tidak valid. Prefix hanya boleh berisi huruf, angka, tanda hubung (maks. 12 karakter), dan panjang angka harus 4-8.' });
+      }
+      if (settingsInput.timezone !== undefined) {
+        if (typeof settingsInput.timezone !== 'string' || settingsInput.timezone.length > 80) {
+          return res.status(400).json({ error: 'Zona waktu tidak valid' });
+        }
+        if (settingsInput.timeFormat !== undefined && settingsInput.timeFormat !== '24h' && settingsInput.timeFormat !== '12h') {
+          return res.status(400).json({ error: 'Format jam harus 24h atau 12h' });
+        }
+        try {
+          new Intl.DateTimeFormat('id-ID', { timeZone: settingsInput.timezone });
+        } catch {
+          return res.status(400).json({ error: 'Zona waktu tidak dikenali' });
+        }
+      }
+      if (settingsInput.whatsappTemplates !== undefined) {
+        const templateKeys = ['reminder', 'isolir', 'paymentSuccess', 'manualInvoice', 'manualVoucher', 'voucherDelivery'];
+        if (!isRecord(settingsInput.whatsappTemplates) || Object.entries(settingsInput.whatsappTemplates).some(([key, value]) =>
+          !templateKeys.includes(key) || typeof value !== 'string' || value.length > 4000
+        )) {
+          return res.status(400).json({ error: 'Template WhatsApp tidak valid atau melebihi 4000 karakter' });
+        }
+      }
+      if (typeof settingsInput.defaultVoucherPrefix === 'string') {
+        settingsInput.defaultVoucherPrefix = settingsInput.defaultVoucherPrefix.toUpperCase();
+      }
       delete settingsInput.mikrotikPass;
       delete settingsInput.openwaApiKey;
       delete settingsInput.paymentServerKey;
@@ -2115,6 +2642,27 @@ async function startServer() {
     }
   });
 
+  app.get('/api/security/portal-session-secret', requireAdminSession, async (req, res) => {
+    try {
+      const secret = await getPortalSessionSecretDb();
+      res.json({
+        configured: Boolean(secret),
+        ...(req.query.reveal === 'true' ? { secret } : {}),
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/security/portal-session-secret', requireAdminSession, async (_req, res) => {
+    try {
+      const secret = await generatePortalSessionSecretDb();
+      res.json({ configured: true, secret });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get('/api/mikrotik/routers', requireAdminSession, async (_req, res) => {
     try {
       const appData = await getAppDataDb();
@@ -2163,6 +2711,28 @@ async function startServer() {
       const router = await resolveRouterConnection(routerId);
       if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
       res.json({ interfaces: await getRouterInterfaces(router) });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get('/api/mikrotik/interface-traffic', requireAdminSession, async (req, res) => {
+    const routerId = String(req.query.routerId || '');
+    const interfaceName = String(req.query.interface || '');
+    if (
+      !routerId ||
+      !interfaceName.trim() ||
+      interfaceName.length > 128 ||
+      /[\u0000-\u001f\u007f]/.test(interfaceName)
+    ) {
+      return res.status(400).json({ error: 'Router dan nama interface yang valid wajib dipilih' });
+    }
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
+      const traffic = await getRouterInterfaceTraffic(router, interfaceName);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ routerId, interface: interfaceName, ...traffic, sampledAt: new Date().toISOString() });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -2376,26 +2946,179 @@ async function startServer() {
   });
 
   app.post('/api/payment/webhook', async (req, res) => {
-    const serverKey = process.env.MIDTRANS_SERVER_KEY;
-    if (!serverKey) return res.status(503).json({ error: 'Midtrans server key is not configured' });
-    const { order_id, status_code, gross_amount, signature_key, transaction_status, fraud_status, payment_type } = req.body || {};
-    if (
-      typeof order_id !== 'string' ||
-      typeof status_code !== 'string' ||
-      typeof gross_amount !== 'string' ||
-      typeof signature_key !== 'string' ||
-      typeof transaction_status !== 'string'
-    ) {
-      return res.status(400).json({ error: 'Invalid Midtrans notification payload' });
+    let gateway: PaymentGatewayCredentials;
+    try {
+      gateway = await paymentGatewayCredentials();
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
+    let order_id: string;
+    let gross_amount: string;
+    let transaction_status: string;
+    let fraud_status: unknown;
+    let payment_type: unknown;
 
-    const expectedSignature = createHash('sha512')
-      .update(`${order_id}${status_code}${gross_amount}${serverKey}`)
-      .digest('hex');
-    const expectedBuffer = Buffer.from(expectedSignature, 'hex');
-    const receivedBuffer = Buffer.from(signature_key, 'hex');
-    if (receivedBuffer.length !== expectedBuffer.length || !timingSafeEqual(receivedBuffer, expectedBuffer)) {
-      return res.status(403).json({ error: 'Invalid Midtrans notification signature' });
+    if (gateway.provider === 'midtrans') {
+      if (!gateway.serverKey) return res.status(503).json({ error: 'Midtrans server key is not configured' });
+      const body = req.body || {};
+      const status_code = body.status_code;
+      const signature_key = body.signature_key;
+      order_id = body.order_id;
+      gross_amount = body.gross_amount;
+      transaction_status = body.transaction_status;
+      fraud_status = body.fraud_status;
+      payment_type = body.payment_type;
+      if (
+        typeof order_id !== 'string' ||
+        typeof status_code !== 'string' ||
+        typeof gross_amount !== 'string' ||
+        typeof signature_key !== 'string' ||
+        typeof transaction_status !== 'string'
+      ) {
+        return res.status(400).json({ error: 'Invalid Midtrans notification payload' });
+      }
+      const expectedSignature = createHash('sha512')
+        .update(`${order_id}${status_code}${gross_amount}${gateway.serverKey}`)
+        .digest('hex');
+      const expectedBuffer = Buffer.from(expectedSignature, 'hex');
+      const receivedBuffer = Buffer.from(signature_key, 'hex');
+      if (receivedBuffer.length !== expectedBuffer.length || !timingSafeEqual(receivedBuffer, expectedBuffer)) {
+        return res.status(403).json({ error: 'Invalid Midtrans notification signature' });
+      }
+    } else if (gateway.provider === 'doku') {
+      if (!gateway.dokuClientId || !gateway.dokuSecretKey) {
+        return res.status(503).json({ error: 'DOKU credentials are not configured' });
+      }
+      const clientId = req.get('Client-Id') || '';
+      const requestId = req.get('Request-Id') || '';
+      const requestTimestamp = req.get('Request-Timestamp') || '';
+      const signatureHeader = req.get('Signature') || '';
+      const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+      const timestampMs = Date.parse(requestTimestamp);
+      if (
+        clientId !== gateway.dokuClientId ||
+        !requestId || requestId.length > 128 ||
+        !Number.isFinite(timestampMs) ||
+        Math.abs(Date.now() - timestampMs) > 5 * 60 * 1000 ||
+        !rawBody ||
+        !isRecord(req.body) ||
+        !isRecord(req.body.order) ||
+        !isRecord(req.body.transaction)
+      ) {
+        return res.status(400).json({ error: 'Invalid DOKU notification headers or payload' });
+      }
+      const digest = createHash('sha256').update(rawBody).digest('base64');
+      const signatureComponent = [
+        `Client-Id:${clientId}`,
+        `Request-Id:${requestId}`,
+        `Request-Timestamp:${requestTimestamp}`,
+        `Request-Target:${req.path}`,
+        `Digest:${digest}`,
+      ].join('\n');
+      const expectedSignature = createHmac('sha256', gateway.dokuSecretKey)
+        .update(signatureComponent)
+        .digest();
+      const receivedSignature = Buffer.from(signatureHeader.replace(/^HMACSHA256=/, ''), 'base64');
+      if (
+        !signatureHeader.startsWith('HMACSHA256=') ||
+        receivedSignature.length !== expectedSignature.length ||
+        !timingSafeEqual(receivedSignature, expectedSignature)
+      ) {
+        return res.status(403).json({ error: 'Invalid DOKU notification signature' });
+      }
+      const invoiceNumber = req.body.order.invoice_number;
+      const amount = req.body.order.amount;
+      const status = req.body.transaction.status;
+      if (
+        typeof invoiceNumber !== 'string' ||
+        (typeof amount !== 'number' && typeof amount !== 'string') ||
+        typeof status !== 'string'
+      ) {
+        return res.status(400).json({ error: 'Invalid DOKU notification data' });
+      }
+      order_id = invoiceNumber;
+      gross_amount = String(amount);
+      transaction_status = status === 'SUCCESS'
+        ? 'settlement'
+        : status === 'PENDING'
+          ? 'pending'
+          : status === 'EXPIRED'
+            ? 'expire'
+            : status === 'FAILED'
+              ? 'deny'
+              : status;
+      payment_type = isRecord(req.body.channel) && typeof req.body.channel.id === 'string'
+        ? req.body.channel.id
+        : 'doku';
+    } else if (gateway.provider === 'xendit') {
+      if (!gateway.xenditCallbackToken) {
+        return res.status(503).json({ error: 'Xendit callback token is not configured' });
+      }
+      const callbackToken = req.get('x-callback-token') || '';
+      const expectedToken = Buffer.from(gateway.xenditCallbackToken);
+      const receivedToken = Buffer.from(callbackToken);
+      if (expectedToken.length !== receivedToken.length || !timingSafeEqual(expectedToken, receivedToken)) {
+        return res.status(403).json({ error: 'Invalid Xendit callback token' });
+      }
+      const body = req.body || {};
+      if (
+        typeof body.external_id !== 'string' ||
+        typeof body.status !== 'string' ||
+        (typeof body.amount !== 'number' && typeof body.amount !== 'string')
+      ) {
+        return res.status(400).json({ error: 'Invalid Xendit notification payload' });
+      }
+      order_id = body.external_id;
+      gross_amount = String(body.paid_amount ?? body.amount);
+      transaction_status = body.status === 'PAID'
+        ? 'settlement'
+        : body.status === 'EXPIRED'
+          ? 'expire'
+          : body.status === 'PENDING'
+            ? 'pending'
+            : body.status === 'FAILED'
+              ? 'deny'
+              : body.status;
+      payment_type = 'xendit';
+    } else if (gateway.provider === 'tripay') {
+      if (!gateway.tripayPrivateKey || !gateway.tripayMerchantCode) {
+        return res.status(503).json({ error: 'Tripay credentials are not configured' });
+      }
+      const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+      const signatureHeader = req.get('X-Callback-Signature') || '';
+      if (!rawBody || !signatureHeader) {
+        return res.status(400).json({ error: 'Invalid Tripay notification headers or payload' });
+      }
+      const expectedSignature = createHmac('sha256', gateway.tripayPrivateKey).update(rawBody).digest();
+      const receivedSignature = Buffer.from(signatureHeader, 'hex');
+      if (
+        receivedSignature.length !== expectedSignature.length ||
+        !timingSafeEqual(receivedSignature, expectedSignature)
+      ) {
+        return res.status(403).json({ error: 'Invalid Tripay notification signature' });
+      }
+      const body = req.body || {};
+      if (
+        typeof body.merchant_ref !== 'string' ||
+        typeof body.status !== 'string' ||
+        (typeof body.amount !== 'number' && typeof body.amount !== 'string')
+      ) {
+        return res.status(400).json({ error: 'Invalid Tripay notification payload' });
+      }
+      order_id = body.merchant_ref;
+      gross_amount = String(body.amount_received ?? body.amount);
+      transaction_status = body.status === 'PAID'
+        ? 'settlement'
+        : body.status === 'EXPIRED'
+          ? 'expire'
+          : body.status === 'FAILED'
+            ? 'deny'
+            : body.status === 'UNPAID'
+              ? 'pending'
+              : body.status;
+      payment_type = typeof body.payment_method === 'string' ? body.payment_method : 'tripay';
+    } else {
+      return res.status(503).json({ error: 'Tidak ada gateway pembayaran otomatis yang aktif' });
     }
 
     const settled = transaction_status === 'settlement' ||
@@ -2416,6 +3139,9 @@ async function startServer() {
       const transactions = stored.data.transactions || [];
       const transaction = transactions.find(item => item.orderId === order_id);
       if (!transaction) return res.status(404).json({ error: 'Payment order not found' });
+      if (transaction.paymentMethod !== gateway.provider) {
+        return res.status(409).json({ error: 'Payment order does not belong to the active gateway' });
+      }
       if (Number(gross_amount) !== transaction.amount) {
         return res.status(400).json({ error: 'Payment amount does not match the order' });
       }
@@ -2423,7 +3149,7 @@ async function startServer() {
 
       if (transaction.orderType === 'voucher') {
         if (settled) {
-          await activateAndSettleVoucher(order_id, typeof payment_type === 'string' ? payment_type : 'midtrans');
+          await activateAndSettleVoucher(order_id, typeof payment_type === 'string' ? payment_type : gateway.provider);
         } else {
           const updatedAt = new Date().toISOString();
           const updatedTransactions = transactions.map(item => item.orderId === order_id
@@ -2480,7 +3206,7 @@ async function startServer() {
             ...customer,
             expiredDate: newExpiry.toISOString().slice(0, 10),
             status: routerActivated ? 'active' : customer.status,
-            notes: `Pembayaran Midtrans terverifikasi pada ${updatedAt}. ${activationNote}`,
+            notes: `Pembayaran ${gateway.provider.toUpperCase()} terverifikasi pada ${updatedAt}. ${activationNote}`,
           };
           updatedCustomers = customers.map(item => item.id === customer.id ? updatedCustomer : item);
         }
@@ -2491,8 +3217,8 @@ async function startServer() {
             ...currentInvoice,
             status: 'paid' as const,
             paidAt: updatedAt,
-            paymentMethod: 'midtrans',
-            paymentChannel: typeof payment_type === 'string' ? payment_type : 'midtrans',
+            paymentMethod: gateway.provider,
+            paymentChannel: typeof payment_type === 'string' ? payment_type : gateway.provider,
             paymentRef: order_id,
           }
           : currentInvoice)
@@ -2620,7 +3346,8 @@ async function startServer() {
           invoice,
           paymentUrl,
           settings,
-          stored.data.paymentConfig
+          stored.data.paymentConfig,
+          paymentGatewayReady(await paymentGatewayCredentials())
         );
         try {
           const sent = await sendWhatsAppMessage(customer.phone, message);
@@ -2651,13 +3378,34 @@ async function startServer() {
       if (!config.tokenConfigured) {
         return res.status(503).json({ error: 'OPENWA_BASE_URL and OPENWA_API_KEY are not configured' });
       }
-      const response = await fetch(`${OPENWA_BASE_URL}/api/sessions/${OPENWA_SESSION_ID}/status`, {
-        headers: { 'X-API-Key': OPENWA_API_KEY },
+      const baseUrl = OPENWA_BASE_URL.replace(/\/+$/, '');
+      const headers = { 'X-API-Key': OPENWA_API_KEY };
+      const statusResponse = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(OPENWA_SESSION_ID)}/status`, {
+        headers,
         signal: AbortSignal.timeout(5000),
       });
-      const text = await response.text();
-      if (!response.ok) return res.status(502).json({ error: `OpenWA returned ${response.status}: ${text.slice(0, 300)}` });
-      res.json(text ? JSON.parse(text) : { status: 'unknown' });
+      const statusText = await statusResponse.text();
+      if (!statusResponse.ok) {
+        return res.status(502).json({ error: `OpenWA returned ${statusResponse.status}: ${statusText.slice(0, 300)}` });
+      }
+      const statusData: unknown = statusText ? JSON.parse(statusText) : {};
+      let normalized = normalizeOpenWaSessionStatus(statusData);
+
+      if (!normalized.status) {
+        const sessionResponse = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(OPENWA_SESSION_ID)}`, {
+          headers,
+          signal: AbortSignal.timeout(5000),
+        });
+        const sessionText = await sessionResponse.text();
+        if (sessionResponse.ok) {
+          normalized = normalizeOpenWaSessionStatus(sessionText ? JSON.parse(sessionText) : {});
+        }
+      }
+      res.json({
+        status: normalized.status || 'unknown',
+        ...(normalized.phone ? { phone: normalized.phone } : {}),
+        ...(normalized.status ? {} : { message: 'OpenWA merespons, tetapi status sesi tidak ditemukan pada respons API.' }),
+      });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : 'OpenWA status request failed' });
     }

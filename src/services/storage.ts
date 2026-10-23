@@ -13,6 +13,7 @@ import {
   AppSettings,
   AppDataSnapshot
 } from '../types';
+import { DEFAULT_WHATSAPP_TEMPLATES } from '../utils/whatsappTemplates';
 
 const STORAGE_KEYS = {
   APP_SETTINGS: 'mikrotik_billing_app_settings_v1',
@@ -70,7 +71,7 @@ function readStoredList<T>(storageKey: string, demoIds: string[] = []): T[] {
 }
 
 export const INITIAL_PAYMENT_CONFIG: PaymentGatewayConfig = {
-  provider: 'midtrans',
+  provider: 'none',
   isProduction: false,
   serverKey: '',
   clientKey: '',
@@ -104,6 +105,8 @@ export const INITIAL_SETTINGS: AppSettings = {
   defaultSsid: '',
   currencySymbol: 'Rp',
   timezone: 'Asia/Jakarta',
+  timeFormat: '24h',
+  whatsappTemplates: DEFAULT_WHATSAPP_TEMPLATES,
 
   mikrotikHost: '',
   mikrotikPort: 8728,
@@ -122,7 +125,7 @@ export const INITIAL_SETTINGS: AppSettings = {
   autoSendIsolir: true,
   autoSendReceipt: false,
 
-  paymentProvider: 'midtrans',
+  paymentProvider: 'none',
   paymentIsProduction: false,
   paymentServerKey: '',
   paymentClientKey: '',
@@ -158,20 +161,18 @@ export const StorageService = {
       ...partial,
       updatedAt: new Date().toISOString(),
     };
-    localStorage.setItem(STORAGE_KEYS.APP_SETTINGS, JSON.stringify(updated));
-
-    // Sync to SQLite database on server
-    try {
-      await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updated),
-      });
-    } catch (err) {
-      console.warn('Could not sync settings to server SQLite API (offline or standalone mode):', err);
-    }
-
-    return updated;
+    const response = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(partial),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Settings API returned ${response.status}`);
+    const persisted = result.settings
+      ? { ...updated, ...result.settings }
+      : updated;
+    localStorage.setItem(STORAGE_KEYS.APP_SETTINGS, JSON.stringify(persisted));
+    return persisted;
   },
 
   async syncFromSqlite(): Promise<AppSettings> {
@@ -271,28 +272,11 @@ export const StorageService = {
     await pendingSync;
   },
 
-  async getDbStats(): Promise<any> {
-    try {
-      const res = await fetch('/api/db/stats');
-      if (res.ok) return await res.json();
-    } catch {}
-    return {
-      engine: 'SQLite 3 (WASM)',
-      dbPath: '/app/data/billing.sqlite',
-      fileSizeBytes: 49152,
-      fileSizeKb: '48.00',
-      tables: [
-        { name: 'app_settings', count: 1 },
-        { name: 'customers', count: this.getCustomers().length },
-        { name: 'invoices', count: this.getInvoices().length },
-        { name: 'pppoe_packages', count: this.getPppoePackages().length },
-        { name: 'hotspot_profiles', count: this.getHotspotProfiles().length },
-        { name: 'hotspot_service_profiles', count: this.getHotspotServiceProfiles().length },
-        { name: 'vouchers', count: this.getVouchers().length },
-        { name: 'whatsapp_logs', count: this.getWaLogs().length },
-      ],
-      updatedAt: new Date().toISOString(),
-    };
+  async getDbStats(): Promise<{ dbPath: string; fileSizeKb: string; tables: Array<{ name: string; count: number }> }> {
+    const response = await fetch('/api/db/stats');
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Database API returned ${response.status}`);
+    return result;
   },
 
   async vacuumDatabase(): Promise<{ status: string; message: string }> {

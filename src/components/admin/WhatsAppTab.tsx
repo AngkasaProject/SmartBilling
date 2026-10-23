@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { WhatsAppLog, WhatsAppGatewayConfig } from '../../types';
+import { WhatsAppLog, WhatsAppGatewayConfig, WhatsAppTemplateKey, WhatsAppTemplates } from '../../types';
 import { StorageService } from '../../services/storage';
+import { DEFAULT_WHATSAPP_TEMPLATES, renderWhatsAppTemplate, WHATSAPP_TEMPLATE_TOKENS } from '../../utils/whatsappTemplates';
 import { useToast } from '../ui/toast';
 import {
   Send,
@@ -19,6 +20,7 @@ import {
   Server,
   Zap,
   Terminal,
+  Save,
 } from 'lucide-react';
 
 interface Props {
@@ -56,6 +58,24 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
   const [isSending, setIsSending] = useState(false);
   const [sendSuccess, setSendSuccess] = useState(false);
   const [lastProviderResponse, setLastProviderResponse] = useState<any | null>(null);
+  const [templates, setTemplates] = useState<WhatsAppTemplates>(DEFAULT_WHATSAPP_TEMPLATES);
+  const [selectedMessageTemplate, setSelectedMessageTemplate] = useState<WhatsAppTemplateKey>('manualInvoice');
+  const [savingTemplates, setSavingTemplates] = useState(false);
+  const [templatesLoaded, setTemplatesLoaded] = useState(false);
+  const [templatesLoadError, setTemplatesLoadError] = useState('');
+
+  useEffect(() => {
+    void fetch('/api/settings').then(async response => {
+      const settings = await response.json();
+      if (!response.ok) throw new Error(settings.error || `HTTP ${response.status}`);
+      setTemplates({ ...DEFAULT_WHATSAPP_TEMPLATES, ...settings.whatsappTemplates });
+      setTemplatesLoaded(true);
+    }).catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      setTemplatesLoadError(message);
+      setWaConfigError(message);
+    });
+  }, []);
 
   const loadWhatsAppConfig = async () => {
     const response = await fetch('/api/wa/config');
@@ -113,18 +133,70 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
     }
   };
 
+  const saveMessageTemplates = async () => {
+    setSavingTemplates(true);
+    try {
+      const saved = await StorageService.saveSettings({ whatsappTemplates: templates });
+      setTemplates({ ...DEFAULT_WHATSAPP_TEMPLATES, ...saved.whatsappTemplates });
+      toast('Template WhatsApp berhasil disimpan', 'success');
+    } catch (error) {
+      toast('Gagal menyimpan template WhatsApp', 'error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingTemplates(false);
+    }
+  };
+
+  const templateLabels: Record<WhatsAppTemplateKey, string> = {
+    reminder: 'Pengingat tagihan',
+    isolir: 'Pemberitahuan isolir',
+    paymentSuccess: 'Konfirmasi pembayaran',
+    manualInvoice: 'Instruksi pembayaran invoice manual',
+    manualVoucher: 'Instruksi pembayaran voucher manual',
+    voucherDelivery: 'Pengiriman voucher aktif',
+  };
+
+  const templatePreview = renderWhatsAppTemplate(selectedMessageTemplate, templates, {
+    customer_name: 'Budi Santoso',
+    business_name: 'SmartBilling',
+    invoice_number: 'INV-202610-001',
+    package_name: 'Paket Internet 20 Mbps',
+    period: '10/2026',
+    amount: 'Rp 250.000',
+    due_date: '25 Oktober 2026',
+    payment_url: 'https://billing.example/portal',
+    payment_options: 'DANA: 081234567890\nAtas nama: SmartBilling\nTransfer dan kirim bukti pembayaran.',
+    payment_code: 'SBM-A1B2C3D4',
+    method: 'DANA',
+    account_holder: 'SmartBilling',
+    account_number: '081234567890',
+    notes: 'Transfer sesuai nominal, lalu kirim bukti pembayaran.',
+    expires_at: '23 Oktober 2026 pukul 12.46 WIB',
+    operator_url: 'https://wa.me/6281234567890',
+    service_until: '25 November 2026',
+    voucher_code: 'NET-12345',
+    voucher_password: 'NET-12345',
+    validity: '30 hari',
+  });
+
   const handleCheckSessionStatus = async () => {
     setCheckingSession(true);
     try {
       const response = await fetch('/api/wa/session/status');
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      const sessionStatus = ['connected', 'disconnected', 'scan_qr', 'starting'].includes(result.status)
+        ? result.status
+        : 'disconnected';
       setConfig(prev => ({
         ...prev,
-        sessionStatus: result.status === 'connected' ? 'connected' : 'disconnected',
+        sessionStatus,
         sessionPhone: result.phone || undefined,
       }));
-      toast(`Status sesi OpenWA: ${result.status || 'unknown'}`, result.status === 'connected' ? 'success' : 'info');
+      toast(
+        `Status sesi OpenWA: ${result.status || 'unknown'}`,
+        result.status === 'connected' ? 'success' : 'info',
+        result.message,
+      );
     } catch (error) {
       setConfig(prev => ({ ...prev, sessionStatus: 'disconnected' }));
       toast('Gagal memeriksa status sesi OpenWA', 'error', error instanceof Error ? error.message : String(error));
@@ -406,6 +478,65 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
           </div>
         </div>
       </div>
+
+      <section className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 pb-4">
+          <div>
+            <h3 className="text-base font-bold text-white flex items-center gap-2"><Sliders className="h-4 w-4 text-emerald-400" />Template pesan WhatsApp</h3>
+            <p className="mt-1 text-xs text-slate-400">Atur format untuk pesan otomatis dan instruksi pembayaran. Gunakan kode dinamis agar data pelanggan dan tagihan terisi otomatis.</p>
+          </div>
+          <button type="button" onClick={() => void saveMessageTemplates()} disabled={savingTemplates || !templatesLoaded} className="inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 text-xs font-bold text-white hover:bg-emerald-600 disabled:opacity-50">
+            <Save className="h-3.5 w-3.5" />{!templatesLoaded ? 'Memuat...' : savingTemplates ? 'Menyimpan...' : 'Simpan template'}
+          </button>
+        </div>
+        {templatesLoadError && (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-500/30 bg-rose-950/40 p-3 text-xs text-rose-200">
+            <span>Gagal memuat template: {templatesLoadError}</span>
+            <button type="button" onClick={() => {
+              setTemplatesLoadError('');
+              void fetch('/api/settings').then(async response => {
+                const settings = await response.json();
+                if (!response.ok) throw new Error(settings.error || `HTTP ${response.status}`);
+                setTemplates({ ...DEFAULT_WHATSAPP_TEMPLATES, ...settings.whatsappTemplates });
+                setTemplatesLoaded(true);
+              }).catch(error => setTemplatesLoadError(error instanceof Error ? error.message : String(error)));
+            }} className="font-bold underline">Coba lagi</button>
+          </div>
+        )}
+        <label className="block max-w-md text-xs font-semibold text-slate-300">Jenis pesan
+          <select value={selectedMessageTemplate} onChange={event => setSelectedMessageTemplate(event.target.value as WhatsAppTemplateKey)} className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white">
+            {Object.entries(templateLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select>
+        </label>
+        <div>
+          <label className="block text-xs font-semibold text-slate-300">Isi template</label>
+          <textarea
+            rows={12}
+            maxLength={4000}
+            value={templates[selectedMessageTemplate]}
+            onChange={event => setTemplates(current => ({ ...current, [selectedMessageTemplate]: event.target.value }))}
+            className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs leading-relaxed text-white outline-none focus:border-emerald-500"
+          />
+          <p className="mt-1 text-right text-[10px] text-slate-500">{templates[selectedMessageTemplate].length}/4000 karakter</p>
+        </div>
+        <div>
+          <p className="mb-2 text-xs font-semibold text-slate-300">Kode dinamis — klik untuk menambahkan</p>
+          <div className="flex flex-wrap gap-2">
+            {WHATSAPP_TEMPLATE_TOKENS[selectedMessageTemplate].map(token => (
+              <button key={token} type="button" onClick={() => setTemplates(current => ({
+                ...current,
+                [selectedMessageTemplate]: `${current[selectedMessageTemplate]}{{${token}}}`,
+              }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 font-mono text-[10px] text-emerald-300 hover:border-emerald-500">
+                {`{{${token}}}`}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-950 p-4">
+          <p className="mb-2 text-xs font-bold text-slate-300">Pratinjau contoh</p>
+          <pre className="whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-slate-300">{templatePreview}</pre>
+        </div>
+      </section>
 
       {/* WhatsApp Logs Table */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
