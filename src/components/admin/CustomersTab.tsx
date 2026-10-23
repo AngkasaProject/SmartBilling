@@ -53,7 +53,7 @@ export const CustomersTab: React.FC<Props> = ({
   const [isPackageModalOpen, setIsPackageModalOpen] = useState(false);
   const [packageRouterId, setPackageRouterId] = useState('');
   const [packageRouterProfiles, setPackageRouterProfiles] = useState<Array<{ name: string; rateLimit: string }>>([]);
-  const [packageForm, setPackageForm] = useState({ name: '', routerProfileName: '', monthlyFee: 0 });
+  const [packageForm, setPackageForm] = useState({ name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 });
   const [selectedPackageId, setSelectedPackageId] = useState('');
 
   // Form State
@@ -161,10 +161,11 @@ export const CustomersTab: React.FC<Props> = ({
       speedLimit: profile.rateLimit,
       monthlyFee: Math.round(packageForm.monthlyFee),
       enabled: true,
+      dataLimitMb: packageForm.dataLimitMb ? Math.round(packageForm.dataLimitMb) : undefined,
     }];
     StorageService.savePppoePackages(nextPackages);
     onRefreshData();
-    setPackageForm({ name: '', routerProfileName: '', monthlyFee: 0 });
+    setPackageForm({ name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 });
     toast('Paket PPPoE berhasil ditambahkan.', 'success');
   };
 
@@ -812,6 +813,10 @@ export const CustomersTab: React.FC<Props> = ({
                 <label className="text-xs text-slate-300">Biaya bulanan (Rp)
                   <input required type="number" min={1} step={1} value={packageForm.monthlyFee || ''} onChange={event => setPackageForm({ ...packageForm, monthlyFee: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
                 </label>
+                <label className="text-xs text-slate-300">Kuota bulanan (MB, opsional)
+                  <input type="number" min={0} step={1} value={packageForm.dataLimitMb || ''} onChange={event => setPackageForm({ ...packageForm, dataLimitMb: Number(event.target.value) })} placeholder="Kosongkan untuk tanpa batas" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
+                  <span className="mt-1 block text-[10px] text-slate-500">Penggunaan Portal ditampilkan sebagai perkiraan dari sesi PPPoE aktif.</span>
+                </label>
                 <button type="submit" disabled={!packageRouterProfiles.length} className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50 sm:col-span-2">Tambah Paket PPPoE</button>
                 {!packageRouterProfiles.length && packageRouterId && <p className="text-[11px] text-amber-300 sm:col-span-2">Tidak ada PPP profile yang terbaca. Pastikan router tersambung dan profile dibuat di menu Router & MikroTik.</p>}
               </form>
@@ -820,7 +825,7 @@ export const CustomersTab: React.FC<Props> = ({
                   <div key={item.id} className="flex items-center justify-between gap-3 p-4">
                     <div>
                       <p className="text-sm font-bold">{item.name}</p>
-                      <p className="mt-1 text-xs text-slate-400">{item.routerProfileName} · {item.speedLimit || 'tanpa batas'} · Rp {item.monthlyFee.toLocaleString('id-ID')}/bulan</p>
+                      <p className="mt-1 text-xs text-slate-400">{item.routerProfileName} · {item.speedLimit || 'tanpa batas'} · Rp {item.monthlyFee.toLocaleString('id-ID')}/bulan{item.dataLimitMb ? ` · ${(item.dataLimitMb / 1024).toFixed(1)} GB` : ' · kuota tanpa batas'}</p>
                     </div>
                     <button type="button" onClick={() => void handleDeletePppoePackage(item)} className="rounded-lg p-2 text-slate-400 hover:bg-rose-950 hover:text-rose-300" title="Hapus paket"><Trash2 className="h-4 w-4" /></button>
                   </div>

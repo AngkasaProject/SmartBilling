@@ -84,7 +84,7 @@ if ! docker compose up -d --build; then
     exit 1
 fi
 
-app_port="$(docker compose port mikrotik-billing 3000 | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1)"
+app_port="$(docker compose port mikrotik-billing 1707 | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1)"
 if [[ -z "$app_port" ]]; then
     echo "Port publik container tidak dapat diketahui dari Docker Compose." >&2
     docker compose ps

@@ -120,23 +120,24 @@ export const getHotspotLoginTemplate = () => {
 export const getDockerConfig = () => {
   return {
     dockerfile: `# Multi-stage Dockerfile for SmartBilling
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+# Resolve optional native binaries for the Linux Alpine/musl build platform.
+RUN npm install --include=optional
 
 COPY . .
 RUN npm run build
 
 # Production runtime stage
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=1707
 
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev --include=optional
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server.ts ./server.ts
@@ -144,7 +145,7 @@ COPY --from=builder /app/server ./server
 COPY --from=builder /app/src/types ./src/types
 RUN mkdir -p /app/data
 
-EXPOSE 3000
+EXPOSE 1707
 
 CMD ["npx", "tsx", "server.ts"]
 `,
@@ -155,19 +156,20 @@ services:
     build: .
     container_name: mikrotik-billing-app
     restart: unless-stopped
+    # BILLING_PORT selects the host port; the app listens on 1707 inside the container.
     ports:
-      - "3000:3000"
+      - "\${BILLING_PORT:-1707}:1707"
     env_file:
       - .env
     environment:
-      - PORT=3000
+      - PORT=1707
       - NODE_ENV=production
     depends_on:
       - openwa
     volumes:
       - billing_data:/app/data
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:1707/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3

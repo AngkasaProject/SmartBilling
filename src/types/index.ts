@@ -21,6 +21,9 @@ export interface Customer {
   routerId: string;
   ipAddress?: string;
   notes?: string;
+  pendingPppoePackageId?: string;
+  cancelAtExpiry?: boolean;
+  cancellationRequestedAt?: string;
 }
 
 export type InvoiceStatus = 'unpaid' | 'paid' | 'expired' | 'canceled';
@@ -68,6 +71,7 @@ export interface PppoePackage {
   speedLimit: string;
   monthlyFee: number;
   enabled: boolean;
+  dataLimitMb?: number;
 }
 
 export type HotspotValidityPreset = '1 jam' | '12 jam' | '1 hari' | '1 minggu' | '2 minggu' | '1 bulan';

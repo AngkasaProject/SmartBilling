@@ -27,18 +27,25 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 - **⚡ Operasi PPPoE RouterOS**:
   - Membaca status router, resource, interface, profil PPP, serta menambah/mengubah/menghapus secret PPPoE melalui RouterOS API atau REST.
   - Isolir dan aktivasi PPPoE dilakukan dengan mengubah status secret RouterOS secara langsung.
+  - Dashboard menampilkan log server MikroTik dan menyediakan tab pemilih saat lebih dari satu router dikonfigurasi. Koneksi API digunakan ulang per router, ditutup setelah satu jam tanpa aktivitas, serta dibersihkan saat server berhenti.
+
+- **📈 Laporan pendapatan**:
+  - Riwayat invoice lunas dan voucher terbayar dapat dicari, difilter, dan diekspor ke CSV yang kompatibel dengan Excel.
+  - Statistik dapat direset terpisah dari riwayat; reset laporan tidak menghapus data transaksi operasional.
 
 - **💬 Integrasi WhatsApp melalui layanan eksternal**:
   - Pilih Fonnte atau OpenWA; SmartBilling hanya mengakses REST API tanpa membundel server WhatsApp.
   - Pengiriman pesan uji dan pelanggan mencatat respons nyata dari provider terpilih.
-  - Pengingat PPPoE H-1 dapat diaktifkan di Pengaturan. Pesan pengingat dan isolir manual memuat tautan bertanda tangan ke detail pelanggan/tagihan; pastikan `APP_URL` HTTPS dan provider WhatsApp aktif. Kegagalan pengiriman dicatat dan dicoba ulang secara terbatas.
+  - Pengingat PPPoE H-1 dapat diaktifkan di Pengaturan. Pesan pengingat dan isolir manual memuat tautan bertanda tangan ke detail pelanggan/tagihan di aplikasi SmartBilling Portal; atur `APP_URL` ke URL publik Portal (HTTPS) dan pastikan provider WhatsApp aktif. Kegagalan pengiriman dicatat dan dicoba ulang secara terbatas.
 
 - **🛒 Portal publik paket dan pelanggan**:
-  - Halaman awal menampilkan profil hotspot dari data operator serta pemeriksaan status langganan dengan ID pelanggan dan nomor WhatsApp.
+  - Portal Next.js terpisah menampilkan paket hotspot dan paket PPPoE bulanan yang diterbitkan Billing; pembelian hotspot tersedia daring dan pendaftaran PPPoE diarahkan ke Customer Service.
+  - Pelanggan masuk melalui kode OTP WhatsApp untuk melihat profil layanan, tagihan, dan estimasi kuota PPPoE yang dicatat secara berkala.
+  - Upgrade PPPoE mandiri dijadwalkan untuk periode tagihan berikutnya dan baru diterapkan setelah invoice dibayar. Pembatalan mempertahankan akses sampai akhir masa layanan yang sudah dibayar.
   - Pembayaran manual yang dikonfigurasi operator selalu tersedia. Sebagai addon, aktifkan maksimal satu gateway otomatis: Midtrans Snap, DOKU Checkout, Xendit, atau Tripay.
   - Kredensial gateway otomatis diatur melalui menu Pembayaran dan disimpan terenkripsi di server. Pembayaran manual memakai instruksi yang disiapkan operator, kode pesanan, serta persetujuan manual.
-  - Saat pelanggan tidak aktif atau memasuki tanggal jatuh tempo, portal membuat invoice bulanan bila belum ada dan menampilkan flow pembayaran. Pelanggan yang masih aktif tidak diberi tombol bayar.
-  - Tautan invoice bertanda tangan memungkinkan pelanggan membuka tagihan tertentu tanpa menampilkan ID pelanggan di tautan.
+  - Tautan invoice bertanda tangan mengarah ke URL publik Portal (`APP_URL`), bukan URL API Billing. Tautan hanya membuka tagihan yang ditentukan dan dapat kedaluwarsa.
+  - Portal memanggil API Billing melalui HTTP; data pelanggan, paket, pembayaran, dan konfigurasi bisnis tetap dikelola oleh Billing.
 
 - **🎫 Penjualan voucher hotspot**:
   - Buat profil layanan di menu Voucher: pilih router dan profil RouterOS tersinkron, lalu tetapkan kecepatan, masa penggunaan (1 jam, 12 jam, 1 hari, 1 minggu, 2 minggu, atau 1 bulan), perangkat bersama, dan batas kuota. Profil RouterOS baru dapat dibuat dari form yang sama.
@@ -74,7 +81,7 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 
 ```text
 ├── docker-compose.yml       # Definisi container aplikasi billing
-├── Dockerfile               # Multi-stage production build Node 20 Alpine
+├── Dockerfile               # Multi-stage production build Node.js 22 Alpine + npm
 ├── setup.sh                 # Skrip instalasi otomatis 1-klik untuk VPS Linux
 ├── .env.example             # Template konfigurasi environment variables
 ├── server.ts                # Backend Express, healthcheck & API aplikasi
@@ -91,22 +98,25 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 
 Backend menyediakan `GET /api/data` untuk memuat snapshot data dan `PUT /api/data` untuk menyimpannya ke SQLite. Jika backend tidak tersedia, perubahan tidak dianggap tersimpan ke server.
 
-### Login admin dan halaman pelanggan
+### Login admin dan portal pelanggan
 
 - Buka aplikasi pertama kali tanpa `ADMIN_USERNAME`/`ADMIN_PASSWORD` untuk mendaftarkan admin pertama. Buat password minimal 12 karakter; pendaftaran awal otomatis ditutup setelah admin dibuat.
 - Jika kedua variabel admin diisi di `.env`, login memakai kredensial tersebut dan perubahan kredensial harus dilakukan lewat environment server. Jangan hanya mengisi salah satunya.
-- Halaman awal `/` adalah portal paket pelanggan. Dashboard admin berada di `/admin` dan memerlukan login. Cek tagihan tersedia di `/portal/billing`; profil voucher ada di `/portal/vouchers`. Login captive hotspot tetap disediakan sebagai file di folder `hotspot/` untuk dipasang ke MikroTik.
+- Domain Billing membuka login admin di `/`; dashboard juga tetap dapat diakses melalui `/admin`. Portal pelanggan—katalog paket, pembelian voucher, login pelanggan, dan detail tagihan—dijalankan sebagai aplikasi terpisah. API `/api/portal/*` di Billing tetap aktif sebagai backend Portal.
+- Login captive hotspot tetap disediakan sebagai file di folder `hotspot/` untuk dipasang ke MikroTik. Arahkan tombol pembelian pada captive page ke domain aplikasi Portal, bukan domain Billing.
 - `APP_ENCRYPTION_KEY` bersifat opsional. Tanpa nilai tersebut, aplikasi membuat kunci acak di `data/router-secrets.key`; file itu harus ikut dicadangkan bersama database. Kunci yang dibuat dapat dilihat/disalin melalui Pengaturan → Admin & Keamanan. Simpan di tempat aman. Jika kunci dikelola environment, rotasi melalui panel terkunci.
 
 ### Menjalankan mode development
 
 Gunakan `npm run dev` untuk menjalankan Vite (port `3000`) dan backend Express/SQLite (port `3001`) bersamaan. Permintaan `/api/*` dari Vite otomatis diteruskan ke backend. Jangan jalankan Vite saja (`npm run dev:client`) bila ingin perubahan tersimpan ke SQLite; mode itu hanya menyediakan frontend. Untuk menjalankan API secara terpisah gunakan `npm run dev:server`.
 
-**Manajer paket dan lockfile:** instalasi Docker serta script deployment memakai **npm** dan `package-lock.json` sebagai lockfile acuan (`npm ci`). `bun.lock` dipertahankan untuk developer yang memilih Bun; keduanya harus diperbarui dari `package.json` yang sama. Setelah mengubah dependency, jalankan `npm install` lalu `bun install --lockfile-only`; validasi workflow Bun dengan `bun install --frozen-lockfile`. Docker mengabaikan `bun.lock` dan tetap memakai `package-lock.json`. Pilih satu package manager untuk satu direktori kerja `node_modules`; jangan bergantian menjalankan `npm install` dan `bun install` pada direktori yang sama. Jika berpindah, hentikan proses dev terlebih dahulu, hapus `node_modules`, lalu instal ulang dengan package manager yang dipilih.
+**Runtime dan package manager:** proyek ini memakai **Node.js >=22.12.0** dan **npm** saja. `package-lock.json` adalah lockfile acuan; instal dependensi lokal dengan `npm ci` dan perbarui lockfile setelah perubahan manifest dengan `npm install`. Docker menggunakan Node.js 22 Alpine dan `npm install --include=optional`, karena binary native opsional harus dipilih sesuai platform Linux/musl dan lockfile lokal dapat dibuat di Windows. Node.js 20 tidak didukung.
 
 ---
 
 ## 📋 Prasyarat Sistem
+
+**Runtime aplikasi:** Node.js `>=22.12.0` dan npm untuk instalasi atau menjalankan aplikasi secara langsung. Deployment Docker memakai image Node.js 22 Alpine dan npm.
 
 1. **VPS Cloud / Server Lokal**:
    - OS: Ubuntu 20.04 / 22.04 / 24.04 LTS atau Debian 11 / 12.
@@ -169,8 +179,8 @@ Gunakan `npm run dev` untuk menjalankan Vite (port `3000`) dan backend Express/S
    FONNTE_API_URL="https://api.fonnte.com/send"
    FONNTE_TOKEN=""
 
-   # APP_URL wajib untuk link pembayaran/portal publik; gunakan HTTPS untuk production.
-   APP_URL="https://billing.domain-anda"
+   # URL aplikasi SmartBilling Portal yang terpisah; digunakan untuk link tagihan dan payment return.
+   APP_URL="https://portal.domain-anda"
    ```
    Pilih gateway dan masukkan kredensial akun setelah login melalui **Admin > Pembayaran**.
 
@@ -186,14 +196,14 @@ Gunakan `npm run dev` untuk menjalankan Vite (port `3000`) dan backend Express/S
    Periksa status layanan yang sudah dikonfigurasi:
    ```text
    NAME                   IMAGE                     STATUS         PORTS
-   mikrotik-billing-app   mikrotik-billing:latest   Up (healthy)   0.0.0.0:1707->3000/tcp
+   mikrotik-billing-app   mikrotik-billing:latest   Up (healthy)   0.0.0.0:1707->1707/tcp
    ```
 
 4. **Buka Aplikasi di Browser**:
    - Portal paket pelanggan: `http://IP_VPS:1707`
    - Dashboard admin: `http://IP_VPS:1707/admin`
 
-Docker menggunakan port host `1707` sebagai default, sementara port internal container tetap `3000`. Port yang tidak umum tetap dapat dipakai aplikasi lain; bila `1707` sudah terpakai, atur `BILLING_PORT=PORT_PILIHAN` di `.env`, lalu jalankan ulang `docker compose up -d`.
+Docker menggunakan port `1707` untuk aplikasi di dalam container dan sebagai port host default. Port host mengikuti `BILLING_PORT`; bila `1707` sudah dipakai, atur `BILLING_PORT=PORT_PILIHAN` di `.env`. Contohnya `BILLING_PORT=1807` akan menerbitkan `1807:1707`, sehingga port internal aplikasi tidak berubah. Jalankan ulang `docker compose up -d` setelah mengubahnya.
 
 ### Integrasi RouterOS
 
@@ -219,13 +229,13 @@ SmartBilling tidak menjalankan atau membundel server WhatsApp. Instalasi/akun pr
 
 ## 📶 Panduan Integrasi Login Page Hotspot MikroTik
 
-Template login captive page disediakan di folder `/hotspot`. Halaman captive disajikan lokal oleh MikroTik, sedangkan katalog paket dan checkout voucher aktual menggunakan portal SmartBilling `/portal/vouchers`. Tombol **Lihat Paket & Beli Voucher** pada template membuka portal publik tersebut; MikroTik tidak membaca database billing secara langsung.
+Template login captive page disediakan di folder `/hotspot`. Halaman captive disajikan lokal oleh MikroTik, sedangkan katalog paket dan checkout voucher aktual menggunakan aplikasi Portal pelanggan yang terpisah. Tombol **Lihat Paket & Beli Voucher** pada template membuka domain Portal tersebut; MikroTik tidak membaca database billing secara langsung.
 
 ### 1. Upload Template ke Router MikroTik
 1. Buka Winbox dan hubungkan ke MikroTik Anda.
 2. Buka menu **Files**.
 3. Drag & drop folder `hotspot` dari komputer Anda ke dalam Winbox, atau letakkan file `login.html`, `status.html`, dan `logout.html` ke direktori `hotspot/`.
-4. Sebelum mengunggah, edit `hotspot/login.html` dan ganti `https://BILLING_DOMAIN/portal/vouchers` dengan alamat publik billing Anda, misalnya `https://billing.contoh.id/portal/vouchers`. Untuk pengujian tanpa domain, gunakan `http://IP_PUBLIK:1707/portal/vouchers`.
+4. Sebelum mengunggah, edit `hotspot/login.html` dan ganti `https://PORTAL_DOMAIN/` dengan alamat publik aplikasi Portal Anda, misalnya `https://portal.contoh.id/`. Jangan gunakan domain Billing untuk tautan ini karena domain tersebut digunakan untuk login admin.
 
 ### 2. Atur Server Profile Hotspot
 1. Di Winbox, buka **IP** > **Hotspot** > tab **Server Profiles**.

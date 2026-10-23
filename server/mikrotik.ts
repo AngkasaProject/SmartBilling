@@ -1,4 +1,5 @@
-import { Channel, RouterOSClient } from 'routeros-client';
+import { createHash } from 'node:crypto';
+import { Channel, RosApiMenu } from 'routeros-client';
 import { RouterOSAPI } from 'node-routeros';
 import type { RouterConfig } from '../src/types';
 
@@ -51,6 +52,123 @@ export interface RouterServiceRecord {
   defaultProfile?: string;
 }
 
+export interface PppoeActiveSessionStats {
+  name: string;
+  bytesIn: number;
+  bytesOut: number;
+}
+
+export interface RouterLogEntry {
+  id: string;
+  time: string;
+  topics: string;
+  message: string;
+}
+
+const ROUTER_API_IDLE_TIMEOUT_MS = 60 * 60 * 1000;
+
+interface RouterRawSession {
+  key: string;
+  signature: string;
+  api: RouterOSAPI;
+  activeLeases: number;
+  connectPromise?: Promise<RouterOSAPI>;
+  idleTimer?: NodeJS.Timeout;
+  invalidated: boolean;
+}
+
+interface RouterApiLease {
+  connect(): Promise<RosApiMenu>;
+  close(): Promise<void>;
+}
+
+const routerRawSessions = new Map<string, RouterRawSession>();
+
+function routerSessionIdentity(router: RouterConnection): { key: string; signature: string } {
+  const id = router.id || `${router.host}:${router.port}`;
+  const signature = createHash('sha256')
+    .update(JSON.stringify([
+      router.host,
+      router.port,
+      router.username,
+      router.password,
+      router.apiType,
+      router.timeoutSec,
+    ]))
+    .digest('hex');
+  return { key: `${id}:${signature}`, signature };
+}
+
+function acquireRouterRawSession(router: RouterConnection): RouterRawSession {
+  const { key, signature } = routerSessionIdentity(router);
+  let session = routerRawSessions.get(key);
+  if (!session || session.signature !== signature || session.invalidated) {
+    const api = new RouterOSAPI({
+      host: router.host,
+      port: router.port,
+      user: router.username,
+      password: router.password,
+      timeout: router.timeoutSec,
+      ...(router.apiType === 'api-ssl' ? { tls: {} } : {}),
+    });
+    session = { key, signature, api, activeLeases: 0, invalidated: false };
+    api.on('close', () => {
+      session!.invalidated = true;
+      if (routerRawSessions.get(key) === session) routerRawSessions.delete(key);
+    });
+    api.on('error', error => {
+      session!.invalidated = true;
+      if (routerRawSessions.get(key) === session) routerRawSessions.delete(key);
+      console.error(`[MikroTik] RouterOS API connection error for ${router.name}:`, error);
+    });
+    routerRawSessions.set(key, session);
+  }
+  if (session.idleTimer) {
+    clearTimeout(session.idleTimer);
+    session.idleTimer = undefined;
+  }
+  session.activeLeases += 1;
+  return session;
+}
+
+async function connectRouterRawSession(session: RouterRawSession): Promise<RouterOSAPI> {
+  if (session.api.connected) return session.api;
+  if (!session.connectPromise) {
+    session.connectPromise = session.api.connect().catch(error => {
+      session.invalidated = true;
+      if (routerRawSessions.get(session.key) === session) routerRawSessions.delete(session.key);
+      throw error;
+    }).finally(() => {
+      session.connectPromise = undefined;
+    });
+  }
+  return session.connectPromise;
+}
+
+function releaseRouterRawSession(session: RouterRawSession): void {
+  session.activeLeases = Math.max(0, session.activeLeases - 1);
+  if (session.activeLeases > 0 || session.idleTimer) return;
+  session.idleTimer = setTimeout(() => {
+    if (session.activeLeases > 0) return;
+    if (routerRawSessions.get(session.key) === session) routerRawSessions.delete(session.key);
+    session.invalidated = true;
+    void session.api.close().catch(error => {
+      console.error(`[MikroTik] Could not close idle traffic API connection for ${session.api.host}:`, error);
+    });
+  }, ROUTER_API_IDLE_TIMEOUT_MS);
+  session.idleTimer.unref();
+}
+
+export async function closeRouterApiSessions(): Promise<void> {
+  const rawSessions = [...routerRawSessions.values()];
+  routerRawSessions.clear();
+  await Promise.all(rawSessions.map(async session => {
+    if (session.idleTimer) clearTimeout(session.idleTimer);
+    session.invalidated = true;
+    if (session.api.connected) await session.api.close();
+  }));
+}
+
 function toRouterServiceRecord(row: RouterRow, kind: 'pppoe' | 'hotspot'): RouterServiceRecord {
   return {
     id: String(row['.id'] || row.id || ''),
@@ -96,15 +214,14 @@ async function restRequest<T>(
   return responseText ? JSON.parse(responseText) as T : {} as T;
 }
 
-function apiClient(router: RouterConnection): RouterOSClient {
-  return new RouterOSClient({
-    host: router.host,
-    port: router.port,
-    user: router.username,
-    password: router.password,
-    timeout: router.timeoutSec,
-    ...(router.apiType === 'api-ssl' ? { tls: {} } : {}),
-  });
+function apiClient(router: RouterConnection): RouterApiLease {
+  const session = acquireRouterRawSession(router);
+  const lease: RouterApiLease = {
+    connect: async () => new RosApiMenu(await connectRouterRawSession(session)),
+    // Release this operation's lease; the shared socket remains open while active.
+    close: async () => releaseRouterRawSession(session),
+  };
+  return lease;
 }
 
 export async function testRouterConnection(router: RouterConnection): Promise<RouterConfig> {
@@ -140,6 +257,31 @@ export async function testRouterConnection(router: RouterConnection): Promise<Ro
   }
 }
 
+export async function getPppoeActiveSessionStats(router: RouterConnection): Promise<PppoeActiveSessionStats[]> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ppp/active', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ppp active').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const parseBytes = (value: unknown): number => {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+  };
+  return rows
+    .map(row => ({
+      name: String(row.name || '').trim(),
+      bytesIn: parseBytes(row['bytes-in'] ?? row.bytesIn),
+      bytesOut: parseBytes(row['bytes-out'] ?? row.bytesOut),
+    }))
+    .filter(session => session.name);
+}
+
 function toRouterConfig(
   router: RouterConnection,
   identity: unknown,
@@ -164,6 +306,26 @@ function toRouterConfig(
     activePppoe,
     activeHotspot,
   };
+}
+
+export async function getRouterLogs(router: RouterConnection, limit = 50): Promise<RouterLogEntry[]> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/log', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/log').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  return rows.slice(-limit).reverse().map((row, index) => ({
+    id: String(row['.id'] || row.id || `${row.time || 'log'}-${index}`),
+    time: String(row.time || ''),
+    topics: String(row.topics || ''),
+    message: String(row.message || ''),
+  }));
 }
 
 export async function getRouterInterfaces(router: RouterConnection): Promise<string[]> {
@@ -204,16 +366,9 @@ export async function getRouterInterfaceTraffic(
     return readTraffic(row);
   }
 
-  const api = new RouterOSAPI({
-    host: router.host,
-    port: router.port,
-    user: router.username,
-    password: router.password,
-    timeout: router.timeoutSec,
-    ...(router.apiType === 'api-ssl' ? { tls: {} } : {}),
-  });
+  const session = acquireRouterRawSession(router);
   try {
-    await api.connect();
+    const api = await connectRouterRawSession(session);
     const rows = await api.write([
       '/interface/monitor-traffic',
       `=interface=${interfaceName}`,
@@ -223,7 +378,7 @@ export async function getRouterInterfaceTraffic(
     if (!row) throw new Error(`RouterOS returned no traffic data for interface ${interfaceName}`);
     return readTraffic(row);
   } finally {
-    await api.close();
+    releaseRouterRawSession(session);
   }
 }
 

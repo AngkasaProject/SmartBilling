@@ -33,6 +33,13 @@ import {
   getOrCreatePortalLinkSecretDb,
   getPortalSessionSecretDb,
   generatePortalSessionSecretDb,
+  getPppoeUsageDb,
+  savePppoeUsageDb,
+  savePortalOtpChallengeDb,
+  consumePortalOtpChallengeDb,
+  discardPortalOtpChallengeDb,
+  getRevenueResetStateDb,
+  resetRevenueReportingDb,
   getPaymentGatewayCredentialsDb,
   savePaymentGatewayCredentialsDb,
   PaymentGatewayCredentials,
@@ -58,7 +65,10 @@ import {
   addHotspotUser,
   PppoeSetup,
   RouterConnection,
+  closeRouterApiSessions,
   testRouterConnection,
+  getPppoeActiveSessionStats,
+  getRouterLogs,
   updatePppoeSecret,
   getPppoeSecrets,
 } from './server/mikrotik.js';
@@ -70,6 +80,51 @@ const __dirname = path.dirname(__filename);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+const portalOtpRequestNonces = new Map<string, number>();
+const portalInternalRequestNonces = new Map<string, number>();
+
+async function verifyPortalInternalRequest(
+  request: express.Request,
+  expectedPath: string
+): Promise<boolean> {
+  const timestamp = request.get('X-Portal-Internal-Timestamp') || '';
+  const nonce = request.get('X-Portal-Internal-Nonce') || '';
+  const signature = request.get('X-Portal-Internal-Signature') || '';
+  const timestampMs = Number(timestamp);
+  if (
+    request.method !== 'POST' ||
+    !isRecord(request.body) ||
+    !/^\d{13}$/.test(timestamp) ||
+    !Number.isSafeInteger(timestampMs) ||
+    Math.abs(Date.now() - timestampMs) > 60_000 ||
+    !/^[A-Za-z0-9_-]{22}$/.test(nonce) ||
+    !/^[A-Za-z0-9_-]{43}$/.test(signature)
+  ) return false;
+
+  const secret = await getPortalSessionSecretDb();
+  if (!secret) return false;
+  const bodyDigest = createHash('sha256').update(JSON.stringify(request.body)).digest('hex');
+  const expectedSignature = createHmac('sha256', secret)
+    .update(`POST.${expectedPath}.${timestamp}.${nonce}.${bodyDigest}`)
+    .digest();
+  const receivedSignature = Buffer.from(signature, 'base64url');
+  if (
+    receivedSignature.length !== expectedSignature.length ||
+    !timingSafeEqual(receivedSignature, expectedSignature)
+  ) return false;
+
+  const now = Date.now();
+  for (const [key, expiresAt] of portalInternalRequestNonces) {
+    if (expiresAt <= now) portalInternalRequestNonces.delete(key);
+  }
+  if (
+    portalInternalRequestNonces.has(nonce) ||
+    portalInternalRequestNonces.size >= 20_000
+  ) return false;
+  portalInternalRequestNonces.set(nonce, now + 60_000);
+  return true;
 }
 
 function isAppDataSnapshot(value: unknown): value is AppDataSnapshot {
@@ -904,6 +959,7 @@ async function startServer() {
       const stored = await getAppDataDb();
       const customer = (stored.data.customers || []).find(item => item.id === customerId);
       if (!customer || !Number.isSafeInteger(customer.monthlyFee) || customer.monthlyFee <= 0) return null;
+      if (customer.cancelAtExpiry) return null;
       const today = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Asia/Jakarta',
         year: 'numeric',
@@ -949,17 +1005,22 @@ async function startServer() {
         return match ? Number(match[1]) : 0;
       })) + 1;
       const uniqueCode = randomInt(10, 900);
+      const scheduledPackage = (stored.data.pppoePackages || []).find(item =>
+        item.id === customer.pendingPppoePackageId &&
+        item.enabled &&
+        item.routerId === customer.routerId
+      );
       const invoice: Invoice = {
         id: randomUUID(),
         invoiceNumber: `INV-${periodCode}-${String(nextNumber).padStart(3, '0')}`,
         customerId: customer.id,
         customerName: customer.name,
         customerPhone: customer.phone,
-        profileName: customer.servicePackageName || customer.profileName,
+        profileName: scheduledPackage?.name || customer.servicePackageName || customer.profileName,
         periodMonth,
-        amount: customer.monthlyFee,
+        amount: scheduledPackage?.monthlyFee || customer.monthlyFee,
         uniqueCode,
-        totalAmount: customer.monthlyFee + uniqueCode,
+        totalAmount: (scheduledPackage?.monthlyFee || customer.monthlyFee) + uniqueCode,
         status: 'unpaid',
         dueDate,
       };
@@ -1123,6 +1184,9 @@ async function startServer() {
     if (!invoice) throw new Error('Invoice tidak ditemukan');
     if (invoice.status !== 'unpaid' && invoice.status !== 'paid') throw new Error('Invoice tidak dapat diselesaikan');
     let updatedCustomers = stored.data.customers || [];
+    if (updatedCustomers.some(item => item.id === invoice.customerId && item.cancelAtExpiry)) {
+      throw new Error('Langganan dijadwalkan berhenti; pembayaran ini memerlukan rekonsiliasi');
+    }
     let updatedInvoices = invoices;
     if (invoice.status !== 'paid') {
       const now = new Date();
@@ -1135,14 +1199,25 @@ async function startServer() {
         const currentExpiry = new Date(`${customer.expiredDate}T00:00:00`);
         const newExpiry = new Date(currentExpiry > now ? currentExpiry : now);
         newExpiry.setDate(newExpiry.getDate() + 30);
+        const scheduledPackage = (stored.data.pppoePackages || []).find(item =>
+          item.id === customer.pendingPppoePackageId &&
+          item.enabled &&
+          item.routerId === customer.routerId &&
+          invoice.profileName === item.name
+        );
         let routerActivated = false;
         let activationNote = 'Akses router belum diaktifkan.';
         try {
           const router = await resolveRouterConnection(customer.routerId);
           if (!router) throw new Error('Kredensial router tidak tersedia');
-          await updatePppoeSecret(router, customer.pppoeUsername, { disabled: false });
+          await updatePppoeSecret(router, customer.pppoeUsername, {
+            disabled: false,
+            ...(scheduledPackage ? { profile: scheduledPackage.routerProfileName } : {}),
+          });
           routerActivated = true;
-          activationNote = 'Akses PPPoE diaktifkan di RouterOS.';
+          activationNote = scheduledPackage
+            ? `Paket PPPoE diubah ke ${scheduledPackage.name} di RouterOS.`
+            : 'Akses PPPoE diaktifkan di RouterOS.';
         } catch (activationError) {
           activationNote = `Akses router belum aktif: ${activationError instanceof Error ? activationError.message : String(activationError)}`;
           console.error(`[Payment] Manual invoice ${invoice.invoiceNumber} approved; RouterOS activation failed: ${activationNote}`);
@@ -1152,6 +1227,14 @@ async function startServer() {
             ...item,
             expiredDate: newExpiry.toISOString().slice(0, 10),
             status: routerActivated ? 'active' as const : item.status,
+            ...(scheduledPackage ? {
+              pppoePackageId: scheduledPackage.id,
+              servicePackageName: scheduledPackage.name,
+              profileName: scheduledPackage.routerProfileName,
+              bandwidthLimit: scheduledPackage.speedLimit,
+              monthlyFee: scheduledPackage.monthlyFee,
+              pendingPppoePackageId: undefined,
+            } : {}),
             notes: `Pembayaran manual diverifikasi pada ${paidAt}. ${activationNote}`,
           }
           : item);
@@ -1233,6 +1316,344 @@ async function startServer() {
       res.json({ profiles });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get('/api/portal/status', async (_req, res) => {
+    try {
+      const settings = await getAppSettingsDb();
+      const digits = settings.phoneContact.replace(/[^0-9]/g, '');
+      const operatorWhatsapp = digits
+        ? (digits.startsWith('0') ? `62${digits.slice(1)}` : digits.startsWith('62') ? digits : `62${digits}`)
+        : '';
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        connected: true,
+        appName: settings.appName,
+        brandName: settings.brandName,
+        companyName: settings.companyName,
+        tagline: settings.tagline,
+        phoneContact: settings.phoneContact,
+        operatorWhatsapp,
+      });
+    } catch (error) {
+      res.status(503).json({ connected: false, error: error instanceof Error ? error.message : 'Billing unavailable' });
+    }
+  });
+
+  app.get('/api/portal/pppoe-packages', async (_req, res) => {
+    try {
+      const stored = await getAppDataDb();
+      const packages = (stored.data.pppoePackages || [])
+        .filter(item => item.enabled && item.routerId && item.routerProfileName)
+        .map(({ id, name, speedLimit, monthlyFee, dataLimitMb }) => ({
+          id, name, speedLimit, monthlyFee, dataLimitMb,
+        }));
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ packages });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/internal/portal/customer', async (req, res) => {
+    if (!await verifyPortalInternalRequest(req, '/api/internal/portal/customer')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const customerId = req.body.customerId;
+    if (typeof customerId !== 'string' || !customerId.trim() || customerId.length > 128) {
+      return res.status(400).json({ error: 'Invalid customer' });
+    }
+    try {
+      const stored = await getAppDataDb();
+      const customer = (stored.data.customers || []).find(item => item.id === customerId);
+      if (!customer) return res.status(404).json({ error: 'Customer not found' });
+      const currentPackage = (stored.data.pppoePackages || []).find(item =>
+        item.id === customer.pppoePackageId ||
+        (item.routerId === customer.routerId && item.routerProfileName === customer.profileName)
+      );
+      const pendingPackage = (stored.data.pppoePackages || []).find(item =>
+        item.id === customer.pendingPppoePackageId
+      );
+      const usage = (await getPppoeUsageDb())[customer.id];
+      const currentDate = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date());
+      const billingDay = Math.max(1, Math.min(31, Math.floor(customer.billingDate || 1)));
+      const [year, month, day] = currentDate.split('-').map(Number);
+      const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+      const cycleDate = day < Math.min(billingDay, daysInMonth)
+        ? new Date(Date.UTC(year, month - 2, 1))
+        : new Date(Date.UTC(year, month - 1, 1));
+      const cycle = `${cycleDate.getUTCFullYear()}-${String(cycleDate.getUTCMonth() + 1).padStart(2, '0')}`;
+      const cycleUsage = usage?.billingCycle === cycle ? usage.totalBytes : 0;
+      const dataLimitMb = currentPackage?.dataLimitMb;
+      const upgradePackages = (stored.data.pppoePackages || [])
+        .filter(item =>
+          item.enabled &&
+          item.routerId === customer.routerId &&
+          item.routerProfileName &&
+          item.id !== customer.pppoePackageId &&
+          item.routerProfileName !== customer.profileName &&
+          Number.isSafeInteger(item.monthlyFee) &&
+          item.monthlyFee > 0
+        )
+        .map(({ id, name, speedLimit, monthlyFee, dataLimitMb }) => ({
+          id, name, speedLimit, monthlyFee, dataLimitMb,
+        }));
+      const invoices = (stored.data.invoices || [])
+        .filter(item => item.customerId === customer.id)
+        .sort((left, right) => right.dueDate.localeCompare(left.dueDate))
+        .slice(0, 12)
+        .map(({ id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod }) => ({
+          id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod,
+        }));
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        customer: {
+          id: customer.id,
+          customerId: customer.customerId,
+          name: customer.name,
+          phone: customer.phone,
+          email: customer.email,
+          address: customer.address,
+          pppoeUsername: customer.pppoeUsername,
+          profileName: customer.servicePackageName || customer.profileName,
+          bandwidthLimit: customer.bandwidthLimit,
+          monthlyFee: customer.monthlyFee,
+          billingDate: customer.billingDate,
+          expiredDate: customer.expiredDate,
+          status: customer.status,
+          dataLimitMb,
+          dataUsedBytes: cycleUsage,
+          dataRemainingBytes: typeof dataLimitMb === 'number'
+            ? Math.max(0, dataLimitMb * 1024 * 1024 - cycleUsage)
+            : undefined,
+          dataUsageSampledAt: usage?.billingCycle === cycle ? usage.sampledAt : undefined,
+          pendingPackageName: pendingPackage?.name,
+          cancellationRequestedAt: customer.cancellationRequestedAt,
+          cancelAtExpiry: customer.cancelAtExpiry || false,
+        },
+        invoices,
+        upgradePackages,
+        paymentAvailable: paymentGatewayReady(await paymentGatewayCredentials()),
+      });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/internal/portal/customer-action', async (req, res) => {
+    if (!await verifyPortalInternalRequest(req, '/api/internal/portal/customer-action')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const { customerId, action, packageId } = req.body;
+    if (
+      typeof customerId !== 'string' ||
+      !customerId.trim() ||
+      customerId.length > 128 ||
+      (action !== 'schedule-upgrade' && action !== 'cancel-subscription') ||
+      (action === 'schedule-upgrade' && (typeof packageId !== 'string' || !packageId.trim()))
+    ) {
+      return res.status(400).json({ error: 'Permintaan tidak valid' });
+    }
+
+    try {
+      const stored = await getAppDataDb();
+      const customers = stored.data.customers || [];
+      const customer = customers.find(item => item.id === customerId);
+      if (!customer) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
+      const today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date());
+      if (customer.status === 'disabled' || customer.expiredDate <= today) {
+        return res.status(409).json({ error: 'Layanan tidak aktif untuk perubahan langganan mandiri' });
+      }
+      const invoices = stored.data.invoices || [];
+      const transactions = stored.data.transactions || [];
+      const upcomingInvoices = invoices.filter(invoice =>
+        invoice.customerId === customer.id &&
+        invoice.status === 'unpaid' &&
+        invoice.dueDate >= today
+      );
+      const unsettledPayments = transactions.filter(transaction =>
+        transaction.invoiceId &&
+        upcomingInvoices.some(invoice => invoice.id === transaction.invoiceId) &&
+        transaction.status === 'pending'
+      );
+      if (unsettledPayments.length) {
+        return res.status(409).json({
+          error: 'Pembayaran tagihan berikutnya sedang diproses. Hubungi Customer Service agar perubahan tidak mengganggu transaksi.',
+        });
+      }
+
+      if (action === 'schedule-upgrade') {
+        if (customer.cancelAtExpiry) {
+          return res.status(409).json({ error: 'Pembatalan langganan sudah dijadwalkan. Hubungi Customer Service untuk mengubahnya.' });
+        }
+        const selectedPackage = (stored.data.pppoePackages || []).find(item =>
+          item.id === packageId && item.enabled
+        );
+        if (!selectedPackage) return res.status(404).json({ error: 'Paket yang dipilih tidak tersedia' });
+        if (
+          selectedPackage.routerId !== customer.routerId ||
+          !selectedPackage.routerProfileName ||
+          !Number.isSafeInteger(selectedPackage.monthlyFee) ||
+          selectedPackage.monthlyFee <= 0
+        ) {
+          return res.status(409).json({ error: 'Paket tidak kompatibel dengan router pelanggan' });
+        }
+        if (
+          customer.pppoePackageId === selectedPackage.id ||
+          (customer.profileName === selectedPackage.routerProfileName &&
+            customer.monthlyFee === selectedPackage.monthlyFee)
+        ) {
+          return res.status(409).json({ error: 'Paket tersebut sudah menjadi paket aktif Anda' });
+        }
+        const updatedCustomers = customers.map(item => item.id === customer.id
+          ? { ...item, pendingPppoePackageId: selectedPackage.id }
+          : item
+        );
+        const updatedInvoices = invoices.map(invoice =>
+          upcomingInvoices.some(upcoming => upcoming.id === invoice.id)
+            ? {
+              ...invoice,
+              profileName: selectedPackage.name,
+              amount: selectedPackage.monthlyFee,
+              totalAmount: selectedPackage.monthlyFee + invoice.uniqueCode,
+            }
+            : invoice
+        );
+        await savePublicPaymentUpdateDb(updatedCustomers, updatedInvoices, transactions);
+        return res.json({
+          ok: true,
+          action,
+          packageName: selectedPackage.name,
+          monthlyFee: selectedPackage.monthlyFee,
+          effectiveDate: customer.expiredDate,
+          effectiveWhen: 'invoice_paid',
+        });
+      }
+
+      if (customer.cancelAtExpiry) {
+        return res.status(409).json({ error: 'Pembatalan langganan sudah dijadwalkan sebelumnya' });
+      }
+      const updatedCustomers = customers.map(item => item.id === customer.id
+        ? {
+          ...item,
+          pendingPppoePackageId: undefined,
+          cancelAtExpiry: true,
+          cancellationRequestedAt: new Date().toISOString(),
+        }
+        : item
+      );
+      const updatedInvoices = invoices.map(invoice =>
+        upcomingInvoices.some(upcoming => upcoming.id === invoice.id)
+          ? { ...invoice, status: 'canceled' as const }
+          : invoice
+      );
+      await savePublicPaymentUpdateDb(updatedCustomers, updatedInvoices, transactions);
+      return res.json({
+        ok: true,
+        action,
+        effectiveDate: customer.expiredDate,
+      });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/internal/portal/send-otp', async (req, res) => {
+    const requestBody: unknown = req.body;
+    const body = isRecord(requestBody) ? requestBody : {};
+    const phone = body.phone;
+    const code = body.code;
+    const verificationToken = body.verificationToken;
+    const timestamp = req.get('X-Portal-OTP-Timestamp') || '';
+    const nonce = req.get('X-Portal-OTP-Nonce') || '';
+    const signature = req.get('X-Portal-OTP-Signature') || '';
+    const timestampMs = Number(timestamp);
+    if (
+      typeof phone !== 'string' ||
+      !/^\d{8,15}$/.test(phone) ||
+      typeof code !== 'string' ||
+      !/^\d{6}$/.test(code) ||
+      typeof verificationToken !== 'string' ||
+      !/^[A-Za-z0-9_-]{43}$/.test(verificationToken) ||
+      !/^\d{13}$/.test(timestamp) ||
+      !Number.isSafeInteger(timestampMs) ||
+      Math.abs(Date.now() - timestampMs) > 60_000 ||
+      !/^[A-Za-z0-9_-]{22}$/.test(nonce) ||
+      !/^[A-Za-z0-9_-]{43}$/.test(signature)
+    ) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    try {
+      const portalSecret = await getPortalSessionSecretDb();
+      if (!portalSecret) return res.status(503).json({ error: 'Portal is not configured' });
+
+      const expectedSignature = createHmac('sha256', portalSecret)
+        .update(`${timestamp}.${nonce}.${phone}.${code}.${verificationToken}`)
+        .digest();
+      const receivedSignature = Buffer.from(signature, 'base64url');
+      if (
+        receivedSignature.length !== expectedSignature.length ||
+        !timingSafeEqual(receivedSignature, expectedSignature)
+      ) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const now = Date.now();
+      for (const [key, expiresAt] of portalOtpRequestNonces) {
+        if (expiresAt <= now) portalOtpRequestNonces.delete(key);
+      }
+      if (portalOtpRequestNonces.has(nonce)) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      portalOtpRequestNonces.set(nonce, now + 60_000);
+
+      await savePortalOtpChallengeDb(phone, verificationToken, code, now + 5 * 60_000);
+      const message = [
+        `Kode verifikasi SmartBilling Anda: ${code}`,
+        '',
+        'Kode berlaku selama 5 menit. Jangan berikan kode ini kepada siapa pun.',
+        'Jika Anda tidak meminta kode ini, abaikan pesan ini.',
+      ].join('\n');
+      try {
+        await sendWhatsAppMessage(phone, message);
+      } catch (error) {
+        await discardPortalOtpChallengeDb(verificationToken);
+        throw error;
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ ok: true });
+    } catch {
+      return res.status(502).json({ error: 'WhatsApp OTP delivery failed' });
+    }
+  });
+
+  app.post('/api/internal/portal/verify-otp', async (req, res) => {
+    if (!await verifyPortalInternalRequest(req, '/api/internal/portal/verify-otp')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const { phone, code, verificationToken } = req.body;
+    if (
+      typeof phone !== 'string' ||
+      !/^\d{8,15}$/.test(phone) ||
+      typeof code !== 'string' ||
+      !/^\d{6}$/.test(code) ||
+      typeof verificationToken !== 'string' ||
+      !/^[A-Za-z0-9_-]{43}$/.test(verificationToken)
+    ) {
+      return res.status(400).json({ error: 'Invalid OTP challenge' });
+    }
+    try {
+      const valid = await consumePortalOtpChallengeDb(phone, verificationToken, code);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ valid });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : 'OTP verification failed' });
     }
   });
 
@@ -1379,26 +1800,6 @@ async function startServer() {
         const operatorUrl = operatorWhatsapp
           ? `https://wa.me/${operatorWhatsapp}?text=${encodeURIComponent(contactMessage)}`
           : '';
-        try {
-          await sendWhatsAppMessage(
-            phone,
-            renderWhatsAppTemplate('manualVoucher', appSettings.whatsappTemplates, {
-              customer_name: customerName.trim(),
-              business_name: appSettings.companyName.trim() || appSettings.brandName.trim() || appSettings.appName,
-              package_name: profile.name,
-              payment_code: paymentCode || orderId,
-              amount: `${appSettings.currencySymbol || 'Rp'} ${profile.price.toLocaleString('id-ID')}`,
-              method: manualMethod!.name,
-              account_holder: manualMethod!.accountHolder || manualMethod!.serviceName || '-',
-              account_number: manualMethod!.accountNumber || '-',
-              notes: manualMethod!.instructions,
-              expires_at: formatDateTime(expiresAt, appSettings.timezone, appSettings.timeFormat),
-              operator_url: operatorUrl || 'Hubungi nomor WhatsApp operator yang tersedia.',
-            })
-          );
-        } catch (error) {
-          console.error(`[WhatsApp] Could not send manual voucher payment instructions for ${orderId}:`, error);
-        }
         return res.status(201).json({
           orderId,
           paymentCode,
@@ -1408,7 +1809,7 @@ async function startServer() {
           expiresAt,
           expiresAtFormatted: formatDateTime(expiresAt, appSettings.timezone, appSettings.timeFormat),
           operatorUrl,
-          message: 'Pesanan dibuat. Gunakan kode bayar dan hubungi operator melalui WhatsApp untuk konfirmasi pembayaran.',
+          message: 'Pesanan dibuat. Ikuti instruksi transfer, lalu konfirmasikan pembayaran kepada Customer Service melalui WhatsApp.',
         });
       }
 
@@ -1867,10 +2268,14 @@ async function startServer() {
       const customers = stored.data.customers || [];
       const searchValue = lookupValue.trim();
       const normalizedPhone = searchValue.replace(/[^0-9]/g, '');
+      const canonicalPhone = (value: string) => {
+        const digits = value.replace(/[^0-9]/g, '');
+        return (digits.startsWith('62') ? digits.slice(2) : digits).replace(/^0+/, '');
+      };
       const customer = customers.find(item =>
         item.customerId.toLowerCase() === searchValue.toLowerCase()
       ) || (normalizedPhone.length >= 8
-        ? customers.find(item => item.phone.replace(/[^0-9]/g, '') === normalizedPhone)
+        ? customers.find(item => canonicalPhone(item.phone) === canonicalPhone(normalizedPhone))
         : undefined);
       if (!customer) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
       await ensureDueInvoice(customer.id);
@@ -2716,6 +3121,22 @@ async function startServer() {
     }
   });
 
+  app.get('/api/mikrotik/logs', requireAdminSession, async (req, res) => {
+    const routerId = String(req.query.routerId || '');
+    if (!routerId || routerId.length > 128) {
+      return res.status(400).json({ error: 'Router wajib dipilih' });
+    }
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
+      const entries = await getRouterLogs(router, 50);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ routerId, entries, sampledAt: new Date().toISOString() });
+    } catch (error) {
+      return res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get('/api/mikrotik/interface-traffic', requireAdminSession, async (req, res) => {
     const routerId = String(req.query.routerId || '');
     const interfaceName = String(req.query.interface || '');
@@ -2915,6 +3336,106 @@ async function startServer() {
       res.json(stats);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/admin/revenue', requireAdminSession, async (_req, res) => {
+    try {
+      const stored = await getAppDataDb();
+      const resetState = await getRevenueResetStateDb();
+      const transactions = stored.data.transactions || [];
+      const settledVoucherTransactions = transactions.filter(transaction =>
+        transaction.orderType === 'voucher' &&
+        transaction.status === 'settlement'
+      );
+      const voucherOrderIds = new Set(transactions
+        .filter(transaction => transaction.orderType === 'voucher')
+        .map(transaction => transaction.orderId));
+
+      const records = [
+        ...(stored.data.invoices || [])
+          .filter(invoice => invoice.status === 'paid')
+          .map(invoice => ({
+            id: `invoice-${invoice.id}`,
+            type: 'invoice' as const,
+            date: invoice.paidAt || invoice.dueDate,
+            reference: invoice.invoiceNumber,
+            customerName: invoice.customerName,
+            customerPhone: invoice.customerPhone,
+            description: invoice.profileName,
+            paymentMethod: invoice.paymentMethod || invoice.paymentChannel || '-',
+            amount: invoice.totalAmount,
+          })),
+        ...settledVoucherTransactions.map(transaction => ({
+          id: `voucher-${transaction.id}`,
+          type: 'voucher' as const,
+          date: transaction.paidAt || transaction.createdAt,
+          reference: transaction.paymentCode || transaction.orderId,
+          customerName: transaction.customerName,
+          customerPhone: transaction.customerPhone,
+          description: transaction.voucherCode
+            ? `Voucher ${transaction.voucherCode}`
+            : 'Voucher hotspot',
+          paymentMethod: transaction.paymentMethod || transaction.paymentChannel || '-',
+          amount: transaction.amount,
+        })),
+        ...(stored.data.vouchers || [])
+          .filter(voucher =>
+            (voucher.status === 'active' || voucher.status === 'expired') &&
+            (!voucher.orderId || !voucherOrderIds.has(voucher.orderId))
+          )
+          .map(voucher => ({
+            id: `voucher-record-${voucher.id}`,
+            type: 'voucher' as const,
+            date: voucher.activatedAt || voucher.createdAt,
+            reference: voucher.code,
+            customerName: '-',
+            customerPhone: voucher.customerPhone || '-',
+            description: `Voucher ${voucher.code}`,
+            paymentMethod: voucher.paymentMethod || '-',
+            amount: voucher.price,
+          })),
+      ].filter(record => Number.isFinite(record.amount) && record.amount > 0)
+        .sort((left, right) => right.date.localeCompare(left.date));
+
+      const historyRecords = resetState.historyResetAt
+        ? records.filter(record => record.date >= resetState.historyResetAt!)
+        : records;
+      const statisticsRecords = resetState.statisticsResetAt
+        ? records.filter(record => record.date >= resetState.statisticsResetAt!)
+        : records;
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        records: historyRecords,
+        summary: {
+          totalRevenue: statisticsRecords.reduce((total, record) => total + record.amount, 0),
+          invoiceRevenue: statisticsRecords
+            .filter(record => record.type === 'invoice')
+            .reduce((total, record) => total + record.amount, 0),
+          voucherRevenue: statisticsRecords
+            .filter(record => record.type === 'voucher')
+            .reduce((total, record) => total + record.amount, 0),
+          invoiceCount: statisticsRecords.filter(record => record.type === 'invoice').length,
+          voucherCount: statisticsRecords.filter(record => record.type === 'voucher').length,
+        },
+        resetState,
+      });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/admin/revenue/reset', requireAdminSession, async (req, res) => {
+    const mode = req.body?.mode;
+    if (mode !== 'statistics' && mode !== 'history') {
+      return res.status(400).json({ error: 'Pilih reset statistik atau reset seluruh riwayat pendapatan' });
+    }
+    try {
+      const result = await resetRevenueReportingDb(mode);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ status: 'success', ...result });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 
@@ -3182,6 +3703,37 @@ async function startServer() {
       const invoice = invoices.find(item => item.id === transaction.invoiceId);
       if (!invoice) return res.status(404).json({ error: 'Invoice for payment order not found' });
       const customers = stored.data.customers || [];
+      if (
+        settled &&
+        (invoice.status === 'canceled' ||
+          invoice.status === 'expired' ||
+          customers.some(customer => customer.id === invoice.customerId && customer.cancelAtExpiry))
+      ) {
+        const reconciliationTransactions = transactions.map(item =>
+          item.orderId === order_id
+            ? {
+              ...item,
+              status: 'settlement' as const,
+              paymentChannel: typeof payment_type === 'string' ? payment_type : gateway.provider,
+              paidAt: updatedAt,
+            }
+            : item
+        );
+        const reconciliationInvoices = invoice.status === 'unpaid'
+          ? invoices.map(item => item.id === invoice.id
+            ? { ...item, status: 'canceled' as const }
+            : item)
+          : invoices;
+        await savePublicPaymentUpdateDb(
+          customers,
+          reconciliationInvoices,
+          reconciliationTransactions
+        );
+        console.error(
+          `[Payment] Late payment ${order_id} was received for canceled or ending invoice ${invoice.invoiceNumber}; service was not activated and requires reconciliation.`
+        );
+        return res.json({ status: 'late_payment_reconciliation_required' });
+      }
       let updatedCustomers = customers;
       if (settled && invoice.status !== 'paid') {
         const customer = customers.find(item => item.id === invoice.customerId);
@@ -3190,14 +3742,25 @@ async function startServer() {
           const currentExpiry = new Date(`${customer.expiredDate}T00:00:00`);
           const newExpiry = new Date(currentExpiry > now ? currentExpiry : now);
           newExpiry.setDate(newExpiry.getDate() + 30);
+          const scheduledPackage = (stored.data.pppoePackages || []).find(item =>
+            item.id === customer.pendingPppoePackageId &&
+            item.enabled &&
+            item.routerId === customer.routerId &&
+            invoice.profileName === item.name
+          );
           let routerActivated = false;
           let activationNote = 'RouterOS belum diaktifkan otomatis.';
           try {
             const router = await resolveRouterConnection(customer.routerId);
             if (!router) throw new Error('Kredensial router tidak tersedia');
-            await updatePppoeSecret(router, customer.pppoeUsername, { disabled: false });
+            await updatePppoeSecret(router, customer.pppoeUsername, {
+              disabled: false,
+              ...(scheduledPackage ? { profile: scheduledPackage.routerProfileName } : {}),
+            });
             routerActivated = true;
-            activationNote = 'Akses PPPoE diaktifkan melalui RouterOS.';
+            activationNote = scheduledPackage
+              ? `Paket PPPoE diubah ke ${scheduledPackage.name} di RouterOS.`
+              : 'Akses PPPoE diaktifkan melalui RouterOS.';
           } catch (activationError) {
             activationNote = `Akses router belum aktif: ${activationError instanceof Error ? activationError.message : String(activationError)}`;
             console.error(`[Payment] Verified invoice ${invoice.invoiceNumber}; RouterOS activation failed: ${activationNote}`);
@@ -3206,6 +3769,14 @@ async function startServer() {
             ...customer,
             expiredDate: newExpiry.toISOString().slice(0, 10),
             status: routerActivated ? 'active' : customer.status,
+            ...(scheduledPackage ? {
+              pppoePackageId: scheduledPackage.id,
+              servicePackageName: scheduledPackage.name,
+              profileName: scheduledPackage.routerProfileName,
+              bandwidthLimit: scheduledPackage.speedLimit,
+              monthlyFee: scheduledPackage.monthlyFee,
+              pendingPppoePackageId: undefined,
+            } : {}),
             notes: `Pembayaran ${gateway.provider.toUpperCase()} terverifikasi pada ${updatedAt}. ${activationNote}`,
           };
           updatedCustomers = customers.map(item => item.id === customer.id ? updatedCustomer : item);
@@ -3276,6 +3847,66 @@ async function startServer() {
     backgroundTasksRunning = true;
     try {
       let stored = await getAppDataDb();
+      const customersForUsage = stored.data.customers || [];
+      const routerCustomers = new Map<string, Customer[]>();
+      for (const customer of customersForUsage) {
+        if (!customer.routerId || !customer.pppoeUsername) continue;
+        const customers = routerCustomers.get(customer.routerId) || [];
+        customers.push(customer);
+        routerCustomers.set(customer.routerId, customers);
+      }
+      if (routerCustomers.size) {
+        const usage = await getPppoeUsageDb();
+        const now = new Date();
+        const dateParts = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'Asia/Jakarta',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }).formatToParts(now);
+        const datePart = (type: string) => dateParts.find(part => part.type === type)?.value || '';
+        const year = Number(datePart('year'));
+        const month = Number(datePart('month'));
+        const day = Number(datePart('day'));
+        const sampledAt = now.toISOString();
+        let usageChanged = false;
+        for (const [routerId, routerGroup] of routerCustomers) {
+          try {
+            const router = await resolveRouterConnection(routerId);
+            if (!router) throw new Error('Kredensial router tidak tersedia');
+            const activeSessions = await getPppoeActiveSessionStats(router);
+            for (const customer of routerGroup) {
+              const billingDay = Math.max(1, Math.min(31, Math.floor(customer.billingDate || 1)));
+              const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+              const cutoverDay = Math.min(billingDay, daysInMonth);
+              const cycleDate = day < cutoverDay
+                ? new Date(Date.UTC(year, month - 2, 1))
+                : new Date(Date.UTC(year, month - 1, 1));
+              const cycle = `${cycleDate.getUTCFullYear()}-${String(cycleDate.getUTCMonth() + 1).padStart(2, '0')}`;
+              const currentSession = activeSessions.find(session => session.name === customer.pppoeUsername);
+              const sessionBytes = currentSession ? currentSession.bytesIn + currentSession.bytesOut : 0;
+              const previous = usage[customer.id];
+              let totalBytes = previous?.billingCycle === cycle ? previous.totalBytes : 0;
+              if (previous?.billingCycle === cycle && currentSession) {
+                totalBytes += sessionBytes >= previous.lastSessionBytes
+                  ? sessionBytes - previous.lastSessionBytes
+                  : sessionBytes;
+              }
+              usage[customer.id] = {
+                billingCycle: cycle,
+                totalBytes,
+                lastSessionBytes: sessionBytes,
+                sampledAt,
+              };
+              usageChanged = true;
+            }
+          } catch (error) {
+            console.error(`[Portal usage] Failed to sample router ${routerId}:`, error);
+          }
+        }
+        if (usageChanged) await savePppoeUsageDb(usage);
+      }
+
       const transactions = stored.data.transactions || [];
       const expiredOrderIds = new Set(transactions
         .filter(item => item.paymentMethod === 'manual' && item.status === 'pending' && item.expiresAt && new Date(item.expiresAt).getTime() <= Date.now())
@@ -3298,7 +3929,6 @@ async function startServer() {
       }
 
       const settings = await getAppSettingsDb();
-      if (!settings.autoSendReminderH1) return;
       const jakartaDate = (date: Date) => {
         const parts = new Intl.DateTimeFormat('en', {
           timeZone: 'Asia/Jakarta',
@@ -3314,11 +3944,40 @@ async function startServer() {
         return `${getPart('year')}-${getPart('month')}-${getPart('day')}`;
       };
       const today = jakartaDate(new Date());
+      const endingCustomers = (stored.data.customers || []).filter(customer =>
+        customer.cancelAtExpiry &&
+        customer.status !== 'disabled' &&
+        customer.expiredDate <= today
+      );
+      for (const customer of endingCustomers) {
+        try {
+          const router = await resolveRouterConnection(customer.routerId);
+          if (!router) throw new Error('Kredensial router tidak tersedia');
+          await updatePppoeSecret(router, customer.pppoeUsername, { disabled: true });
+          const latest = await getAppDataDb();
+          const updatedCustomers = (latest.data.customers || []).map(item =>
+            item.id === customer.id
+              ? { ...item, status: 'disabled' as const, notes: `Langganan dihentikan sesuai permintaan pada ${new Date().toISOString()}.` }
+              : item
+          );
+          await savePublicPaymentUpdateDb(
+            updatedCustomers,
+            latest.data.invoices || [],
+            latest.data.transactions || []
+          );
+        } catch (error) {
+          console.error(
+            `[Subscription] Failed to end service for customer ${customer.customerId}:`,
+            error
+          );
+        }
+      }
+      if (!settings.autoSendReminderH1) return;
       const tomorrow = new Date(`${today}T12:00:00+07:00`);
       tomorrow.setDate(tomorrow.getDate() + 1);
       const dueTomorrow = jakartaDate(tomorrow);
       await Promise.all((stored.data.customers || [])
-        .filter(customer => customer.status !== 'active' || customer.expiredDate <= dueTomorrow)
+        .filter(customer => !customer.cancelAtExpiry && (customer.status !== 'active' || customer.expiredDate <= dueTomorrow))
         .map(customer => ensureDueInvoice(customer.id, true)));
       stored = await getAppDataDb();
       const whatsappLogs = stored.data.whatsappLogs || [];
@@ -3419,11 +4078,26 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 NetFlow MikroTik Billing Server running at http://0.0.0.0:${PORT}`);
     console.log(`📦 Persistent SQLite database loaded at data/billing.sqlite`);
     console.log('📱 WhatsApp notifications use the externally configured provider REST API');
   });
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    httpServer.close(() => {
+      void closeRouterApiSessions()
+        .then(() => process.exit(0))
+        .catch(error => {
+          console.error('[Server] Failed to close MikroTik API sessions during shutdown:', error);
+          process.exit(1);
+        });
+    });
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 // Only start when invoked directly

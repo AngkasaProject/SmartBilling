@@ -2,7 +2,7 @@ import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'crypto';
+import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac, timingSafeEqual } from 'crypto';
 import { AppDataSnapshot, AppSettings, Customer, Invoice, PaymentTransaction, Voucher } from '../src/types';
 import { DEFAULT_WHATSAPP_TEMPLATES } from '../src/utils/whatsappTemplates';
 
@@ -112,6 +112,14 @@ function initSchema(database: Database): void {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS portal_otp_challenges (
+      token_hash TEXT PRIMARY KEY,
+      phone TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS payment_gateway_credentials (
@@ -673,6 +681,134 @@ export async function generatePortalSessionSecretDb(): Promise<string> {
   return secret;
 }
 
+function getPortalOtpTokenHash(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function getPortalOtpCodeHash(secret: string, phone: string, token: string, code: string): string {
+  return createHmac('sha256', secret)
+    .update(`${phone}\n${token}\n${code}`)
+    .digest('hex');
+}
+
+export async function savePortalOtpChallengeDb(
+  phone: string,
+  token: string,
+  code: string,
+  expiresAt: number
+): Promise<void> {
+  const secret = await getPortalSessionSecretDb();
+  if (!secret) throw new Error('Portal session secret is not configured');
+  const database = await getDb();
+  database.run('DELETE FROM portal_otp_challenges WHERE expires_at <= ?', [Date.now()]);
+  database.run(
+    'INSERT OR REPLACE INTO portal_otp_challenges (token_hash, phone, code_hash, expires_at, attempts) VALUES (?, ?, ?, ?, 0)',
+    [
+      getPortalOtpTokenHash(token),
+      phone,
+      getPortalOtpCodeHash(secret, phone, token, code),
+      expiresAt,
+    ]
+  );
+  saveDbToDisk();
+}
+
+export async function consumePortalOtpChallengeDb(
+  phone: string,
+  token: string,
+  code: string
+): Promise<boolean> {
+  const secret = await getPortalSessionSecretDb();
+  if (!secret) throw new Error('Portal session secret is not configured');
+  const database = await getDb();
+  const tokenHash = getPortalOtpTokenHash(token);
+  const result = database.exec(
+    'SELECT phone, code_hash, expires_at, attempts FROM portal_otp_challenges WHERE token_hash = ?',
+    [tokenHash]
+  );
+  const row = result[0]?.values[0];
+  if (!row) return false;
+
+  const [storedPhone, storedCodeHash, expiresAt, attempts] = row;
+  const nextAttempts = Number(attempts) + 1;
+  const suppliedCodeHash = getPortalOtpCodeHash(secret, phone, token, code);
+  const expected = Buffer.from(String(storedCodeHash), 'hex');
+  const supplied = Buffer.from(suppliedCodeHash, 'hex');
+  const matches = String(storedPhone) === phone &&
+    Number(expiresAt) > Date.now() &&
+    Number(attempts) < 5 &&
+    expected.length === supplied.length &&
+    timingSafeEqual(expected, supplied);
+
+  if (matches || Number(expiresAt) <= Date.now() || nextAttempts >= 5) {
+    database.run('DELETE FROM portal_otp_challenges WHERE token_hash = ?', [tokenHash]);
+  } else {
+    database.run(
+      'UPDATE portal_otp_challenges SET attempts = ? WHERE token_hash = ?',
+      [nextAttempts, tokenHash]
+    );
+  }
+  saveDbToDisk();
+  return matches;
+}
+
+export async function discardPortalOtpChallengeDb(token: string): Promise<void> {
+  const database = await getDb();
+  database.run('DELETE FROM portal_otp_challenges WHERE token_hash = ?', [getPortalOtpTokenHash(token)]);
+  saveDbToDisk();
+}
+
+export async function getRevenueResetStateDb(): Promise<{
+  statisticsResetAt?: string;
+  historyResetAt?: string;
+}> {
+  const database = await getDb();
+  const result = database.exec(
+    'SELECT key, value FROM app_settings WHERE key IN (?, ?)',
+    ['revenue_statistics_reset_at', 'revenue_history_reset_at']
+  );
+  const values = new Map<string, string>();
+  for (const [key, value] of result[0]?.values ?? []) {
+    if (typeof key === 'string' && typeof value === 'string') values.set(key, value);
+  }
+  return {
+    ...(values.has('revenue_statistics_reset_at')
+      ? { statisticsResetAt: values.get('revenue_statistics_reset_at') }
+      : {}),
+    ...(values.has('revenue_history_reset_at')
+      ? { historyResetAt: values.get('revenue_history_reset_at') }
+      : {}),
+  };
+}
+
+export async function resetRevenueReportingDb(
+  mode: 'statistics' | 'history'
+): Promise<{ resetAt: string }> {
+  const database = await getDb();
+  const resetAt = new Date().toISOString();
+  const rows: Array<[string, string, string]> = [
+    ['revenue_statistics_reset_at', resetAt, resetAt],
+  ];
+  if (mode === 'history') {
+    rows.push(['revenue_history_reset_at', resetAt, resetAt]);
+  }
+  database.run('BEGIN TRANSACTION');
+  try {
+    for (const [key, value, updatedAt] of rows) {
+      database.run(
+        'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
+        [key, value, updatedAt]
+      );
+    }
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+  saveDbToDisk();
+  return { resetAt };
+}
+
 export async function saveVoucherOrderDb(vouchers: Voucher[], transactions: PaymentTransaction[]): Promise<void> {
   const database = await getDb();
   const updatedAt = new Date().toISOString();
@@ -759,7 +895,28 @@ export async function getAppSettingsDb(): Promise<AppSettings> {
   if (res.length && res[0].values.length) {
     try {
       const parsed = JSON.parse(res[0].values[0][0] as string);
-      return { ...DEFAULT_APP_SETTINGS, ...parsed };
+      const settings = { ...DEFAULT_APP_SETTINGS, ...parsed };
+      const previousDefaultVoucherTemplate = [
+        'Yth. Bapak/Ibu {{customer_name}},',
+        '',
+        'Pembayaran Anda telah berhasil diverifikasi. Voucher hotspot sudah aktif.',
+        '• Paket: {{package_name}}',
+        '• Username: {{voucher_code}}',
+        '• Password: {{voucher_password}}',
+        '• Masa penggunaan: {{validity}}',
+        '',
+        'Silakan masuk melalui halaman login hotspot.',
+        'Terima kasih,',
+        '{{business_name}}',
+      ].join('\n');
+      if (settings.whatsappTemplates?.voucherDelivery === previousDefaultVoucherTemplate) {
+        settings.whatsappTemplates = {
+          ...DEFAULT_WHATSAPP_TEMPLATES,
+          ...settings.whatsappTemplates,
+          voucherDelivery: DEFAULT_WHATSAPP_TEMPLATES.voucherDelivery,
+        };
+      }
+      return settings;
     } catch {
       return DEFAULT_APP_SETTINGS;
     }
@@ -782,6 +939,34 @@ export async function saveAppSettingsDb(settings: Partial<AppSettings>): Promise
   );
   saveDbToDisk();
   return updated;
+}
+
+export interface PppoeUsageRecord {
+  billingCycle: string;
+  totalBytes: number;
+  lastSessionBytes: number;
+  sampledAt: string;
+}
+
+export async function getPppoeUsageDb(): Promise<Record<string, PppoeUsageRecord>> {
+  const database = await getDb();
+  const result = database.exec('SELECT value FROM app_settings WHERE key = ?', ['pppoe_usage']);
+  const serialized = result[0]?.values[0]?.[0];
+  if (typeof serialized !== 'string') return {};
+  const parsed: unknown = JSON.parse(serialized);
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Stored PPPoE usage data is invalid');
+  }
+  return parsed as Record<string, PppoeUsageRecord>;
+}
+
+export async function savePppoeUsageDb(usage: Record<string, PppoeUsageRecord>): Promise<void> {
+  const database = await getDb();
+  database.run(
+    'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
+    ['pppoe_usage', JSON.stringify(usage), new Date().toISOString()]
+  );
+  saveDbToDisk();
 }
 
 export async function getDbStats() {

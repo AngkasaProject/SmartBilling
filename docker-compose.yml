@@ -4,10 +4,11 @@ services:
     build: .
     container_name: mikrotik-billing-app
     restart: unless-stopped
+    # Public host port follows BILLING_PORT (default 1707); app listens on 1707 inside the container.
     ports:
-      - "${BILLING_PORT:-1707}:3000"
+      - "${BILLING_PORT:-1707}:1707"
     environment:
-      PORT: 3000
+      PORT: 1707
       NODE_ENV: production
       RUN_EXPRESS: "true"
       MIKROTIK_HOST: ${MIKROTIK_HOST:-}
@@ -34,7 +35,7 @@ services:
     volumes:
       - billing_data:/app/data
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:1707/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3

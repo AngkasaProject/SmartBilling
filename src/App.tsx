@@ -13,6 +13,7 @@ import {
 import { StorageService } from "./services/storage";
 import { Navbar } from "./components/Navbar";
 import { DashboardTab } from "./components/admin/DashboardTab";
+import { RevenueTab } from "./components/admin/RevenueTab";
 import { CustomersTab } from "./components/admin/CustomersTab";
 import { InvoicesTab } from "./components/admin/InvoicesTab";
 import { VouchersTab } from "./components/admin/VouchersTab";
@@ -20,9 +21,6 @@ import { RoutersTab } from "./components/admin/RoutersTab";
 import { WhatsAppTab } from "./components/admin/WhatsAppTab";
 import { PaymentGatewayTab } from "./components/admin/PaymentGatewayTab";
 import { SettingsTab } from "./components/admin/SettingsTab";
-import { VoucherStorePortal } from "./components/portal/VoucherStorePortal";
-import { CustomerBillPortal } from "./components/portal/CustomerBillPortal";
-import { PublicPortalHome } from "./components/portal/PublicPortalHome";
 import { AdminAuthPage } from "./components/AdminAuthPage";
 import { InvoicePrintModal } from "./components/InvoicePrintModal";
 import { VoucherPrintModal } from "./components/VoucherPrintModal";
@@ -135,17 +133,10 @@ function AppContent() {
     const initialize = async () => {
       try {
         const path = window.location.pathname;
-        if (path === "/") return;
-        if (path === "/portal/vouchers") {
-          const response = await fetch("/api/portal/vouchers");
-          const result = await response.json();
-          if (!response.ok)
-            throw new Error(result.error || `HTTP ${response.status}`);
-          if (mounted) setProfiles(result.profiles);
+        if (path !== "/" && path !== "/admin") {
+          window.location.replace("/");
           return;
         }
-        if (path === "/portal/billing") return;
-        if (path !== "/admin") return;
 
         const response = await fetch("/api/auth/status");
         const status = await response.json();
@@ -170,7 +161,10 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    if (!authStatus?.authenticated || window.location.pathname !== "/admin")
+    if (
+      !authStatus?.authenticated ||
+      (window.location.pathname !== "/" && window.location.pathname !== "/admin")
+    )
       return;
     let syncing = false;
     const timer = window.setInterval(async () => {
@@ -423,30 +417,7 @@ function AppContent() {
   };
 
   const pathname = window.location.pathname;
-  if (pathname === "/") return <PublicPortalHome />;
-  if (
-    pathname !== "/admin" &&
-    pathname !== "/portal/billing" &&
-    pathname !== "/portal/vouchers"
-  ) {
-    return <PublicPortalHome />;
-  }
-  if (pathname === "/portal/billing") return <CustomerBillPortal />;
-  if (pathname === "/portal/vouchers") {
-    return (
-      <main className="min-h-screen bg-slate-950 text-slate-100">
-        <nav className="max-w-5xl mx-auto px-5 py-4 flex justify-between text-sm font-bold">
-          <a href="/" className="text-white">
-            SmartBilling
-          </a>
-          <a href="/portal/billing" className="text-indigo-300">
-            Cek Tagihan
-          </a>
-        </nav>
-        <VoucherStorePortal profiles={profiles} />
-      </main>
-    );
-  }
+  if (pathname !== "/" && pathname !== "/admin") return null;
 
   if (!authStatus) {
     return (
@@ -511,6 +482,7 @@ function AppContent() {
             onToggleIsolir={handleToggleIsolir}
           />
         )}
+        {adminTab === "revenue" && <RevenueTab />}
         {adminTab === "customers" && (
           <CustomersTab
             customers={customers}

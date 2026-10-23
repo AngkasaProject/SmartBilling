@@ -8,6 +8,7 @@ import {
   Server,
   Settings,
   Ticket,
+  TrendingUp,
   Sun,
   Users,
   Zap,
@@ -56,6 +57,7 @@ export const Navbar: React.FC<Props> = ({
 
   const navTabs = [
     { id: 'dashboard', label: 'Dashboard', icon: Server },
+    { id: 'revenue', label: 'Pendapatan', icon: TrendingUp },
     { id: 'customers', label: 'Pelanggan PPPoE', icon: Users },
     { id: 'invoices', label: 'Tagihan', icon: CreditCard },
     { id: 'vouchers', label: 'Voucher Hotspot', icon: Ticket },
