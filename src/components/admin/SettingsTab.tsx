@@ -256,7 +256,7 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
       toast(
         portalSessionSecretConfigured ? 'Secret sesi portal diperbarui' : 'Secret sesi portal berhasil dibuat',
         'success',
-        'Salin secret ini ke PORTAL_SESSION_SECRET pada environment SmartBilling Portal.',
+        'Portal internal langsung menggunakan secret tersimpan. Salin ke PORTAL_SESSION_SECRET hanya jika aplikasi Portal terpisah masih digunakan.',
       );
     } catch (error) {
       toast('Gagal membuat secret sesi portal', 'error', error instanceof Error ? error.message : String(error));
@@ -410,7 +410,7 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
                 <div>
                   <h3 className="flex items-center gap-2 text-sm font-bold"><KeyRound className="h-4 w-4 text-primary" /> Secret sesi SmartBilling Portal</h3>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Buat secret untuk menandatangani cookie sesi portal. Secret disimpan terenkripsi di Billing dan harus disalin ke <code>PORTAL_SESSION_SECRET</code> pada environment aplikasi Portal.
+                    Secret terenkripsi ini digunakan untuk menandatangani sesi Portal internal. Salin ke <code>PORTAL_SESSION_SECRET</code> hanya jika aplikasi Portal terpisah masih digunakan.
                   </p>
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row">

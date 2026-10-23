@@ -105,6 +105,9 @@ export const AdminAuthPage: React.FC<Props> = ({
             {isSubmitting ? 'Memproses...' : registrationRequired ? 'Buat akun admin' : 'Login'}
           </button>
         </form>
+        <a href="/" className="mt-5 block text-center text-sm text-indigo-300 hover:text-indigo-200">
+          Kembali ke halaman pelanggan
+        </a>
       </section>
     </main>
   );

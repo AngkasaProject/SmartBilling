@@ -84,6 +84,136 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const portalOtpRequestNonces = new Map<string, number>();
 const portalInternalRequestNonces = new Map<string, number>();
+const portalLoginRateLimits = new Map<string, { count: number; resetAt: number }>();
+const PORTAL_CUSTOMER_SESSION_COOKIE = 'smartbilling_portal_session';
+const PORTAL_CUSTOMER_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+
+interface PortalCustomerSession {
+  customerId: string;
+  phone: string;
+  exp: number;
+}
+
+function normalizePortalPhone(value: string): string {
+  return value.replace(/[^0-9]/g, '');
+}
+
+function canonicalPortalPhone(value: string): string {
+  const digits = normalizePortalPhone(value);
+  return (digits.startsWith('62') ? digits.slice(2) : digits).replace(/^0+/, '');
+}
+
+function allowPortalLoginAttempt(
+  key: string,
+  limit: number,
+  windowMs: number
+): { allowed: boolean; retryAfterSeconds: number } {
+  const now = Date.now();
+  if (portalLoginRateLimits.size > 10_000) {
+    for (const [rateKey, value] of portalLoginRateLimits) {
+      if (value.resetAt <= now) portalLoginRateLimits.delete(rateKey);
+    }
+  }
+  if (portalLoginRateLimits.size >= 20_000 && !portalLoginRateLimits.has(key)) {
+    return { allowed: false, retryAfterSeconds: 60 };
+  }
+  const current = portalLoginRateLimits.get(key);
+  if (!current || current.resetAt <= now) {
+    portalLoginRateLimits.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+  if (current.count >= limit) {
+    return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((current.resetAt - now) / 1000)) };
+  }
+  current.count += 1;
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+
+async function getPortalCustomerSession(request: express.Request): Promise<PortalCustomerSession | null> {
+  const cookieHeader = request.get('Cookie') || '';
+  const cookie = cookieHeader
+    .split(';')
+    .map(part => part.trim())
+    .find(part => part.startsWith(`${PORTAL_CUSTOMER_SESSION_COOKIE}=`));
+  if (!cookie) return null;
+
+  let token: string;
+  try {
+    token = decodeURIComponent(cookie.slice(PORTAL_CUSTOMER_SESSION_COOKIE.length + 1));
+  } catch {
+    return null;
+  }
+  if (!token || token.length > 4096) return null;
+  const separator = token.indexOf('.');
+  if (separator <= 0 || separator !== token.lastIndexOf('.')) return null;
+  const encodedPayload = token.slice(0, separator);
+  const encodedSignature = token.slice(separator + 1);
+  if (!encodedPayload || !encodedSignature) return null;
+
+  const secret = await getPortalSessionSecretDb();
+  if (!secret) return null;
+  const expectedSignature = createHmac('sha256', secret).update(encodedPayload).digest();
+  const receivedSignature = Buffer.from(encodedSignature, 'base64url');
+  if (
+    receivedSignature.length !== expectedSignature.length ||
+    !timingSafeEqual(receivedSignature, expectedSignature)
+  ) return null;
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (
+    !isRecord(payload) ||
+    typeof payload.customerId !== 'string' ||
+    !payload.customerId ||
+    typeof payload.phone !== 'string' ||
+    !/^\d{8,15}$/.test(payload.phone) ||
+    typeof payload.exp !== 'number' ||
+    !Number.isFinite(payload.exp) ||
+    payload.exp <= Date.now()
+  ) return null;
+
+  return {
+    customerId: payload.customerId,
+    phone: payload.phone,
+    exp: payload.exp,
+  };
+}
+
+async function setPortalCustomerSession(
+  request: express.Request,
+  response: express.Response,
+  customer: Customer
+): Promise<void> {
+  const secret = await getPortalSessionSecretDb();
+  if (!secret) throw new Error('Portal session secret is not configured');
+  const phone = normalizePortalPhone(customer.phone);
+  if (phone.length < 8 || phone.length > 15) throw new Error('Nomor WhatsApp pelanggan tidak valid');
+
+  const payload: PortalCustomerSession = {
+    customerId: customer.id,
+    phone,
+    exp: Date.now() + PORTAL_CUSTOMER_SESSION_TTL_MS,
+  };
+  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const signature = createHmac('sha256', secret).update(encodedPayload).digest('base64url');
+  const secure = request.secure || request.get('x-forwarded-proto')?.split(',')[0].trim() === 'https';
+  response.setHeader(
+    'Set-Cookie',
+    `${PORTAL_CUSTOMER_SESSION_COOKIE}=${encodedPayload}.${signature}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(PORTAL_CUSTOMER_SESSION_TTL_MS / 1000)}${secure ? '; Secure' : ''}`
+  );
+}
+
+function clearPortalCustomerSession(request: express.Request, response: express.Response): void {
+  const secure = request.secure || request.get('x-forwarded-proto')?.split(',')[0].trim() === 'https';
+  response.setHeader(
+    'Set-Cookie',
+    `${PORTAL_CUSTOMER_SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`
+  );
+}
 
 async function verifyPortalInternalRequest(
   request: express.Request,
@@ -211,13 +341,38 @@ function createPortalLinkToken(
   expiresAt: number,
   secret: string
 ): string {
-  const payload = Buffer.from(JSON.stringify({ ...subject, expiresAt })).toString('base64url');
-  const signature = createHmac('sha256', secret).update(payload).digest('base64url');
+  const type = 'invoiceId' in subject ? 'i' : 'c';
+  const id = 'invoiceId' in subject ? subject.invoiceId : subject.customerId;
+  const expiresAtSeconds = Math.floor(expiresAt / 1000);
+  const payload = `v1.${type}.${Buffer.from(id, 'utf8').toString('base64url')}.${expiresAtSeconds.toString(36)}`;
+  const signature = createHmac('sha256', secret).update(payload).digest().subarray(0, 16).toString('base64url');
   return `${payload}.${signature}`;
 }
 
 function verifyPortalLinkToken(token: unknown, secret: string): PortalLinkToken | null {
   if (typeof token !== 'string' || token.length > 1024) return null;
+  const compactParts = token.split('.');
+  if (compactParts.length === 5 && compactParts[0] === 'v1') {
+    const [version, type, encodedId, encodedExpiry, signature] = compactParts;
+    if (
+      version !== 'v1' ||
+      (type !== 'i' && type !== 'c') ||
+      !/^[A-Za-z0-9_-]{1,512}$/.test(encodedId) ||
+      !/^[0-9a-z]{1,8}$/.test(encodedExpiry) ||
+      !/^[A-Za-z0-9_-]{22}$/.test(signature)
+    ) return null;
+    const expected = createHmac('sha256', secret).update(compactParts.slice(0, 4).join('.')).digest().subarray(0, 16);
+    const received = Buffer.from(signature, 'base64url');
+    if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
+    const expiresAtSeconds = Number.parseInt(encodedExpiry, 36);
+    if (!Number.isSafeInteger(expiresAtSeconds) || expiresAtSeconds * 1000 <= Date.now()) return null;
+    const id = Buffer.from(encodedId, 'base64url').toString('utf8');
+    if (!id || Buffer.from(id, 'utf8').toString('base64url') !== encodedId) return null;
+    return type === 'i'
+      ? { invoiceId: id, expiresAt: expiresAtSeconds * 1000 }
+      : { customerId: id, expiresAt: expiresAtSeconds * 1000 };
+  }
+
   const [payload, signature, extra] = token.split('.');
   if (!payload || !signature || extra !== undefined) return null;
   const expected = createHmac('sha256', secret).update(payload).digest();
@@ -376,6 +531,28 @@ async function startServer() {
     }
   }
 
+  function configuredPaymentWebhookUrl(): URL | null {
+    try {
+      const webhookUrl = new URL(process.env.PAYMENT_WEBHOOK_URL || '');
+      const localDevelopmentHost = ['localhost', '127.0.0.1', '::1'].includes(webhookUrl.hostname);
+      if (
+        webhookUrl.username ||
+        webhookUrl.password ||
+        !['http:', 'https:'].includes(webhookUrl.protocol) ||
+        webhookUrl.pathname !== '/api/payment/webhook' ||
+        webhookUrl.search ||
+        webhookUrl.hash ||
+        (isProd && webhookUrl.protocol !== 'https:') ||
+        (webhookUrl.protocol === 'http:' && !localDevelopmentHost)
+      ) {
+        return null;
+      }
+      return webhookUrl;
+    } catch {
+      return null;
+    }
+  }
+
   function formatDateTime(value: string, timezone: string, timeFormat: '24h' | '12h' = '24h'): string {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
@@ -466,7 +643,7 @@ async function startServer() {
   }
 
   function paymentGatewayReady(config: PaymentGatewayCredentials): boolean {
-    if (!configuredPaymentAppUrl()) return false;
+    if (!configuredPaymentAppUrl() || !configuredPaymentWebhookUrl()) return false;
     if (config.provider === 'midtrans') return Boolean(config.serverKey);
     if (config.provider === 'doku') return Boolean(config.dokuClientId && config.dokuSecretKey);
     if (config.provider === 'xendit') return Boolean(config.xenditApiKey && config.xenditCallbackToken);
@@ -486,6 +663,8 @@ async function startServer() {
     customerPhone: string;
     customerEmail?: string;
     returnUrl: string;
+    successUrl: string;
+    failureUrl: string;
   }): Promise<{ redirectUrl: string; provider: 'midtrans' | 'doku' | 'xendit' | 'tripay' }> {
     const { config } = input;
     if (config.provider === 'midtrans' && config.serverKey) {
@@ -613,8 +792,8 @@ async function startServer() {
         currency: 'IDR',
         description: input.itemName.slice(0, 255),
         invoice_duration: 86400,
-        success_redirect_url: input.returnUrl,
-        failure_redirect_url: input.returnUrl,
+        success_redirect_url: input.successUrl,
+        failure_redirect_url: input.failureUrl,
         ...(input.customerEmail ? { payer_email: input.customerEmail } : {}),
         customer: {
           given_names: input.customerName.slice(0, 255),
@@ -661,6 +840,10 @@ async function startServer() {
       config.tripayApiKey &&
       config.tripayPrivateKey
     ) {
+      const webhookUrl = configuredPaymentWebhookUrl();
+      if (!webhookUrl) {
+        throw new Error('PAYMENT_WEBHOOK_URL must point to the public SmartBilling /api/payment/webhook endpoint.');
+      }
       const endpoint = config.isProduction
         ? 'https://tripay.co.id/api/transaction/create'
         : 'https://tripay.co.id/api-sandbox/transaction/create';
@@ -679,7 +862,7 @@ async function startServer() {
           price: input.amount,
           quantity: 1,
         }],
-        callback_url: `${new URL(input.returnUrl).origin}/api/payment/webhook`,
+        callback_url: webhookUrl.toString(),
         return_url: input.returnUrl,
         expired_time: Math.floor(Date.now() / 1000) + 86400,
         signature,
@@ -1356,11 +1539,147 @@ async function startServer() {
     }
   });
 
+  app.post('/api/portal/auth/send-otp', async (req, res) => {
+    const phoneInput = req.body?.phone;
+    if (typeof phoneInput !== 'string' || phoneInput.length > 32) {
+      return res.status(400).json({ error: 'Nomor WhatsApp tidak valid' });
+    }
+    const phone = normalizePortalPhone(phoneInput);
+    if (phone.length < 8 || phone.length > 15) {
+      return res.status(400).json({ error: 'Nomor WhatsApp tidak valid' });
+    }
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const ipLimit = allowPortalLoginAttempt(`send:ip:${ip}`, 5, 10 * 60_000);
+    const phoneLimit = allowPortalLoginAttempt(`send:phone:${phone}`, 3, 10 * 60_000);
+    if (!ipLimit.allowed || !phoneLimit.allowed) {
+      const retryAfter = Math.max(ipLimit.retryAfterSeconds, phoneLimit.retryAfterSeconds);
+      return res.status(429).setHeader('Retry-After', String(retryAfter))
+        .json({ error: 'Terlalu banyak permintaan kode. Coba lagi nanti.' });
+    }
+
+    try {
+      if (!await getPortalSessionSecretDb()) {
+        return res.status(503).json({ error: 'Autentikasi portal belum dikonfigurasi oleh administrator' });
+      }
+      const stored = await getAppDataDb();
+      const matchingCustomers = (stored.data.customers || []).filter(customer =>
+        canonicalPortalPhone(customer.phone) === canonicalPortalPhone(phone)
+      );
+      if (!matchingCustomers.length) {
+        return res.status(404).json({ error: 'Nomor WhatsApp belum terdaftar sebagai pelanggan' });
+      }
+      if (matchingCustomers.length > 1) {
+        return res.status(409).json({ error: 'Nomor WhatsApp terhubung ke lebih dari satu akun. Hubungi Customer Service.' });
+      }
+      const customerPhone = normalizePortalPhone(matchingCustomers[0].phone);
+      const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+      const verificationToken = randomBytes(32).toString('base64url');
+      await savePortalOtpChallengeDb(phone, verificationToken, code, Date.now() + 5 * 60_000);
+      const message = [
+        `Kode verifikasi SmartBilling Anda: ${code}`,
+        '',
+        'Kode berlaku selama 5 menit. Jangan berikan kode ini kepada siapa pun.',
+        'Jika Anda tidak meminta kode ini, abaikan pesan ini.',
+      ].join('\n');
+      try {
+        await sendWhatsAppMessage(customerPhone, message);
+      } catch (error) {
+        await discardPortalOtpChallengeDb(verificationToken);
+        console.error('[Portal OTP] WhatsApp delivery failed:', error);
+        return res.status(502).json({ error: 'Kode verifikasi belum dapat dikirim. Coba lagi nanti.' });
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ ok: true, verificationToken });
+    } catch (error) {
+      console.error('[Portal OTP] Could not create a login challenge:', error);
+      return res.status(500).json({ error: error instanceof Error ? error.message : 'Login portal belum dapat diproses' });
+    }
+  });
+
+  app.post('/api/portal/auth/verify-otp', async (req, res) => {
+    const { phone: phoneInput, code, verificationToken } = req.body || {};
+    if (
+      typeof phoneInput !== 'string' || phoneInput.length > 32 ||
+      typeof code !== 'string' || !/^\d{6}$/.test(code) ||
+      typeof verificationToken !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(verificationToken)
+    ) {
+      return res.status(400).json({ error: 'Permintaan verifikasi tidak valid' });
+    }
+    const phone = normalizePortalPhone(phoneInput);
+    if (phone.length < 8 || phone.length > 15) {
+      return res.status(400).json({ error: 'Nomor WhatsApp tidak valid' });
+    }
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const rateLimit = allowPortalLoginAttempt(`verify:ip:${ip}`, 5, 10 * 60_000);
+    if (!rateLimit.allowed) {
+      return res.status(429).setHeader('Retry-After', String(rateLimit.retryAfterSeconds))
+        .json({ error: 'Terlalu banyak percobaan. Coba lagi nanti.' });
+    }
+
+    try {
+      const valid = await consumePortalOtpChallengeDb(phone, verificationToken, code);
+      if (!valid) return res.status(401).json({ error: 'Kode salah atau kedaluwarsa' });
+      const stored = await getAppDataDb();
+      const matchingCustomers = (stored.data.customers || []).filter(customer =>
+        canonicalPortalPhone(customer.phone) === canonicalPortalPhone(phone)
+      );
+      if (matchingCustomers.length !== 1) {
+        return res.status(matchingCustomers.length ? 409 : 404).json({
+          error: matchingCustomers.length
+            ? 'Nomor WhatsApp terhubung ke lebih dari satu akun. Hubungi Customer Service.'
+            : 'Nomor WhatsApp belum terdaftar sebagai pelanggan',
+        });
+      }
+      await setPortalCustomerSession(req, res, matchingCustomers[0]);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ ok: true });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : 'Verifikasi login gagal' });
+    }
+  });
+
+  app.get('/api/portal/auth/session', async (req, res) => {
+    try {
+      const session = await getPortalCustomerSession(req);
+      if (!session) {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json({ authenticated: false });
+      }
+      const stored = await getAppDataDb();
+      const customer = (stored.data.customers || []).find(item => item.id === session.customerId);
+      if (!customer || canonicalPortalPhone(customer.phone) !== canonicalPortalPhone(session.phone)) {
+        clearPortalCustomerSession(req, res);
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json({ authenticated: false });
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        authenticated: true,
+        customer: { id: customer.id, name: customer.name, phone: customer.phone },
+      });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : 'Sesi portal belum dapat dibaca' });
+    }
+  });
+
+  app.post('/api/portal/auth/logout', (req, res) => {
+    clearPortalCustomerSession(req, res);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ ok: true });
+  });
+
   app.post('/api/internal/portal/customer', async (req, res) => {
-    if (!await verifyPortalInternalRequest(req, '/api/internal/portal/customer')) {
+    let session: PortalCustomerSession | null;
+    try {
+      session = await getPortalCustomerSession(req);
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : 'Sesi Portal belum dapat diverifikasi' });
+    }
+    const internalAuthorized = !session && await verifyPortalInternalRequest(req, '/api/internal/portal/customer');
+    if (!session && !internalAuthorized) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
-    const customerId = req.body.customerId;
+    const customerId = session?.customerId || req.body.customerId;
     if (typeof customerId !== 'string' || !customerId.trim() || customerId.length > 128) {
       return res.status(400).json({ error: 'Invalid customer' });
     }
@@ -1368,6 +1687,10 @@ async function startServer() {
       const stored = await getAppDataDb();
       const customer = (stored.data.customers || []).find(item => item.id === customerId);
       if (!customer) return res.status(404).json({ error: 'Customer not found' });
+      if (session && canonicalPortalPhone(customer.phone) !== canonicalPortalPhone(session.phone)) {
+        clearPortalCustomerSession(req, res);
+        return res.status(401).json({ error: 'Sesi pelanggan tidak lagi valid' });
+      }
       const currentPackage = (stored.data.pppoePackages || []).find(item =>
         item.id === customer.pppoePackageId ||
         (item.routerId === customer.routerId && item.routerProfileName === customer.profileName)
@@ -1405,9 +1728,27 @@ async function startServer() {
         .filter(item => item.customerId === customer.id)
         .sort((left, right) => right.dueDate.localeCompare(left.dueDate))
         .slice(0, 12)
-        .map(({ id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod }) => ({
-          id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod,
-        }));
+        .map(invoice => {
+          const payment = (stored.data.transactions || [])
+            .filter(item => item.orderType === 'invoice' && item.invoiceId === invoice.id)
+            .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+          return {
+            id: invoice.id,
+            invoiceNumber: invoice.invoiceNumber,
+            profileName: invoice.profileName,
+            periodMonth: invoice.periodMonth,
+            amount: invoice.amount,
+            uniqueCode: invoice.uniqueCode,
+            totalAmount: invoice.totalAmount,
+            status: invoice.status,
+            dueDate: invoice.dueDate,
+            paidAt: invoice.paidAt,
+            paymentMethod: invoice.paymentMethod,
+            latestPaymentStatus: payment?.status,
+            latestPaymentMethod: payment?.paymentMethod,
+            latestPaymentChannel: payment?.paymentChannel,
+          };
+        });
       res.setHeader('Cache-Control', 'no-store');
       return res.json({
         customer: {
@@ -1444,10 +1785,18 @@ async function startServer() {
   });
 
   app.post('/api/internal/portal/customer-action', async (req, res) => {
-    if (!await verifyPortalInternalRequest(req, '/api/internal/portal/customer-action')) {
+    let session: PortalCustomerSession | null;
+    try {
+      session = await getPortalCustomerSession(req);
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : 'Sesi Portal belum dapat diverifikasi' });
+    }
+    const internalAuthorized = !session && await verifyPortalInternalRequest(req, '/api/internal/portal/customer-action');
+    if (!session && !internalAuthorized) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
-    const { customerId, action, packageId } = req.body;
+    const { action, packageId } = req.body || {};
+    const customerId = session?.customerId || req.body?.customerId;
     if (
       typeof customerId !== 'string' ||
       !customerId.trim() ||
@@ -1463,6 +1812,10 @@ async function startServer() {
       const customers = stored.data.customers || [];
       const customer = customers.find(item => item.id === customerId);
       if (!customer) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
+      if (session && canonicalPortalPhone(customer.phone) !== canonicalPortalPhone(session.phone)) {
+        clearPortalCustomerSession(req, res);
+        return res.status(401).json({ error: 'Sesi pelanggan tidak lagi valid' });
+      }
       const today = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
       }).format(new Date());
@@ -1823,7 +2176,9 @@ async function startServer() {
         customerName: customerName.trim(),
         customerPhone: phone.trim(),
         customerEmail: typeof email === 'string' ? email.trim() || undefined : undefined,
-        returnUrl: `${appUrl.origin}/?payment=complete`,
+        returnUrl: `${appUrl.origin}/portal?payment=return&tab=voucher&orderId=${encodeURIComponent(orderId)}`,
+        successUrl: `${appUrl.origin}/portal?payment=success&tab=voucher&orderId=${encodeURIComponent(orderId)}`,
+        failureUrl: `${appUrl.origin}/portal?payment=failed&tab=voucher&orderId=${encodeURIComponent(orderId)}`,
       });
       transaction.paymentMethod = checkout.provider;
       transaction.paymentChannel = checkout.provider === 'midtrans'
@@ -2272,19 +2627,44 @@ async function startServer() {
         const digits = value.replace(/[^0-9]/g, '');
         return (digits.startsWith('62') ? digits.slice(2) : digits).replace(/^0+/, '');
       };
-      const customer = customers.find(item =>
+      let customer = customers.find(item =>
         item.customerId.toLowerCase() === searchValue.toLowerCase()
-      ) || (normalizedPhone.length >= 8
-        ? customers.find(item => canonicalPhone(item.phone) === canonicalPhone(normalizedPhone))
-        : undefined);
+      );
+      if (!customer && normalizedPhone.length >= 8) {
+        const matchingCustomers = customers.filter(item =>
+          canonicalPhone(item.phone) === canonicalPhone(normalizedPhone)
+        );
+        if (matchingCustomers.length > 1) {
+          return res.status(409).json({ error: 'Nomor WhatsApp terhubung ke lebih dari satu akun. Gunakan ID pelanggan untuk cek tagihan.' });
+        }
+        customer = matchingCustomers[0];
+      }
       if (!customer) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
       await ensureDueInvoice(customer.id);
       const latest = await getAppDataDb();
       const invoices = (latest.data.invoices || [])
         .filter(invoice => invoice.customerId === customer.id)
-        .map(({ id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod }) => ({
-          id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod,
-        }));
+        .map(invoice => {
+          const payment = (latest.data.transactions || [])
+            .filter(item => item.orderType === 'invoice' && item.invoiceId === invoice.id)
+            .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+          return {
+            id: invoice.id,
+            invoiceNumber: invoice.invoiceNumber,
+            profileName: invoice.profileName,
+            periodMonth: invoice.periodMonth,
+            amount: invoice.amount,
+            uniqueCode: invoice.uniqueCode,
+            totalAmount: invoice.totalAmount,
+            status: invoice.status,
+            dueDate: invoice.dueDate,
+            paidAt: invoice.paidAt,
+            paymentMethod: invoice.paymentMethod,
+            latestPaymentStatus: payment?.status,
+            latestPaymentMethod: payment?.paymentMethod,
+            latestPaymentChannel: payment?.paymentChannel,
+          };
+        });
       const today = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
       }).format(new Date());
@@ -2344,9 +2724,27 @@ async function startServer() {
             timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
           }).format(new Date()) ? 'expiring' : customer.status,
         },
-        invoices: currentInvoices.map(({ id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod }) => ({
-          id, invoiceNumber, profileName, periodMonth, amount, uniqueCode, totalAmount, status, dueDate, paidAt, paymentMethod,
-        })),
+        invoices: currentInvoices.map(invoice => {
+          const payment = (latest.data.transactions || [])
+            .filter(item => item.orderType === 'invoice' && item.invoiceId === invoice.id)
+            .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+          return {
+            id: invoice.id,
+            invoiceNumber: invoice.invoiceNumber,
+            profileName: invoice.profileName,
+            periodMonth: invoice.periodMonth,
+            amount: invoice.amount,
+            uniqueCode: invoice.uniqueCode,
+            totalAmount: invoice.totalAmount,
+            status: invoice.status,
+            dueDate: invoice.dueDate,
+            paidAt: invoice.paidAt,
+            paymentMethod: invoice.paymentMethod,
+            latestPaymentStatus: payment?.status,
+            latestPaymentMethod: payment?.paymentMethod,
+            latestPaymentChannel: payment?.paymentChannel,
+          };
+        }),
         paymentAvailable: paymentGatewayReady(await paymentGatewayCredentials()),
       });
     } catch (error) {
@@ -2637,7 +3035,15 @@ async function startServer() {
           customerName: customer.name,
           customerPhone: customer.phone,
           customerEmail: customer.email || undefined,
-          returnUrl: `${appUrl.origin}/portal/billing?payment=complete`,
+          returnUrl: portalToken
+            ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=return`
+            : `${appUrl.origin}/portal?payment=return&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`,
+          successUrl: portalToken
+            ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=success`
+            : `${appUrl.origin}/portal?payment=success&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`,
+          failureUrl: portalToken
+            ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=failed`
+            : `${appUrl.origin}/portal?payment=failed&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`,
         });
 
         const transaction: PaymentTransaction = {
@@ -2674,6 +3080,7 @@ async function startServer() {
     try {
       const config = await paymentGatewayCredentials();
       const appOrigin = configuredPaymentAppUrl()?.origin || '';
+      const webhookUrl = configuredPaymentWebhookUrl()?.toString() || '';
       res.setHeader('Cache-Control', 'no-store');
       res.json({
         provider: config.provider,
@@ -2689,8 +3096,9 @@ async function startServer() {
         tripayPrivateKeyConfigured: Boolean(config.tripayPrivateKey),
         tripayPaymentMethod: config.tripayPaymentMethod || 'QRIS',
         appUrlConfigured: Boolean(appOrigin),
+        webhookUrlConfigured: Boolean(webhookUrl),
         checkoutEnabled: paymentGatewayReady(config),
-        webhookUrl: appOrigin ? `${appOrigin}/api/payment/webhook` : '',
+        webhookUrl,
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -2791,6 +3199,7 @@ async function startServer() {
         }
       }
       await savePaymentGatewayCredentialsDb(config);
+      const webhookUrl = configuredPaymentWebhookUrl()?.toString() || '';
       res.json({
         provider: config.provider,
         isProduction: config.isProduction,
@@ -2805,10 +3214,9 @@ async function startServer() {
         tripayPrivateKeyConfigured: Boolean(config.tripayPrivateKey),
         tripayPaymentMethod: config.tripayPaymentMethod || 'QRIS',
         appUrlConfigured: Boolean(configuredPaymentAppUrl()),
+        webhookUrlConfigured: Boolean(webhookUrl),
         checkoutEnabled: paymentGatewayReady(config),
-        webhookUrl: configuredPaymentAppUrl()
-          ? `${configuredPaymentAppUrl()!.origin}/api/payment/webhook`
-          : '',
+        webhookUrl,
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3210,6 +3618,7 @@ async function startServer() {
       typeof routerId !== 'string' ||
       typeof name !== 'string' || !/^[A-Za-z0-9_.@-]{1,64}$/.test(name) ||
       typeof password !== 'string' || password.length < 1 || password.length > 128 ||
+      password.trim().toLowerCase() === 'undefined' ||
       typeof profile !== 'string' || !/^[A-Za-z0-9_. -]{1,64}$/.test(profile) ||
       (disabled !== undefined && typeof disabled !== 'boolean')
     ) {
@@ -3234,7 +3643,12 @@ async function startServer() {
   app.patch('/api/mikrotik/pppoe/secrets/:routerId/:username', requireAdminSession, async (req, res) => {
     const { password, profile, disabled } = req.body || {};
     if (
-      (password !== undefined && (typeof password !== 'string' || !password || password.length > 128)) ||
+      (password !== undefined && (
+        typeof password !== 'string' ||
+        !password ||
+        password.length > 128 ||
+        password.trim().toLowerCase() === 'undefined'
+      )) ||
       (profile !== undefined && (typeof profile !== 'string' || !/^[A-Za-z0-9_. -]{1,64}$/.test(profile))) ||
       (disabled !== undefined && typeof disabled !== 'boolean') ||
       (password === undefined && profile === undefined && disabled === undefined)

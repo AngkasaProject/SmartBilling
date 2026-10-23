@@ -24,6 +24,7 @@ import { SettingsTab } from "./components/admin/SettingsTab";
 import { AdminAuthPage } from "./components/AdminAuthPage";
 import { InvoicePrintModal } from "./components/InvoicePrintModal";
 import { VoucherPrintModal } from "./components/VoucherPrintModal";
+import { PortalPage } from "./components/PortalPage";
 import { Send, X, Check, ShieldAlert, CheckCircle2 } from "lucide-react";
 import { ToastProvider, useToast } from "./components/ui/toast";
 import { ThemeProvider } from "./components/ui/theme";
@@ -133,7 +134,8 @@ function AppContent() {
     const initialize = async () => {
       try {
         const path = window.location.pathname;
-        if (path !== "/" && path !== "/admin") {
+        if (path === "/" || path === "/portal" || path === "/portal/billing") return;
+        if (path !== "/admin") {
           window.location.replace("/");
           return;
         }
@@ -417,7 +419,10 @@ function AppContent() {
   };
 
   const pathname = window.location.pathname;
-  if (pathname !== "/" && pathname !== "/admin") return null;
+  if (pathname === "/" || pathname === "/portal" || pathname === "/portal/billing") {
+    return <PortalPage />;
+  }
+  if (pathname !== "/admin") return null;
 
   if (!authStatus) {
     return (

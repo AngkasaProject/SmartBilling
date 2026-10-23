@@ -36,16 +36,18 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 - **💬 Integrasi WhatsApp melalui layanan eksternal**:
   - Pilih Fonnte atau OpenWA; SmartBilling hanya mengakses REST API tanpa membundel server WhatsApp.
   - Pengiriman pesan uji dan pelanggan mencatat respons nyata dari provider terpilih.
-  - Pengingat PPPoE H-1 dapat diaktifkan di Pengaturan. Pesan pengingat dan isolir manual memuat tautan bertanda tangan ke detail pelanggan/tagihan di aplikasi SmartBilling Portal; atur `APP_URL` ke URL publik Portal (HTTPS) dan pastikan provider WhatsApp aktif. Kegagalan pengiriman dicatat dan dicoba ulang secara terbatas.
+  - Pengingat PPPoE H-1 dapat diaktifkan di Pengaturan. Pesan pengingat dan isolir manual memuat tautan bertanda tangan ke detail pelanggan/tagihan di Portal pada `/portal/billing`; atur `APP_URL` ke origin publik Portal (HTTPS) dan pastikan provider WhatsApp aktif. Kegagalan pengiriman dicatat dan dicoba ulang secara terbatas.
 
 - **🛒 Portal publik paket dan pelanggan**:
-  - Portal Next.js terpisah menampilkan paket hotspot dan paket PPPoE bulanan yang diterbitkan Billing; pembelian hotspot tersedia daring dan pendaftaran PPPoE diarahkan ke Customer Service.
-  - Pelanggan masuk melalui kode OTP WhatsApp untuk melihat profil layanan, tagihan, dan estimasi kuota PPPoE yang dicatat secara berkala.
+  - Halaman utama `/` pada Portal eksternal adalah halaman publik pelanggan. Pelanggan dapat cek tagihan memakai ID pelanggan atau nomor WhatsApp terdaftar tanpa login pelanggan.
+  - Portal menampilkan status tagihan, katalog paket hotspot dan PPPoE bulanan; pembelian hotspot tersedia daring dan pendaftaran PPPoE diarahkan ke Customer Service.
   - Upgrade PPPoE mandiri dijadwalkan untuk periode tagihan berikutnya dan baru diterapkan setelah invoice dibayar. Pembatalan mempertahankan akses sampai akhir masa layanan yang sudah dibayar.
   - Pembayaran manual yang dikonfigurasi operator selalu tersedia. Sebagai addon, aktifkan maksimal satu gateway otomatis: Midtrans Snap, DOKU Checkout, Xendit, atau Tripay.
   - Kredensial gateway otomatis diatur melalui menu Pembayaran dan disimpan terenkripsi di server. Pembayaran manual memakai instruksi yang disiapkan operator, kode pesanan, serta persetujuan manual.
-  - Tautan invoice bertanda tangan mengarah ke URL publik Portal (`APP_URL`), bukan URL API Billing. Tautan hanya membuka tagihan yang ditentukan dan dapat kedaluwarsa.
-  - Portal memanggil API Billing melalui HTTP; data pelanggan, paket, pembayaran, dan konfigurasi bisnis tetap dikelola oleh Billing.
+  - Return sukses/gagal pembayaran kembali ke Portal pelanggan pada origin `APP_URL`. Xendit menerima URL return sukses dan gagal terpisah (`/portal?...payment=success` atau `payment=failed`); Midtrans, DOKU, dan Tripay memakai URL return umum (`payment=return`). Redirect hanya membawa pelanggan kembali, bukan bukti lunas.
+  - Notifikasi gateway selalu dikirim ke endpoint SmartBilling `PAYMENT_WEBHOOK_URL` (`/api/payment/webhook`), terpisah dari URL return pelanggan. Pembayaran manual berubah menjadi lunas setelah operator menyetujui; Portal memperbarui status invoice berkala.
+  - Tautan invoice bertanda tangan mengarah ke `/portal/billing` pada origin publik `APP_URL`. Tautan hanya membuka tagihan yang ditentukan dan dapat kedaluwarsa.
+  - Portal dapat berjalan pada origin terpisah. Data pelanggan, paket, pembayaran, dan konfigurasi bisnis tetap dikelola oleh SmartBilling API.
 
 - **🎫 Penjualan voucher hotspot**:
   - Buat profil layanan di menu Voucher: pilih router dan profil RouterOS tersinkron, lalu tetapkan kecepatan, masa penggunaan (1 jam, 12 jam, 1 hari, 1 minggu, 2 minggu, atau 1 bulan), perangkat bersama, dan batas kuota. Profil RouterOS baru dapat dibuat dari form yang sama.
@@ -100,10 +102,11 @@ Backend menyediakan `GET /api/data` untuk memuat snapshot data dan `PUT /api/dat
 
 ### Login admin dan portal pelanggan
 
-- Buka aplikasi pertama kali tanpa `ADMIN_USERNAME`/`ADMIN_PASSWORD` untuk mendaftarkan admin pertama. Buat password minimal 12 karakter; pendaftaran awal otomatis ditutup setelah admin dibuat.
+- Buka `/admin` pertama kali tanpa `ADMIN_USERNAME`/`ADMIN_PASSWORD` untuk mendaftarkan admin pertama. Buat password minimal 12 karakter; pendaftaran awal otomatis ditutup setelah admin dibuat.
 - Jika kedua variabel admin diisi di `.env`, login memakai kredensial tersebut dan perubahan kredensial harus dilakukan lewat environment server. Jangan hanya mengisi salah satunya.
-- Domain Billing membuka login admin di `/`; dashboard juga tetap dapat diakses melalui `/admin`. Portal pelanggan—katalog paket, pembelian voucher, login pelanggan, dan detail tagihan—dijalankan sebagai aplikasi terpisah. API `/api/portal/*` di Billing tetap aktif sebagai backend Portal.
-- Login captive hotspot tetap disediakan sebagai file di folder `hotspot/` untuk dipasang ke MikroTik. Arahkan tombol pembelian pada captive page ke domain aplikasi Portal, bukan domain Billing.
+- Halaman utama `/` adalah Portal publik pelanggan dengan tombol Cek tagihan, Beli voucher, dan Login Admin (`/admin`). Pelanggan dapat mengecek tagihan menggunakan ID pelanggan atau nomor WhatsApp terdaftar tanpa login; status pembayaran diambil dari Billing dan diperbarui berkala.
+- Tautan invoice bertanda tangan untuk pelanggan/admin tetap tersedia di `/portal/billing`. Token tautan baru memakai format ringkas, dan token lama tetap diterima sampai kedaluwarsa.
+- Login captive hotspot tetap disediakan sebagai file di folder `hotspot/` untuk dipasang ke MikroTik. Ganti `https://BILLING_DOMAIN/?tab=voucher` pada `hotspot/login.html` dengan URL publik Billing Anda.
 - `APP_ENCRYPTION_KEY` bersifat opsional. Tanpa nilai tersebut, aplikasi membuat kunci acak di `data/router-secrets.key`; file itu harus ikut dicadangkan bersama database. Kunci yang dibuat dapat dilihat/disalin melalui Pengaturan → Admin & Keamanan. Simpan di tempat aman. Jika kunci dikelola environment, rotasi melalui panel terkunci.
 
 ### Menjalankan mode development
@@ -179,8 +182,10 @@ Gunakan `npm run dev` untuk menjalankan Vite (port `3000`) dan backend Express/S
    FONNTE_API_URL="https://api.fonnte.com/send"
    FONNTE_TOKEN=""
 
-   # URL aplikasi SmartBilling Portal yang terpisah; digunakan untuk link tagihan dan payment return.
+   # Origin publik Portal untuk tautan invoice dan return pembayaran.
    APP_URL="https://portal.domain-anda"
+   # Endpoint webhook publik SmartBilling API (bukan origin Portal).
+   PAYMENT_WEBHOOK_URL="https://billing.domain-anda/api/payment/webhook"
    ```
    Pilih gateway dan masukkan kredensial akun setelah login melalui **Admin > Pembayaran**.
 
@@ -229,13 +234,13 @@ SmartBilling tidak menjalankan atau membundel server WhatsApp. Instalasi/akun pr
 
 ## 📶 Panduan Integrasi Login Page Hotspot MikroTik
 
-Template login captive page disediakan di folder `/hotspot`. Halaman captive disajikan lokal oleh MikroTik, sedangkan katalog paket dan checkout voucher aktual menggunakan aplikasi Portal pelanggan yang terpisah. Tombol **Lihat Paket & Beli Voucher** pada template membuka domain Portal tersebut; MikroTik tidak membaca database billing secara langsung.
+Template login captive page disediakan di folder `/hotspot`. Halaman captive disajikan lokal oleh MikroTik, sedangkan katalog paket dan checkout voucher menggunakan Portal publik pada `/?tab=voucher`. Tombol **Lihat Paket & Beli Voucher** membuka Portal pada domain Billing; MikroTik tidak membaca database billing secara langsung.
 
 ### 1. Upload Template ke Router MikroTik
 1. Buka Winbox dan hubungkan ke MikroTik Anda.
 2. Buka menu **Files**.
 3. Drag & drop folder `hotspot` dari komputer Anda ke dalam Winbox, atau letakkan file `login.html`, `status.html`, dan `logout.html` ke direktori `hotspot/`.
-4. Sebelum mengunggah, edit `hotspot/login.html` dan ganti `https://PORTAL_DOMAIN/` dengan alamat publik aplikasi Portal Anda, misalnya `https://portal.contoh.id/`. Jangan gunakan domain Billing untuk tautan ini karena domain tersebut digunakan untuk login admin.
+4. Sebelum mengunggah, edit `hotspot/login.html` dan ganti `https://BILLING_DOMAIN/?tab=voucher` dengan URL publik SmartBilling Anda, misalnya `https://billing.contoh.id/?tab=voucher`.
 
 ### 2. Atur Server Profile Hotspot
 1. Di Winbox, buka **IP** > **Hotspot** > tab **Server Profiles**.
@@ -279,9 +284,9 @@ Menu **Pembayaran** mengatur metode manual dan addon gateway otomatis secara ter
   - **DOKU** — Client ID dan Secret Key; pilih sandbox atau production.
   - **Custom** — adapter Xendit (API Key dan Callback Token) atau Tripay (Merchant Code, API Key, Private Key, dan kode metode pembayaran).
 
-Kredensial online disimpan terenkripsi menggunakan kunci aplikasi yang sama dengan kredensial router. Cadangkan `data/router-secrets.key` bersama database bila `APP_ENCRYPTION_KEY` tidak ditetapkan melalui environment. Gateway otomatis memerlukan `APP_URL` HTTPS yang dapat diakses publik.
+Kredensial online disimpan terenkripsi menggunakan kunci aplikasi yang sama dengan kredensial router. Cadangkan `data/router-secrets.key` bersama database bila `APP_ENCRYPTION_KEY` tidak ditetapkan melalui environment. Gateway otomatis memerlukan `APP_URL` HTTPS untuk return pelanggan dan `PAYMENT_WEBHOOK_URL` HTTPS yang dapat diakses publik di SmartBilling.
 
-Setelah konfigurasi gateway disimpan, daftarkan Notification/Webhook URL yang tampil di menu **Pembayaran** pada dashboard provider. Invoice dan voucher otomatis hanya diproses setelah callback provider tervalidasi dan nominal cocok. Uji dengan sandbox/test mode terlebih dahulu sebelum beralih ke production. Pengaturan melalui panel menjadi konfigurasi aktif; variabel Midtrans di `.env` hanya dipakai sebagai fallback untuk instalasi lama yang belum menyimpan pilihan gateway.
+Setelah konfigurasi gateway disimpan, daftarkan Notification/Webhook URL yang tampil di menu **Pembayaran** pada dashboard provider. Pastikan `PAYMENT_WEBHOOK_URL` menuju host SmartBilling API, sedangkan `APP_URL` menuju Portal pelanggan. Invoice dan voucher otomatis hanya diproses setelah callback provider tervalidasi dan nominal cocok. Uji dengan sandbox/test mode terlebih dahulu sebelum beralih ke production. Pengaturan melalui panel menjadi konfigurasi aktif; variabel Midtrans di `.env` hanya dipakai sebagai fallback untuk instalasi lama yang belum menyimpan pilihan gateway.
 
 ---
 

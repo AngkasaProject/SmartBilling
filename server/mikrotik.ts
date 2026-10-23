@@ -725,14 +725,32 @@ export async function addPppoeSecret(
   router: RouterConnection,
   secret: { name: string; password: string; profile: string; comment?: string; disabled?: boolean }
 ): Promise<void> {
+  if (
+    typeof secret.password !== 'string' ||
+    !secret.password.trim() ||
+    secret.password.trim().toLowerCase() === 'undefined'
+  ) {
+    throw new Error('PPPoE password must be a defined, non-empty string');
+  }
+  const fields: { name: string; password: string; profile: string; comment?: string; disabled?: boolean } = {
+    name: secret.name,
+    password: secret.password,
+    profile: secret.profile,
+  };
+  if (secret.comment !== undefined) fields.comment = secret.comment;
+  if (secret.disabled !== undefined) fields.disabled = secret.disabled;
+
   if (router.apiType === 'rest') {
     const existing = await restRequest<RouterRow[]>(router, '/ppp/secret', 'GET');
     if (existing.some(item => item.name === secret.name)) throw new Error('PPPoE username already exists on router');
-    const body = Object.fromEntries(Object.entries(secret).map(([key, value]) => [
-      key,
-      typeof value === 'boolean' ? String(value) : value,
-    ])) as Record<string, string>;
-    await restRequest(router, '/ppp/secret', 'POST', body);
+    const restFields: Record<string, string> = {
+      name: fields.name,
+      password: fields.password,
+      profile: fields.profile,
+    };
+    if (fields.comment !== undefined) restFields.comment = fields.comment;
+    if (fields.disabled !== undefined) restFields.disabled = String(fields.disabled);
+    await restRequest(router, '/ppp/secret', 'POST', restFields);
     return;
   }
   const client = apiClient(router);
@@ -740,7 +758,7 @@ export async function addPppoeSecret(
     const api = await client.connect();
     const existing = await api.menu('/ppp secret').get() as RouterRow[];
     if (findPppoeSecret(existing, secret.name)) throw new Error('PPPoE username already exists on router');
-    await api.menu('/ppp secret').add(secret);
+    await api.menu('/ppp secret').add(fields);
   } finally {
     await client.close();
   }
@@ -773,10 +791,20 @@ function preservePppoeSecretProfile(
   secret: RouterRow,
   update: { password?: string; profile?: string; disabled?: boolean }
 ): { password?: string; profile?: string; disabled?: boolean } {
-  if (update.profile !== undefined || update.disabled === undefined) return update;
+  const definedUpdate: { password?: string; profile?: string; disabled?: boolean } = {};
+  if (update.password !== undefined) {
+    if (!update.password.trim() || update.password.trim().toLowerCase() === 'undefined') {
+      throw new Error('PPPoE password must be a defined, non-empty string');
+    }
+    definedUpdate.password = update.password;
+  }
+  if (update.profile !== undefined) definedUpdate.profile = update.profile;
+  if (update.disabled !== undefined) definedUpdate.disabled = update.disabled;
+
+  if (definedUpdate.profile !== undefined || definedUpdate.disabled === undefined) return definedUpdate;
   const profile = String(secret.profile || '').trim();
   if (!profile) throw new Error('MikroTik tidak mengembalikan profile PPPoE Secret; perubahan status dibatalkan.');
-  return { ...update, profile };
+  return { ...definedUpdate, profile };
 }
 
 export async function getPppoeSecrets(router: RouterConnection): Promise<PppoeSecretRecord[]> {

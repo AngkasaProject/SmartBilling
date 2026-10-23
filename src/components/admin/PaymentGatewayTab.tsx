@@ -19,6 +19,7 @@ interface PaymentEnvironment {
   tripayPrivateKeyConfigured: boolean;
   tripayPaymentMethod: string;
   appUrlConfigured: boolean;
+  webhookUrlConfigured: boolean;
   checkoutEnabled: boolean;
   webhookUrl: string;
 }
@@ -415,7 +416,12 @@ export const PaymentGatewayTab: React.FC = () => {
 
           {(!environment?.appUrlConfigured && !disableAutomatic) && (
             <p className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-950/30 p-3 text-xs text-amber-100">
-              <AlertCircle className="h-4 w-4 shrink-0" /> Atur APP_URL publik HTTPS di environment server agar checkout dan callback dapat digunakan.
+              <AlertCircle className="h-4 w-4 shrink-0" /> Atur APP_URL publik HTTPS di environment server sebagai alamat Portal untuk tautan dan redirect pelanggan.
+            </p>
+          )}
+          {environment?.appUrlConfigured && !environment.webhookUrlConfigured && !disableAutomatic && (
+            <p className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-950/30 p-3 text-xs text-amber-100">
+              <AlertCircle className="h-4 w-4 shrink-0" /> Atur PAYMENT_WEBHOOK_URL ke endpoint publik SmartBilling, misalnya https://billing.domain-anda/api/payment/webhook. Gateway otomatis nonaktif sampai URL webhook dikonfigurasi.
             </p>
           )}
           {environment?.checkoutEnabled && !disableAutomatic && (

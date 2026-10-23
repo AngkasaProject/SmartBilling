@@ -204,7 +204,22 @@ export const CustomersTab: React.FC<Props> = ({
 
   const handleSaveCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name || !formData.phone || !formData.pppoeUsername || !formData.pppoePassword || !formData.profileName || !formData.routerId) {
+    const pppoePassword = formData.pppoePassword;
+    if (
+      typeof pppoePassword !== 'string' ||
+      !pppoePassword ||
+      pppoePassword.trim().toLowerCase() === 'undefined'
+    ) {
+      setCustomerError('Password PPPoE tidak valid. Masukkan password yang akan disimpan pada MikroTik.');
+      return;
+    }
+    if (
+      !formData.name ||
+      !formData.phone ||
+      !formData.pppoeUsername ||
+      !formData.profileName ||
+      !formData.routerId
+    ) {
       setCustomerError('Nama, WhatsApp, username/password PPPoE, profile router, dan router wajib diisi.');
       return;
     }
@@ -219,7 +234,7 @@ export const CustomersTab: React.FC<Props> = ({
       email: formData.email || '',
       address: formData.address || '',
       pppoeUsername: formData.pppoeUsername || '',
-      pppoePassword: formData.pppoePassword,
+      pppoePassword,
       pppoePackageId: pppoePackages.some(item => item.id === selectedPackageId) ? selectedPackageId : undefined,
       servicePackageName: formData.servicePackageName || undefined,
       profileName: formData.profileName,

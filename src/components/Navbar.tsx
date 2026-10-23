@@ -11,6 +11,7 @@ import {
   TrendingUp,
   Sun,
   Users,
+  Wifi,
   Zap,
   Moon,
 } from 'lucide-react';
@@ -99,6 +100,13 @@ export const Navbar: React.FC<Props> = ({
             <Zap className={`w-3.5 h-3.5 ${isScanning ? 'animate-bounce' : ''}`} />
             <span>{isScanning ? 'Memuat...' : 'Status Router'}</span>
           </Button>
+          <a
+            href="/portal"
+            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border px-3 text-xs font-medium text-foreground transition hover:bg-muted"
+          >
+            <Wifi className="h-3.5 w-3.5" />
+            Portal
+          </a>
           <Button
             variant="outline"
             size="sm"
