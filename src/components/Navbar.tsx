@@ -3,8 +3,10 @@ import { AppSettings, RouterConfig } from '../types';
 import { StorageService } from '../services/storage';
 import {
   CreditCard,
+  LayoutDashboard,
   LogOut,
   MessageSquare,
+  Receipt,
   Server,
   Settings,
   Ticket,
@@ -57,16 +59,21 @@ export const Navbar: React.FC<Props> = ({
   };
 
   const navTabs = [
-    { id: 'dashboard', label: 'Dashboard', icon: Server },
-    { id: 'revenue', label: 'Pendapatan', icon: TrendingUp },
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'customers', label: 'Pelanggan PPPoE', icon: Users },
-    { id: 'invoices', label: 'Tagihan', icon: CreditCard },
     { id: 'vouchers', label: 'Voucher Hotspot', icon: Ticket },
-    { id: 'routers', label: 'Router MikroTik', icon: Zap },
-    { id: 'whatsapp', label: 'WhatsApp API', icon: MessageSquare },
-    { id: 'payment', label: 'Pembayaran', icon: CreditCard },
+    { id: 'invoices', label: 'Tagihan', icon: Receipt },
+    { id: 'revenue', label: 'Pendapatan', icon: TrendingUp },
     { id: 'settings', label: 'Pengaturan', icon: Settings },
   ];
+  const settingsTabs = [
+    { id: 'settings', label: 'Umum', icon: Settings },
+    { id: 'routers', label: 'Router MikroTik', icon: Server },
+    { id: 'whatsapp', label: 'WhatsApp API', icon: MessageSquare },
+    { id: 'payment', label: 'Pembayaran', icon: CreditCard },
+  ];
+  const settingsTabIds = settingsTabs.map(tab => tab.id);
+  const isSettingsPage = settingsTabIds.includes(adminTab);
 
   return (
     <header className="bg-card/95 text-card-foreground border-b border-border sticky top-0 z-40 backdrop-blur">
@@ -124,15 +131,15 @@ export const Navbar: React.FC<Props> = ({
         </div>
       )}
 
-      <nav aria-label="Navigasi admin" className="bg-background/90 border-t border-border px-4 sm:px-6 py-2 overflow-x-auto">
-        <div className="max-w-7xl mx-auto flex min-w-max items-center gap-1.5 text-xs font-medium">
+      <nav aria-label="Navigasi admin" className="bg-background/90 border-t border-border px-4 sm:px-6">
+        <div className="max-w-7xl mx-auto flex w-max min-w-full items-center justify-center gap-1 overflow-x-auto py-2 text-xs font-medium">
           {navTabs.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => onSelectAdminTab(id)}
-              aria-current={adminTab === id ? 'page' : undefined}
+              aria-current={adminTab === id || (id === 'settings' && isSettingsPage) ? 'page' : undefined}
               className={`px-3 py-2 rounded-lg transition flex items-center gap-1.5 whitespace-nowrap ${
-                adminTab === id
+                adminTab === id || (id === 'settings' && isSettingsPage)
                   ? 'bg-secondary text-secondary-foreground font-bold border border-border shadow-sm'
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted'
               }`}
@@ -142,6 +149,26 @@ export const Navbar: React.FC<Props> = ({
             </button>
           ))}
         </div>
+        {isSettingsPage && (
+          <div className="max-w-7xl mx-auto flex w-max min-w-full items-center justify-center gap-1 overflow-x-auto border-t border-border/70 py-1.5" aria-label="Menu Pengaturan">
+            {settingsTabs.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onSelectAdminTab(id)}
+                aria-current={adminTab === id ? 'page' : undefined}
+                className={`flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition ${
+                  adminTab === id
+                    ? 'bg-primary/10 font-semibold text-primary'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </nav>
     </header>
   );

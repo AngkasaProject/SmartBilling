@@ -54,6 +54,7 @@ export interface HotspotProfile {
   speedLimit: string; // e.g. "5M/5M"
   routerId?: string;
   routerProfileName?: string;
+  poolName?: string;
   validityDuration: string; // e.g. "3 Jam", "1 Hari", "7 Hari", "30 Hari"
   validityHours: number;
   price: number;
@@ -81,6 +82,7 @@ export interface HotspotServiceProfile {
   name: string;
   routerId: string;
   routerProfileName: string;
+  poolName?: string;
   speedLimit: string;
   validityPreset: HotspotValidityPreset;
   validityHours: number;

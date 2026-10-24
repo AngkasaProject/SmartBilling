@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" fill="none">
+  <defs>
+    <linearGradient id="background" x1="82" y1="44" x2="1110" y2="621" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#080D1B"/>
+      <stop offset="1" stop-color="#111B35"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="120" y1="126" x2="225" y2="230" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#818CF8"/>
+      <stop offset="1" stop-color="#10B981"/>
+    </linearGradient>
+    <linearGradient id="chart" x1="712" y1="462" x2="1086" y2="300" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6366F1" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#34D399" stop-opacity=".42"/>
+    </linearGradient>
+    <filter id="shadow" x="621" y="105" width="520" height="428" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="24" stdDeviation="24" flood-color="#020617" flood-opacity=".45"/>
+    </filter>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1.5" fill="#64748B" fill-opacity=".2"/>
+    </pattern>
+  </defs>
+  <path fill="url(#background)" d="M0 0h1200v630H0z"/>
+  <path fill="url(#dots)" d="M0 0h1200v630H0z"/>
+  <circle cx="1080" cy="58" r="255" fill="#4F46E5" fill-opacity=".12"/>
+  <circle cx="1090" cy="596" r="230" fill="#10B981" fill-opacity=".08"/>
+
+  <rect x="92" y="106" width="104" height="104" rx="30" fill="url(#brand)"/>
+  <text x="144" y="178" fill="white" font-family="Arial,sans-serif" font-size="63" font-weight="800" text-anchor="middle">S</text>
+  <text x="92" y="280" fill="#F8FAFC" font-family="Arial,sans-serif" font-size="57" font-weight="800" letter-spacing="-2">SmartBilling</text>
+  <text x="94" y="333" fill="#C7D2FE" font-family="Arial,sans-serif" font-size="24" font-weight="600">Kelola layanan internet, lebih sederhana.</text>
+  <text x="94" y="389" fill="#94A3B8" font-family="Arial,sans-serif" font-size="19">Pelanggan PPPoE · Voucher Hotspot · Tagihan</text>
+  <text x="94" y="420" fill="#94A3B8" font-family="Arial,sans-serif" font-size="19">Pendapatan · Integrasi MikroTik</text>
+  <rect x="94" y="468" width="184" height="44" rx="22" fill="#312E81" fill-opacity=".78" stroke="#6366F1" stroke-opacity=".6"/>
+  <circle cx="119" cy="490" r="5" fill="#34D399"/>
+  <text x="136" y="496" fill="#E0E7FF" font-family="Arial,sans-serif" font-size="15" font-weight="700">ISP BILLING PLATFORM</text>
+
+  <g filter="url(#shadow)">
+    <rect x="656" y="133" width="424" height="352" rx="24" fill="#0B1222" stroke="#334155"/>
+    <path d="M680 158h376" stroke="#1E293B"/>
+    <circle cx="687" cy="146" r="4" fill="#F87171"/>
+    <circle cx="702" cy="146" r="4" fill="#FBBF24"/>
+    <circle cx="717" cy="146" r="4" fill="#34D399"/>
+    <rect x="681" y="178" width="374" height="62" rx="14" fill="#111B35"/>
+    <rect x="699" y="194" width="30" height="30" rx="9" fill="#312E81"/>
+    <path d="M707 209h14M714 202v14" stroke="#A5B4FC" stroke-width="2.5" stroke-linecap="round"/>
+    <text x="743" y="202" fill="#94A3B8" font-family="Arial,sans-serif" font-size="12">TOTAL PENDAPATAN</text>
+    <text x="743" y="224" fill="#F8FAFC" font-family="Arial,sans-serif" font-size="18" font-weight="700">Monitoring dalam satu dashboard</text>
+    <rect x="681" y="256" width="174" height="88" rx="14" fill="#111B35"/>
+    <rect x="871" y="256" width="184" height="88" rx="14" fill="#111B35"/>
+    <text x="699" y="281" fill="#94A3B8" font-family="Arial,sans-serif" font-size="12">PELANGGAN AKTIF</text>
+    <text x="699" y="319" fill="#F8FAFC" font-family="Arial,sans-serif" font-size="31" font-weight="700">PPPoE</text>
+    <text x="889" y="281" fill="#94A3B8" font-family="Arial,sans-serif" font-size="12">LAYANAN HOTSPOT</text>
+    <text x="889" y="319" fill="#F8FAFC" font-family="Arial,sans-serif" font-size="26" font-weight="700">Voucher</text>
+    <rect x="681" y="360" width="374" height="101" rx="14" fill="#111B35"/>
+    <text x="699" y="384" fill="#94A3B8" font-family="Arial,sans-serif" font-size="12">KONEKTIVITAS JARINGAN</text>
+    <path d="M699 438 743 418l41 11 41-36 42 17 42-25 42 11 44-28 43 8" stroke="url(#brand)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M699 438 743 418l41 11 41-36 42 17 42-25 42 11 44-28 43 8v61H699z" fill="url(#chart)"/>
+  </g>
+</svg>

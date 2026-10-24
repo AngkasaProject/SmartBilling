@@ -446,10 +446,83 @@ export async function addPppProfile(
   }
 }
 
+export async function updatePppProfile(
+  router: RouterConnection,
+  existingName: string,
+  profile: { name: string; localAddress: string; remoteAddress: string; rateLimit: string; dnsServers: string }
+): Promise<void> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ppp/profile', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ppp profile').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const existing = rows.find(row => row.name === existingName);
+  if (!existing) throw new Error(`PPP profile "${existingName}" was not found on the router`);
+  if (profile.name !== existingName && rows.some(row => row.name === profile.name)) {
+    throw new Error(`PPP profile "${profile.name}" already exists on the router`);
+  }
+  const id = String(existing['.id'] || existing.id || '');
+  if (!id) throw new Error(`Router did not return an ID for PPP profile "${existingName}"`);
+  const fields: Record<string, string> = {
+    name: profile.name,
+    'local-address': profile.localAddress,
+    'remote-address': profile.remoteAddress,
+    'rate-limit': profile.rateLimit,
+    'dns-server': profile.dnsServers,
+  };
+  if (router.apiType === 'rest') {
+    await restRequest(router, `/ppp/profile/${encodeURIComponent(id)}`, 'PUT', fields);
+    return;
+  }
+  const client = apiClient(router);
+  try {
+    const api = await client.connect();
+    await api.menu('/ppp profile').where('.id', id).update(fields);
+  } finally {
+    await client.close();
+  }
+}
+
+export async function deletePppProfile(router: RouterConnection, name: string): Promise<void> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ppp/profile', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ppp profile').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const existing = rows.find(row => row.name === name);
+  if (!existing) throw new Error(`PPP profile "${name}" was not found on the router`);
+  const id = String(existing['.id'] || existing.id || '');
+  if (!id) throw new Error(`Router did not return an ID for PPP profile "${name}"`);
+  if (router.apiType === 'rest') {
+    await restRequest(router, `/ppp/profile/${encodeURIComponent(id)}`, 'DELETE');
+    return;
+  }
+  const client = apiClient(router);
+  try {
+    const api = await client.connect();
+    await api.menu('/ppp profile').where('.id', id).delete();
+  } finally {
+    await client.close();
+  }
+}
+
 export async function getHotspotUserProfiles(router: RouterConnection): Promise<Array<{
   name: string;
   rateLimit: string;
   sharedUsers: number;
+  addressPool: string;
   sessionTimeout: string;
   idleTimeout: string;
 }>> {
@@ -469,6 +542,7 @@ export async function getHotspotUserProfiles(router: RouterConnection): Promise<
     name: String(row.name || ''),
     rateLimit: String(row['rate-limit'] || row.rateLimit || ''),
     sharedUsers: Number(row['shared-users'] || row.sharedUsers || 1),
+    addressPool: String(row['address-pool'] || row.addressPool || '').replace(/^none$/i, ''),
     sessionTimeout: String(row['session-timeout'] || row.sessionTimeout || ''),
     idleTimeout: String(row['idle-timeout'] || row.idleTimeout || ''),
   })).filter(profile => profile.name);
@@ -476,11 +550,12 @@ export async function getHotspotUserProfiles(router: RouterConnection): Promise<
 
 export async function addHotspotUserProfile(
   router: RouterConnection,
-  profile: { name: string; rateLimit?: string; sharedUsers?: number; sessionTimeout?: string; idleTimeout?: string }
+  profile: { name: string; rateLimit?: string; sharedUsers?: number; addressPool?: string; sessionTimeout?: string; idleTimeout?: string }
 ): Promise<void> {
   const fields: Record<string, string> = { name: profile.name };
   if (profile.rateLimit) fields['rate-limit'] = profile.rateLimit;
   if (profile.sharedUsers) fields['shared-users'] = String(profile.sharedUsers);
+  if (profile.addressPool) fields['address-pool'] = profile.addressPool;
   if (profile.sessionTimeout) fields['session-timeout'] = profile.sessionTimeout;
   if (profile.idleTimeout) fields['idle-timeout'] = profile.idleTimeout;
   if (router.apiType === 'rest') {
@@ -491,6 +566,79 @@ export async function addHotspotUserProfile(
   try {
     const api = await client.connect();
     await api.menu('/ip hotspot user profile').add(fields);
+  } finally {
+    await client.close();
+  }
+}
+
+export async function updateHotspotUserProfile(
+  router: RouterConnection,
+  existingName: string,
+  profile: { name: string; rateLimit: string; sharedUsers: number; addressPool: string; sessionTimeout: string; idleTimeout: string }
+): Promise<void> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ip/hotspot/user/profile', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ip hotspot user profile').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const existing = rows.find(row => row.name === existingName);
+  if (!existing) throw new Error(`Hotspot user profile "${existingName}" was not found on the router`);
+  if (profile.name !== existingName && rows.some(row => row.name === profile.name)) {
+    throw new Error(`Hotspot user profile "${profile.name}" already exists on the router`);
+  }
+  const id = String(existing['.id'] || existing.id || '');
+  if (!id) throw new Error(`Router did not return an ID for hotspot user profile "${existingName}"`);
+  const fields: Record<string, string> = {
+    name: profile.name,
+    'rate-limit': profile.rateLimit,
+    'shared-users': String(profile.sharedUsers),
+    'address-pool': profile.addressPool || 'none',
+    'session-timeout': profile.sessionTimeout,
+    'idle-timeout': profile.idleTimeout,
+  };
+  if (router.apiType === 'rest') {
+    await restRequest(router, `/ip/hotspot/user/profile/${encodeURIComponent(id)}`, 'PUT', fields);
+    return;
+  }
+  const client = apiClient(router);
+  try {
+    const api = await client.connect();
+    await api.menu('/ip hotspot user profile').where('.id', id).update(fields);
+  } finally {
+    await client.close();
+  }
+}
+
+export async function deleteHotspotUserProfile(router: RouterConnection, name: string): Promise<void> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ip/hotspot/user/profile', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ip hotspot user profile').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const existing = rows.find(row => row.name === name);
+  if (!existing) throw new Error(`Hotspot user profile "${name}" was not found on the router`);
+  const id = String(existing['.id'] || existing.id || '');
+  if (!id) throw new Error(`Router did not return an ID for hotspot user profile "${name}"`);
+  if (router.apiType === 'rest') {
+    await restRequest(router, `/ip/hotspot/user/profile/${encodeURIComponent(id)}`, 'DELETE');
+    return;
+  }
+  const client = apiClient(router);
+  try {
+    const api = await client.connect();
+    await api.menu('/ip hotspot user profile').where('.id', id).delete();
   } finally {
     await client.close();
   }
@@ -641,12 +789,16 @@ export async function deleteRouterServiceRecord(
 
 export async function ensureHotspotUserProfile(
   router: RouterConnection,
-  profile: { name: string; rateLimit: string; sharedUsers: number }
+  profile: { name: string; rateLimit: string; sharedUsers: number; addressPool?: string }
 ): Promise<void> {
   const profiles = await getHotspotUserProfiles(router);
   const existing = profiles.find(item => item.name === profile.name);
   if (existing) {
-    if (existing.rateLimit !== profile.rateLimit || existing.sharedUsers !== profile.sharedUsers) {
+    if (
+      existing.rateLimit !== profile.rateLimit ||
+      existing.sharedUsers !== profile.sharedUsers ||
+      (profile.addressPool !== undefined && existing.addressPool !== profile.addressPool)
+    ) {
       throw new Error(`Hotspot profile "${profile.name}" already exists with different settings`);
     }
     return;
@@ -656,6 +808,7 @@ export async function ensureHotspotUserProfile(
       name: profile.name,
       'rate-limit': profile.rateLimit,
       'shared-users': String(profile.sharedUsers),
+      ...(profile.addressPool ? { 'address-pool': profile.addressPool } : {}),
     });
     return;
   }
@@ -666,6 +819,7 @@ export async function ensureHotspotUserProfile(
       name: profile.name,
       'rate-limit': profile.rateLimit,
       'shared-users': profile.sharedUsers,
+      ...(profile.addressPool ? { 'address-pool': profile.addressPool } : {}),
     });
   } finally {
     await client.close();
@@ -716,6 +870,139 @@ export async function addHotspotUser(
   try {
     const api = await client.connect();
     await api.menu('/ip hotspot user').add(fields);
+  } finally {
+    await client.close();
+  }
+}
+
+export interface HotspotUserRecord {
+  id: string;
+  name: string;
+  password: string;
+  profile: string;
+  comment: string;
+  disabled: boolean;
+  limitUptime: string;
+  limitBytesTotal: number;
+  bytesIn: number;
+  bytesOut: number;
+  active: boolean;
+  sessionUptime: string;
+  address: string;
+  macAddress: string;
+}
+
+export async function getHotspotUsers(router: RouterConnection): Promise<HotspotUserRecord[]> {
+  const [users, activeSessions] = await Promise.all([
+    router.apiType === 'rest'
+      ? restRequest<RouterRow[]>(router, '/ip/hotspot/user', 'GET')
+      : (async () => {
+        const client = apiClient(router);
+        try {
+          const api = await client.connect();
+          return await api.menu('/ip hotspot user').get() as RouterRow[];
+        } finally {
+          await client.close();
+        }
+      })(),
+    router.apiType === 'rest'
+      ? restRequest<RouterRow[]>(router, '/ip/hotspot/active', 'GET')
+      : (async () => {
+        const client = apiClient(router);
+        try {
+          const api = await client.connect();
+          return await api.menu('/ip hotspot active').get() as RouterRow[];
+        } finally {
+          await client.close();
+        }
+      })(),
+  ]);
+  const activeByName = new Map(activeSessions.map(session => [
+    String(session.user || session.name || ''),
+    session,
+  ]));
+  const readNumber = (value: unknown): number => {
+    const number = Number(value || 0);
+    return Number.isSafeInteger(number) && number >= 0 ? number : 0;
+  };
+  return users
+    .map(row => {
+      const name = String(row.name || '');
+      const active = activeByName.get(name);
+      const id = String(row['.id'] || row.id || '');
+      return {
+        id: id || name,
+        name,
+        password: row.password && row.password !== '*' ? String(row.password) : '',
+        profile: String(row.profile || ''),
+        comment: String(row.comment || ''),
+        disabled: row.disabled === true || row.disabled === 'true' || row.disabled === 'yes',
+        limitUptime: String(row['limit-uptime'] || row.limitUptime || ''),
+        limitBytesTotal: readNumber(row['limit-bytes-total'] || row.limitBytesTotal),
+        bytesIn: readNumber(row['bytes-in'] || row.bytesIn),
+        bytesOut: readNumber(row['bytes-out'] || row.bytesOut),
+        active: Boolean(active),
+        sessionUptime: String(active?.uptime || ''),
+        address: String(active?.address || ''),
+        macAddress: String(active?.['mac-address'] || active?.macAddress || ''),
+      };
+    })
+    .filter(user => user.name);
+}
+
+export async function deleteHotspotUser(router: RouterConnection, name: string): Promise<void> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ip/hotspot/user', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ip hotspot user').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const existing = rows.find(row => row.name === name);
+  if (!existing) throw new Error(`Hotspot user "${name}" was not found on the router`);
+  const id = String(existing['.id'] || existing.id || '');
+  if (!id) throw new Error(`Router did not return an ID for hotspot user "${name}"`);
+  if (router.apiType === 'rest') {
+    await restRequest(router, `/ip/hotspot/user/${encodeURIComponent(id)}`, 'DELETE');
+    return;
+  }
+  const client = apiClient(router);
+  try {
+    const api = await client.connect();
+    await api.menu('/ip hotspot user').where('.id', id).delete();
+  } finally {
+    await client.close();
+  }
+}
+
+export async function disconnectHotspotUser(router: RouterConnection, name: string): Promise<void> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ip/hotspot/active', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ip hotspot active').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const session = rows.find(row => String(row.user || row.name || '') === name);
+  if (!session) throw new Error(`Active Hotspot session for "${name}" was not found on the router`);
+  const id = String(session['.id'] || session.id || '');
+  if (!id) throw new Error(`Router did not return an ID for active Hotspot session "${name}"`);
+  if (router.apiType === 'rest') {
+    await restRequest(router, `/ip/hotspot/active/${encodeURIComponent(id)}`, 'DELETE');
+    return;
+  }
+  const client = apiClient(router);
+  try {
+    const api = await client.connect();
+    await api.menu('/ip hotspot active').where('.id', id).delete();
   } finally {
     await client.close();
   }

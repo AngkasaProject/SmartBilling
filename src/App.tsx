@@ -46,6 +46,42 @@ function AppContent() {
     StorageService.getSettings(),
   );
 
+  useEffect(() => {
+    const name = appSettings.brandName.trim() || appSettings.appName.trim() || "SmartBilling";
+    const initial = Array.from(name)[0]?.toLocaleUpperCase() || "S";
+    const escapedInitial = initial.replace(/[&<>"']/g, (character) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&apos;",
+    })[character] || character);
+    const icon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#10b981"/></linearGradient></defs><rect width="64" height="64" rx="18" fill="#0b1222"/><rect x="5" y="5" width="54" height="54" rx="15" fill="url(#g)"/><text x="32" y="44" fill="#fff" font-family="Arial,sans-serif" font-size="39" font-weight="800" text-anchor="middle">${escapedInitial}</text></svg>`;
+    document.title = `${name} — ISP Billing & Hotspot`;
+    const description = appSettings.tagline.trim()
+      ? `${appSettings.tagline.trim()} — Kelola pelanggan PPPoE, voucher hotspot, dan tagihan dengan ${name}.`
+      : `Kelola pelanggan PPPoE, voucher hotspot, tagihan, pendapatan, dan router MikroTik dengan ${name}.`;
+    const socialImage = new URL("/og-image.svg", window.location.origin).href;
+    const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]') || document.createElement("link");
+    favicon.rel = "icon";
+    favicon.type = "image/svg+xml";
+    favicon.href = `data:image/svg+xml,${encodeURIComponent(icon)}`;
+    if (!favicon.isConnected) document.head.appendChild(favicon);
+
+    const updateMeta = (selector: string, content: string) => {
+      const meta = document.querySelector<HTMLMetaElement>(selector);
+      if (meta) meta.content = content;
+    };
+    updateMeta('meta[property="og:title"]', `${name} — ISP Billing & Hotspot`);
+    updateMeta('meta[name="description"]', description);
+    updateMeta('meta[property="og:description"]', description);
+    updateMeta('meta[property="og:site_name"]', name);
+    updateMeta('meta[property="og:image"]', socialImage);
+    updateMeta('meta[name="twitter:description"]', description);
+    updateMeta('meta[name="twitter:image"]', socialImage);
+    updateMeta('meta[name="twitter:title"]', `${name} — ISP Billing & Hotspot`);
+  }, [appSettings.appName, appSettings.brandName, appSettings.tagline]);
+
   // App Data
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);

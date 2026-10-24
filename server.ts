@@ -21,6 +21,8 @@ import {
   getAppSettingsDb,
   saveRouterCredentialDb,
   saveAppDataCollectionDb,
+  saveHotspotProfileDataDb,
+  savePppoeProfileDataDb,
   saveAppDataDb,
   savePublicPaymentUpdateDb,
   saveVoucherOrderDb,
@@ -52,10 +54,17 @@ import {
   getRouterInterfaceTraffic,
   getRouterPools,
   getPppProfiles,
+  updatePppProfile,
+  deletePppProfile,
   getHotspotUserProfiles,
+  getHotspotUsers,
   getHotspotServerProfiles,
   addPppProfile,
   addHotspotUserProfile,
+  updateHotspotUserProfile,
+  deleteHotspotUserProfile,
+  deleteHotspotUser,
+  disconnectHotspotUser,
   addHotspotServerProfile,
   addHotspotServer,
   getRouterServiceRecords,
@@ -1306,6 +1315,7 @@ async function startServer() {
       name: profile.routerProfileName,
       rateLimit: profile.speedLimit,
       sharedUsers: profile.sharedUsers,
+      ...(profile.poolName ? { addressPool: profile.poolName } : {}),
     });
     await addHotspotUser(router, {
       name: voucher.code,
@@ -2291,13 +2301,14 @@ async function startServer() {
     typeof value === 'string' && Object.prototype.hasOwnProperty.call(hotspotValidityHours, value);
 
   app.post('/api/admin/hotspot/service-profiles', requireAdminSession, async (req, res) => {
-    const { id, name, routerId, routerProfileName, speedLimit, validityPreset, sharedUsers, dataLimitMb } = req.body || {};
+    const { id, name, routerId, routerProfileName, poolName, speedLimit, validityPreset, sharedUsers, dataLimitMb } = req.body || {};
     if (
       (id !== undefined && (typeof id !== 'string' || id.length > 128)) ||
       typeof name !== 'string' || !name.trim() || name.length > 64 ||
       typeof routerId !== 'string' || !routerId ||
-      typeof routerProfileName !== 'string' || !/^[A-Za-z0-9_. -]{1,64}$/.test(routerProfileName) ||
-      typeof speedLimit !== 'string' || !/^\d+[KMGkmg]\/\d+[KMGkmg]$/.test(speedLimit) ||
+      typeof routerProfileName !== 'string' || !routerProfileName.trim() || routerProfileName.length > 64 ||
+      typeof poolName !== 'string' || poolName.length > 128 ||
+      typeof speedLimit !== 'string' || speedLimit.length > 256 ||
       !isHotspotValidityPreset(validityPreset) ||
       !Number.isInteger(sharedUsers) || sharedUsers < 1 || sharedUsers > 100 ||
       (dataLimitMb !== undefined && (!Number.isSafeInteger(dataLimitMb) || dataLimitMb < 0 || dataLimitMb > 1_000_000_000))
@@ -2307,7 +2318,16 @@ async function startServer() {
     try {
       const router = await resolveRouterConnection(routerId);
       if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
-      await ensureHotspotUserProfile(router, { name: routerProfileName, rateLimit: speedLimit, sharedUsers });
+      if (poolName) {
+        const pools = await getRouterPools(router);
+        if (!pools.includes(poolName)) return res.status(400).json({ error: 'IP pool tidak ditemukan pada router yang dipilih' });
+      }
+      await ensureHotspotUserProfile(router, {
+        name: routerProfileName,
+        rateLimit: speedLimit,
+        sharedUsers,
+        ...(poolName ? { addressPool: poolName } : {}),
+      });
       const stored = await getAppDataDb();
       const serviceProfiles = stored.data.hotspotServiceProfiles || [];
       const profileId = id || randomUUID();
@@ -2316,6 +2336,7 @@ async function startServer() {
         name: name.trim(),
         routerId,
         routerProfileName,
+        poolName: poolName || undefined,
         speedLimit,
         validityPreset,
         validityHours: hotspotValidityHours[validityPreset],
@@ -2362,6 +2383,7 @@ async function startServer() {
           serviceProfileId: serviceProfile.id,
           routerId: serviceProfile.routerId,
           routerProfileName: serviceProfile.routerProfileName,
+          poolName: serviceProfile.poolName,
           speedLimit: serviceProfile.speedLimit,
           validityDuration: serviceProfile.validityPreset,
           validityHours: serviceProfile.validityHours,
@@ -2455,7 +2477,113 @@ async function startServer() {
     try {
       const router = await resolveRouterConnection(routerId);
       if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
-      res.json({ profiles: await getHotspotUserProfiles(router) });
+      const [profiles, pools] = await Promise.all([getHotspotUserProfiles(router), getRouterPools(router)]);
+      res.json({ profiles, pools });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.put('/api/mikrotik/hotspot/user-profiles', requireAdminSession, async (req, res) => {
+    const { routerId, existingName, profile } = req.body || {};
+    if (
+      typeof routerId !== 'string' || !routerId ||
+      typeof existingName !== 'string' || !existingName || existingName.length > 64 ||
+      !isRecord(profile) ||
+      typeof profile.name !== 'string' || !profile.name.trim() || profile.name.length > 64 ||
+      typeof profile.rateLimit !== 'string' || profile.rateLimit.length > 256 ||
+      typeof profile.sharedUsers !== 'number' || !Number.isInteger(profile.sharedUsers) || profile.sharedUsers < 1 || profile.sharedUsers > 1000 ||
+      typeof profile.addressPool !== 'string' || profile.addressPool.length > 128 ||
+      typeof profile.sessionTimeout !== 'string' || profile.sessionTimeout.length > 64 ||
+      typeof profile.idleTimeout !== 'string' || profile.idleTimeout.length > 64 ||
+      !isHotspotValidityPreset(profile.validityPreset) ||
+      (profile.dataLimitMb !== undefined && (typeof profile.dataLimitMb !== 'number' || !Number.isSafeInteger(profile.dataLimitMb) || profile.dataLimitMb < 0 || profile.dataLimitMb > 1_000_000_000))
+    ) {
+      return res.status(400).json({ error: 'Data user profile Hotspot tidak valid' });
+    }
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
+      const updatedProfile = {
+        name: profile.name,
+        rateLimit: profile.rateLimit,
+        sharedUsers: profile.sharedUsers,
+        addressPool: profile.addressPool,
+        sessionTimeout: profile.sessionTimeout,
+        idleTimeout: profile.idleTimeout,
+      };
+      await updateHotspotUserProfile(router, existingName, updatedProfile);
+      const stored = await getAppDataDb();
+      const serviceProfiles = stored.data.hotspotServiceProfiles || [];
+      const linkedServiceProfileIds = new Set<string>();
+      const updatedServiceProfiles = serviceProfiles.map(serviceProfile => {
+        if (serviceProfile.routerId !== routerId || serviceProfile.routerProfileName !== existingName) return serviceProfile;
+        linkedServiceProfileIds.add(serviceProfile.id);
+        return {
+          ...serviceProfile,
+          routerProfileName: updatedProfile.name,
+          speedLimit: updatedProfile.rateLimit,
+          sharedUsers: updatedProfile.sharedUsers,
+          poolName: updatedProfile.addressPool || undefined,
+          validityPreset: profile.validityPreset as HotspotValidityPreset,
+          validityHours: hotspotValidityHours[profile.validityPreset as HotspotValidityPreset],
+          dataLimitMb: typeof profile.dataLimitMb === 'number' && profile.dataLimitMb > 0 ? profile.dataLimitMb : undefined,
+        };
+      });
+      const packages = stored.data.hotspotProfiles || [];
+      const hasLinkedPackages = packages.some(packageProfile =>
+        (packageProfile.serviceProfileId && linkedServiceProfileIds.has(packageProfile.serviceProfileId)) ||
+        (packageProfile.routerId === routerId && packageProfile.routerProfileName === existingName)
+      );
+      if (linkedServiceProfileIds.size || hasLinkedPackages) {
+        const updatedPackages = packages.map(packageProfile =>
+          (packageProfile.serviceProfileId && linkedServiceProfileIds.has(packageProfile.serviceProfileId)) ||
+          (packageProfile.routerId === routerId && packageProfile.routerProfileName === existingName)
+            ? {
+              ...packageProfile,
+              routerProfileName: updatedProfile.name,
+              speedLimit: updatedProfile.rateLimit,
+              sharedUsers: updatedProfile.sharedUsers,
+              poolName: updatedProfile.addressPool || undefined,
+              validityDuration: profile.validityPreset as HotspotValidityPreset,
+              validityHours: hotspotValidityHours[profile.validityPreset as HotspotValidityPreset],
+              dataLimitMb: typeof profile.dataLimitMb === 'number' && profile.dataLimitMb > 0 ? profile.dataLimitMb : undefined,
+            }
+            : packageProfile
+        );
+        await saveHotspotProfileDataDb(
+          updatedServiceProfiles,
+          updatedPackages
+        );
+      }
+      res.json({ status: 'success' });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete('/api/mikrotik/hotspot/user-profiles', requireAdminSession, async (req, res) => {
+    const { routerId, name } = req.body || {};
+    if (typeof routerId !== 'string' || !routerId || typeof name !== 'string' || !name || name.length > 64) {
+      return res.status(400).json({ error: 'Router dan nama user profile wajib diisi' });
+    }
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
+      await deleteHotspotUserProfile(router, name);
+      const stored = await getAppDataDb();
+      const serviceProfiles = stored.data.hotspotServiceProfiles || [];
+      const removedServiceProfileIds = new Set(serviceProfiles
+        .filter(profile => profile.routerId === routerId && profile.routerProfileName === name)
+        .map(profile => profile.id));
+      await saveHotspotProfileDataDb(
+        serviceProfiles.filter(profile => !removedServiceProfileIds.has(profile.id)),
+        (stored.data.hotspotProfiles || []).filter(profile =>
+          (!profile.serviceProfileId || !removedServiceProfileIds.has(profile.serviceProfileId)) &&
+          !(profile.routerId === routerId && profile.routerProfileName === name)
+        )
+      );
+      res.json({ status: 'success' });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -2492,20 +2620,130 @@ async function startServer() {
     }
   });
 
-  app.post('/api/mikrotik/hotspot/user-profiles', requireAdminSession, async (req, res) => {
-    const { routerId, profile } = req.body || {};
-    if (
-      typeof routerId !== 'string' || !isRecord(profile) ||
-      typeof profile.name !== 'string' || !/^[A-Za-z0-9_. -]{1,64}$/.test(profile.name) ||
-      ['rateLimit', 'sessionTimeout', 'idleTimeout'].some(key =>
-        profile[key] !== undefined && (typeof profile[key] !== 'string' || profile[key].length > 128)
-      ) ||
-      (profile.sharedUsers !== undefined && (!Number.isInteger(profile.sharedUsers) || Number(profile.sharedUsers) < 1 || Number(profile.sharedUsers) > 1000))
-    ) return res.status(400).json({ error: 'Konfigurasi Hotspot User Profile tidak valid' });
+  app.get('/api/mikrotik/hotspot/users', requireAdminSession, async (req, res) => {
+    const routerId = String(req.query.routerId || '');
     try {
       const router = await resolveRouterConnection(routerId);
       if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
-      await addHotspotUserProfile(router, profile as Parameters<typeof addHotspotUserProfile>[1]);
+      const [users, routerProfiles, stored] = await Promise.all([
+        getHotspotUsers(router),
+        getHotspotUserProfiles(router),
+        getAppDataDb(),
+      ]);
+      const billingVouchers = stored.data.vouchers || [];
+      const billingProfiles = stored.data.hotspotProfiles || [];
+      const profilesByName = new Map(routerProfiles.map(profile => [profile.name, profile]));
+      const vouchers = users.map(user => {
+        const billingVoucher = billingVouchers.find(voucher =>
+          voucher.code === user.name && (!voucher.routerId || voucher.routerId === routerId)
+        );
+        const billingProfile = billingProfiles.find(profile =>
+          profile.routerId === routerId && profile.routerProfileName === user.profile
+        );
+        const routerProfile = profilesByName.get(user.profile);
+        return {
+          ...(billingVoucher || {}),
+          id: `${routerId}:${user.id}`,
+          code: user.name,
+          password: user.password || billingVoucher?.password || '',
+          profileId: user.profile,
+          profileName: user.profile || 'Tanpa profile',
+          price: billingVoucher?.price || billingProfile?.price || 0,
+          validityHours: billingVoucher?.validityHours || billingProfile?.validityHours || 0,
+          validityDuration: user.limitUptime || billingVoucher?.validityDuration || 'Tanpa batas',
+          speedLimit: routerProfile?.rateLimit || billingVoucher?.speedLimit || billingProfile?.speedLimit || '',
+          status: user.disabled ? 'expired' : user.active ? 'active' : 'unused',
+          batchCode: user.comment || 'MikroTik',
+          createdAt: billingVoucher?.createdAt || 'Data langsung dari MikroTik',
+          routerId,
+          routerUserId: user.id,
+          disabled: user.disabled,
+          active: user.active,
+          limitUptime: user.limitUptime,
+          limitBytesTotal: user.limitBytesTotal,
+          bytesIn: user.bytesIn,
+          bytesOut: user.bytesOut,
+          sessionUptime: user.sessionUptime,
+          address: user.address,
+          macAddress: user.macAddress,
+          ...(billingVoucher?.customerPhone ? { customerPhone: billingVoucher.customerPhone } : {}),
+        };
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ vouchers });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete('/api/mikrotik/hotspot/users', requireAdminSession, async (req, res) => {
+    const { routerId, name } = req.body || {};
+    if (typeof routerId !== 'string' || !routerId || typeof name !== 'string' || !name || name.length > 128) {
+      return res.status(400).json({ error: 'Router dan username voucher wajib diisi' });
+    }
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
+      const stored = await getAppDataDb();
+      const hasPendingPayment = (stored.data.transactions || []).some(transaction =>
+        transaction.orderType === 'voucher' &&
+        transaction.voucherCode === name &&
+        transaction.status === 'pending'
+      );
+      if (hasPendingPayment) {
+        return res.status(409).json({ error: 'Voucher masih memiliki pembayaran yang menunggu. Selesaikan atau batalkan pembayaran sebelum menghapus voucher.' });
+      }
+      await deleteHotspotUser(router, name);
+      await saveAppDataCollectionDb('vouchers', (stored.data.vouchers || []).filter(voucher =>
+        voucher.code !== name || (voucher.routerId && voucher.routerId !== routerId)
+      ));
+      res.json({ status: 'success' });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete('/api/mikrotik/hotspot/active', requireAdminSession, async (req, res) => {
+    const { routerId, name } = req.body || {};
+    if (typeof routerId !== 'string' || !routerId || typeof name !== 'string' || !name || name.length > 128) {
+      return res.status(400).json({ error: 'Router dan username Hotspot wajib diisi' });
+    }
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
+      await disconnectHotspotUser(router, name);
+      res.json({ status: 'success' });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/mikrotik/hotspot/user-profiles', requireAdminSession, async (req, res) => {
+    const { routerId, profile } = req.body || {};
+    if (
+      typeof routerId !== 'string' || !routerId || !isRecord(profile) ||
+      typeof profile.name !== 'string' || !profile.name.trim() || profile.name.length > 64 ||
+      (profile.rateLimit !== undefined && (typeof profile.rateLimit !== 'string' || profile.rateLimit.length > 256)) ||
+      (profile.sharedUsers !== undefined && (typeof profile.sharedUsers !== 'number' || !Number.isInteger(profile.sharedUsers) || profile.sharedUsers < 1 || profile.sharedUsers > 1000)) ||
+      (profile.addressPool !== undefined && (typeof profile.addressPool !== 'string' || profile.addressPool.length > 128)) ||
+      (profile.sessionTimeout !== undefined && (typeof profile.sessionTimeout !== 'string' || profile.sessionTimeout.length > 64)) ||
+      (profile.idleTimeout !== undefined && (typeof profile.idleTimeout !== 'string' || profile.idleTimeout.length > 64))
+    ) return res.status(400).json({ error: 'Data user profile Hotspot tidak valid' });
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
+      if (typeof profile.addressPool === 'string' && profile.addressPool && profile.addressPool !== 'none') {
+        const pools = await getRouterPools(router);
+        if (!pools.includes(profile.addressPool)) return res.status(400).json({ error: 'Address pool tidak ditemukan pada router' });
+      }
+      await addHotspotUserProfile(router, {
+        name: profile.name,
+        rateLimit: typeof profile.rateLimit === 'string' ? profile.rateLimit : '',
+        sharedUsers: typeof profile.sharedUsers === 'number' ? profile.sharedUsers : 1,
+        addressPool: typeof profile.addressPool === 'string' ? profile.addressPool : '',
+        sessionTimeout: typeof profile.sessionTimeout === 'string' ? profile.sessionTimeout : '',
+        idleTimeout: typeof profile.idleTimeout === 'string' ? profile.idleTimeout : '',
+      });
       res.status(201).json({ status: 'success' });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3592,11 +3830,12 @@ async function startServer() {
   app.post('/api/mikrotik/pppoe/profiles', requireAdminSession, async (req, res) => {
     const { routerId, profile } = req.body || {};
     if (
-      typeof routerId !== 'string' || !isRecord(profile) ||
+      typeof routerId !== 'string' || !routerId || !isRecord(profile) ||
       typeof profile.name !== 'string' || !/^[A-Za-z0-9_. -]{1,64}$/.test(profile.name) ||
-      ['localAddress', 'remoteAddress', 'rateLimit', 'dnsServers'].some(key =>
-        profile[key] !== undefined && (typeof profile[key] !== 'string' || profile[key].length > 128)
-      )
+      (profile.localAddress !== undefined && (typeof profile.localAddress !== 'string' || profile.localAddress.length > 128)) ||
+      (profile.remoteAddress !== undefined && (typeof profile.remoteAddress !== 'string' || profile.remoteAddress.length > 128)) ||
+      (profile.rateLimit !== undefined && (typeof profile.rateLimit !== 'string' || profile.rateLimit.length > 128)) ||
+      (profile.dnsServers !== undefined && (typeof profile.dnsServers !== 'string' || profile.dnsServers.length > 128))
     ) return res.status(400).json({ error: 'Konfigurasi PPP Profile tidak valid' });
     try {
       const router = await resolveRouterConnection(routerId);
@@ -3605,8 +3844,99 @@ async function startServer() {
         const pools = await getRouterPools(router);
         if (!pools.includes(profile.remoteAddress as string)) return res.status(400).json({ error: 'Remote address harus menggunakan IP pool yang tersedia pada router' });
       }
-      await addPppProfile(router, profile as Parameters<typeof addPppProfile>[1]);
+      await addPppProfile(router, {
+        name: profile.name,
+        localAddress: typeof profile.localAddress === 'string' ? profile.localAddress : '',
+        remoteAddress: typeof profile.remoteAddress === 'string' ? profile.remoteAddress : '',
+        rateLimit: typeof profile.rateLimit === 'string' ? profile.rateLimit : '',
+        dnsServers: typeof profile.dnsServers === 'string' ? profile.dnsServers : '',
+      });
       res.status(201).json({ status: 'success' });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.put('/api/mikrotik/pppoe/profiles', requireAdminSession, async (req, res) => {
+    const { routerId, existingName, profile } = req.body || {};
+    if (
+      typeof routerId !== 'string' || !routerId ||
+      typeof existingName !== 'string' || !existingName || existingName.length > 64 ||
+      !isRecord(profile) ||
+      typeof profile.name !== 'string' || !/^[A-Za-z0-9_. -]{1,64}$/.test(profile.name) ||
+      typeof profile.localAddress !== 'string' || profile.localAddress.length > 128 ||
+      typeof profile.remoteAddress !== 'string' || profile.remoteAddress.length > 128 ||
+      typeof profile.rateLimit !== 'string' || profile.rateLimit.length > 128 ||
+      typeof profile.dnsServers !== 'string' || profile.dnsServers.length > 128
+    ) return res.status(400).json({ error: 'Data PPP profile tidak valid' });
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
+      if (profile.remoteAddress) {
+        const pools = await getRouterPools(router);
+        if (!pools.includes(profile.remoteAddress as string)) {
+          return res.status(400).json({ error: 'Remote address harus menggunakan IP pool yang tersedia pada router' });
+        }
+      }
+      if (profile.name !== existingName) {
+        const secrets = await getPppoeSecrets(router);
+        if (secrets.some(secret => secret.profile === existingName)) {
+          return res.status(409).json({ error: 'Nama profile tidak dapat diubah selama masih digunakan secret MikroTik. Pindahkan secret ke profile lain terlebih dahulu.' });
+        }
+      }
+      const updatedProfile = {
+        name: profile.name,
+        localAddress: profile.localAddress,
+        remoteAddress: profile.remoteAddress,
+        rateLimit: profile.rateLimit,
+        dnsServers: profile.dnsServers,
+      };
+      await updatePppProfile(router, existingName, updatedProfile);
+      const stored = await getAppDataDb();
+      const packages = stored.data.pppoePackages || [];
+      const updatedPackages = packages.map(item =>
+        item.routerId === routerId && item.routerProfileName === existingName
+          ? { ...item, routerProfileName: updatedProfile.name, speedLimit: updatedProfile.rateLimit }
+          : item
+      );
+      const customers = stored.data.customers || [];
+      const updatedCustomers = customers.map(customer =>
+        customer.routerId === routerId && customer.profileName === existingName
+          ? { ...customer, profileName: updatedProfile.name, bandwidthLimit: updatedProfile.rateLimit }
+          : customer
+      );
+      await savePppoeProfileDataDb(updatedPackages, updatedCustomers);
+      res.json({ status: 'success' });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete('/api/mikrotik/pppoe/profiles', requireAdminSession, async (req, res) => {
+    const { routerId, name } = req.body || {};
+    if (typeof routerId !== 'string' || !routerId || typeof name !== 'string' || !name || name.length > 64) {
+      return res.status(400).json({ error: 'Router dan nama PPP profile wajib diisi' });
+    }
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
+      const secrets = await getPppoeSecrets(router);
+      if (secrets.some(secret => secret.profile === name)) {
+        return res.status(409).json({ error: 'PPP profile masih digunakan oleh secret pada router. Pindahkan secret terlebih dahulu.' });
+      }
+      const stored = await getAppDataDb();
+      if ((stored.data.customers || []).some(customer =>
+        customer.routerId === routerId && customer.profileName === name
+      )) {
+        return res.status(409).json({ error: 'PPP profile masih digunakan data pelanggan. Pindahkan pelanggan ke profile lain terlebih dahulu.' });
+      }
+      await deletePppProfile(router, name);
+      const packages = stored.data.pppoePackages || [];
+      await savePppoeProfileDataDb(
+        packages.filter(item => item.routerId !== routerId || item.routerProfileName !== name),
+        stored.data.customers || []
+      );
+      res.json({ status: 'success' });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
     }

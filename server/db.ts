@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createCipheriv, createDecipheriv, randomBytes, createHash, createHmac, timingSafeEqual } from 'crypto';
-import { AppDataSnapshot, AppSettings, Customer, Invoice, PaymentTransaction, Voucher } from '../src/types';
+import { AppDataSnapshot, AppSettings, Customer, HotspotProfile, HotspotServiceProfile, Invoice, PaymentTransaction, PppoePackage, Voucher } from '../src/types';
 import { DEFAULT_WHATSAPP_TEMPLATES } from '../src/utils/whatsappTemplates';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -602,6 +602,54 @@ export async function saveAppDataCollectionDb<K extends keyof AppDataSnapshot>(
     'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
     [collection, JSON.stringify(value), new Date().toISOString()]
   );
+  saveDbToDisk();
+}
+
+export async function saveHotspotProfileDataDb(
+  serviceProfiles: HotspotServiceProfile[],
+  profiles: HotspotProfile[]
+): Promise<void> {
+  const database = await getDb();
+  const updatedAt = new Date().toISOString();
+  database.run('BEGIN TRANSACTION');
+  try {
+    database.run(
+      'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+      ['hotspotServiceProfiles', JSON.stringify(serviceProfiles), updatedAt]
+    );
+    database.run(
+      'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+      ['hotspotProfiles', JSON.stringify(profiles), updatedAt]
+    );
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+  saveDbToDisk();
+}
+
+export async function savePppoeProfileDataDb(
+  packages: PppoePackage[],
+  customers: Customer[]
+): Promise<void> {
+  const database = await getDb();
+  const updatedAt = new Date().toISOString();
+  database.run('BEGIN TRANSACTION');
+  try {
+    database.run(
+      'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+      ['pppoePackages', JSON.stringify(packages), updatedAt]
+    );
+    database.run(
+      'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+      ['customers', JSON.stringify(customers), updatedAt]
+    );
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
   saveDbToDisk();
 }
 

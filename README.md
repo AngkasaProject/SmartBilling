@@ -20,7 +20,8 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 ## 🚀 Fitur Utama
 
 - **👥 Manajemen Pelanggan PPPoE**:
-  - Paket PPPoE dapat dibuat dari menu Pelanggan dengan menghubungkan harga billing ke PPP profile live di router. Saat mendaftarkan pelanggan, operator memilih paket; profile, kecepatan, dan harga terisi dari paket.
+  - Menu Paket PPPoE menampilkan PPP profile langsung dari router terpilih, serta mendukung tambah, edit, dan hapus profile MikroTik. Paket billing ditautkan ke profile live; perubahan nama/kecepatan menyinkronkan paket dan data pelanggan, sedangkan profile yang masih dipakai secret atau pelanggan tidak dapat dihapus.
+  - Saat mendaftarkan pelanggan, operator memilih paket; profile, kecepatan, dan harga terisi dari paket.
   - Pendaftaran user secret, assign static / dynamic IP pool, profile kecepatan (*rate-limit*), dan penetapan tanggal jatuh tempo.
   - Pencatatan pembayaran manual memperpanjang masa aktif; aktivasi router hanya dilakukan setelah RouterOS mengonfirmasi perubahan.
   
@@ -50,8 +51,10 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
   - Portal dapat berjalan pada origin terpisah. Data pelanggan, paket, pembayaran, dan konfigurasi bisnis tetap dikelola oleh SmartBilling API.
 
 - **🎫 Penjualan voucher hotspot**:
-  - Buat profil layanan di menu Voucher: pilih router dan profil RouterOS tersinkron, lalu tetapkan kecepatan, masa penggunaan (1 jam, 12 jam, 1 hari, 1 minggu, 2 minggu, atau 1 bulan), perangkat bersama, dan batas kuota. Profil RouterOS baru dapat dibuat dari form yang sama.
-  - Buat paket jual dengan memilih profil layanan dan menetapkan harga. Paket dan generator voucher tersedia sebagai dialog agar halaman administrasi tetap ringkas.
+  - Workspace Hotspot memakai satu pilihan router untuk ringkasan, daftar user, sesi aktif, persediaan voucher, user profile, dan paket. Status sesi diperbarui otomatis setiap 15 detik dan sesi dapat diputus tanpa menghapus akun; user/profile dibaca langsung dari RouterOS, sedangkan harga, kuota billing, dan persetujuan pembayaran tetap merupakan data aplikasi.
+  - User Profile pada menu Voucher dibaca langsung dari router terpilih dan dapat ditambah, diedit, serta dihapus. Pengaturan billing profil disimpan bersama sinkronisasi RouterOS; menghapus profil juga menghapus konfigurasi layanan dan paket jual yang terkait.
+  - Buat paket jual dengan memilih User Profile live dari MikroTik, lalu tetapkan masa berlaku, batas kuota, dan harga. Paket dan generator voucher tersedia sebagai dialog agar halaman administrasi tetap ringkas.
+  - Daftar voucher, status online, batas, dan pemakaian dibaca langsung dari `/ip hotspot user` dan sesi aktif router. Hapus voucher menghapus user RouterOS dan data operasional billing terkait; tindakan hapus memakai dialog konfirmasi aplikasi.
   - Pelanggan memilih pembayaran manual atau gateway otomatis yang aktif. Pesanan manual menghasilkan kode dan tautan WhatsApp operator; voucher diprovisikan setelah admin mengonfirmasi pembayaran.
   - Voucher dibuat pada MikroTik hanya setelah pembayaran otomatis terverifikasi atau operator mengonfirmasi transaksi manual. Status pesanan dan kode voucher ditampilkan di portal pelanggan.
 

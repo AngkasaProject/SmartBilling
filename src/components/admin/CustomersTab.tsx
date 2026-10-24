@@ -32,6 +32,19 @@ interface Props {
   onToggleIsolir: (customer: Customer) => void;
 }
 
+interface PppRouterProfile {
+  name: string;
+  rateLimit: string;
+  localAddress: string;
+  remoteAddress: string;
+  dnsServers: string;
+}
+
+interface PppRouterProfileForm extends PppRouterProfile {
+  existingName: string;
+  routerId: string;
+}
+
 export const CustomersTab: React.FC<Props> = ({
   customers,
   invoices,
@@ -47,13 +60,29 @@ export const CustomersTab: React.FC<Props> = ({
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'expiring' | 'isolated'>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
-  const [routerProfiles, setRouterProfiles] = useState<Array<{ name: string; rateLimit: string }>>([]);
+  const [routerProfiles, setRouterProfiles] = useState<PppRouterProfile[]>([]);
   const [customerError, setCustomerError] = useState('');
   const [isSavingCustomer, setIsSavingCustomer] = useState(false);
   const [isPackageModalOpen, setIsPackageModalOpen] = useState(false);
+  const [packageModalTab, setPackageModalTab] = useState<'packages' | 'profiles'>('packages');
+  const [isPackageFormOpen, setIsPackageFormOpen] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState('');
   const [packageRouterId, setPackageRouterId] = useState('');
-  const [packageRouterProfiles, setPackageRouterProfiles] = useState<Array<{ name: string; rateLimit: string }>>([]);
-  const [packageForm, setPackageForm] = useState({ name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 });
+  const [packageRouterProfiles, setPackageRouterProfiles] = useState<PppRouterProfile[]>([]);
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [profilesReloadKey, setProfilesReloadKey] = useState(0);
+  const [packageForm, setPackageForm] = useState({ id: '', name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 });
+  const [profileForm, setProfileForm] = useState<PppRouterProfileForm>({
+    existingName: '',
+    routerId: '',
+    name: '',
+    rateLimit: '',
+    localAddress: '',
+    remoteAddress: '',
+    dnsServers: '',
+  });
   const [selectedPackageId, setSelectedPackageId] = useState('');
 
   // Form State
@@ -91,16 +120,31 @@ export const CustomersTab: React.FC<Props> = ({
   useEffect(() => {
     if (!isPackageModalOpen || !packageRouterId) {
       setPackageRouterProfiles([]);
+      setProfilesLoading(false);
       return;
     }
+    let active = true;
+    setProfilesLoading(true);
+    setPackageRouterProfiles([]);
     fetch(`/api/mikrotik/pppoe/profiles?routerId=${encodeURIComponent(packageRouterId)}`)
       .then(async response => {
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-        setPackageRouterProfiles(result.profiles);
+        return result.profiles as PppRouterProfile[];
       })
-      .catch(error => toast('Gagal memuat profile PPPoE', 'error', error instanceof Error ? error.message : String(error)));
-  }, [isPackageModalOpen, packageRouterId, toast]);
+      .then(profiles => {
+        if (active) setPackageRouterProfiles(profiles);
+      })
+      .catch(error => {
+        if (active) toast('Gagal memuat profile PPPoE', 'error', error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (active) setProfilesLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isPackageModalOpen, packageRouterId, profilesReloadKey, toast]);
 
   const handleOpenAdd = () => {
     setEditingCustomer(null);
@@ -139,7 +183,7 @@ export const CustomersTab: React.FC<Props> = ({
     setIsModalOpen(true);
   };
 
-  const handleAddPppoePackage = (event: React.FormEvent) => {
+  const handleSavePppoePackage = (event: React.FormEvent) => {
     event.preventDefault();
     const profile = packageRouterProfiles.find(item => item.name === packageForm.routerProfileName);
     if (!profile || packageForm.monthlyFee <= 0) {
@@ -147,14 +191,15 @@ export const CustomersTab: React.FC<Props> = ({
       return;
     }
     if (pppoePackages.some(item =>
+      item.id !== packageForm.id &&
       item.routerId === packageRouterId &&
       item.name.trim().toLowerCase() === packageForm.name.trim().toLowerCase()
     )) {
       toast('Nama paket sudah digunakan untuk router ini.', 'error');
       return;
     }
-    const nextPackages = [...pppoePackages, {
-      id: `pppoe-package-${Date.now()}`,
+    const nextPackage: PppoePackage = {
+      id: packageForm.id || `pppoe-package-${Date.now()}`,
       name: packageForm.name.trim(),
       routerId: packageRouterId,
       routerProfileName: profile.name,
@@ -162,11 +207,82 @@ export const CustomersTab: React.FC<Props> = ({
       monthlyFee: Math.round(packageForm.monthlyFee),
       enabled: true,
       dataLimitMb: packageForm.dataLimitMb ? Math.round(packageForm.dataLimitMb) : undefined,
-    }];
+    };
+    const nextPackages = packageForm.id
+      ? pppoePackages.map(item => item.id === packageForm.id ? nextPackage : item)
+      : [...pppoePackages, nextPackage];
     StorageService.savePppoePackages(nextPackages);
     onRefreshData();
-    setPackageForm({ name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 });
-    toast('Paket PPPoE berhasil ditambahkan.', 'success');
+    setPackageForm({ id: '', name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 });
+    setIsPackageFormOpen(false);
+    toast(packageForm.id ? 'Paket PPPoE berhasil diperbarui.' : 'Paket PPPoE berhasil ditambahkan.', 'success');
+  };
+
+  const handleSavePppProfile = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setProfileError('');
+    setProfileSaving(true);
+    try {
+      const { existingName, routerId, ...profile } = profileForm;
+      const response = await fetch('/api/mikrotik/pppoe/profiles', {
+        method: existingName ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routerId, ...(existingName ? { existingName } : {}), profile }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      await StorageService.syncDataFromSqlite();
+      onRefreshData();
+      setIsProfileModalOpen(false);
+      setProfilesReloadKey(key => key + 1);
+      toast(existingName ? 'PPP profile diperbarui dan disinkronkan.' : 'PPP profile ditambahkan ke MikroTik.', 'success');
+    } catch (error) {
+      setProfileError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const handleEditPppProfile = (profile: PppRouterProfile) => {
+    setProfileError('');
+    setProfileForm({ existingName: profile.name, routerId: packageRouterId, ...profile });
+    setIsProfileModalOpen(true);
+  };
+
+  const handleDeletePppProfile = async (profile: PppRouterProfile) => {
+    if (!await confirmAction(
+      'Hapus PPP profile?',
+      `Profile "${profile.name}" akan dihapus dari MikroTik dan paket billing yang terhubung. Profile yang masih digunakan pelanggan tidak dapat dihapus.`,
+      true
+    )) return;
+    try {
+      const response = await fetch('/api/mikrotik/pppoe/profiles', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routerId: packageRouterId, name: profile.name }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      await StorageService.syncDataFromSqlite();
+      onRefreshData();
+      setProfilesReloadKey(key => key + 1);
+      toast('PPP profile dan paket billing terkait dihapus.', 'success');
+    } catch (error) {
+      toast('Gagal menghapus PPP profile', 'error', error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const handleEditPppoePackage = (pppoePackage: PppoePackage) => {
+    setPackageRouterId(pppoePackage.routerId);
+    setPackageModalTab('packages');
+    setIsPackageFormOpen(true);
+    setPackageForm({
+      id: pppoePackage.id,
+      name: pppoePackage.name,
+      routerProfileName: pppoePackage.routerProfileName,
+      monthlyFee: pppoePackage.monthlyFee,
+      dataLimitMb: pppoePackage.dataLimitMb || 0,
+    });
   };
 
   const handleDeletePppoePackage = async (pppoePackage: PppoePackage) => {
@@ -334,6 +450,9 @@ export const CustomersTab: React.FC<Props> = ({
             <button
               onClick={() => {
                 setPackageRouterId(routers.find(router => router.status === 'connected')?.id || routers[0]?.id || '');
+                setPackageForm({ id: '', name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 });
+                setPackageModalTab('packages');
+                setIsPackageFormOpen(false);
                 setIsPackageModalOpen(true);
               }}
               className="px-4 py-2 bg-slate-800 hover:bg-slate-700 font-semibold text-white text-xs rounded-xl transition"
@@ -799,56 +918,168 @@ export const CustomersTab: React.FC<Props> = ({
       )}
 
       {isPackageModalOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
-          <section className="w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-900 text-white shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-800 p-5">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm sm:p-6">
+          <section className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 text-white shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-800 p-5">
               <div>
-                <h3 className="font-bold">Paket Layanan PPPoE</h3>
-                <p className="mt-1 text-xs text-slate-400">Paket menghubungkan harga billing dengan PPP profile yang ada di MikroTik.</p>
+                <h3 className="font-bold">Pengelolaan PPPoE</h3>
+                <p className="mt-1 text-xs text-slate-400">Kelola paket billing dan profile router pada halaman terpisah.</p>
               </div>
               <button type="button" onClick={() => setIsPackageModalOpen(false)} className="text-slate-400 hover:text-white"><X className="h-4 w-4" /></button>
             </div>
-            <div className="space-y-5 p-5">
-              <form onSubmit={handleAddPppoePackage} className="grid gap-3 rounded-xl border border-slate-800 bg-slate-950 p-4 sm:grid-cols-2">
-                <label className="text-xs text-slate-300">Nama paket
-                  <input required minLength={2} maxLength={80} value={packageForm.name} onChange={event => setPackageForm({ ...packageForm, name: event.target.value })} placeholder="Internet 10 Mbps" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
-                </label>
-                <label className="text-xs text-slate-300">Router MikroTik
-                  <select required value={packageRouterId} onChange={event => { setPackageRouterId(event.target.value); setPackageForm({ ...packageForm, routerProfileName: '' }); }} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white">
-                    <option value="">Pilih router</option>
-                    {routers.map(router => <option key={router.id} value={router.id}>{router.name} ({router.host})</option>)}
-                  </select>
-                </label>
-                <label className="text-xs text-slate-300">PPP Profile (data live dari router)
-                  <select required value={packageForm.routerProfileName} onChange={event => setPackageForm({ ...packageForm, routerProfileName: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white">
-                    <option value="">Pilih profile</option>
-                    {packageRouterProfiles.map(profile => <option key={profile.name} value={profile.name}>{profile.name}{profile.rateLimit ? ` · ${profile.rateLimit}` : ''}</option>)}
-                  </select>
-                </label>
-                <label className="text-xs text-slate-300">Biaya bulanan (Rp)
-                  <input required type="number" min={1} step={1} value={packageForm.monthlyFee || ''} onChange={event => setPackageForm({ ...packageForm, monthlyFee: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
-                </label>
-                <label className="text-xs text-slate-300">Kuota bulanan (MB, opsional)
-                  <input type="number" min={0} step={1} value={packageForm.dataLimitMb || ''} onChange={event => setPackageForm({ ...packageForm, dataLimitMb: Number(event.target.value) })} placeholder="Kosongkan untuk tanpa batas" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
-                  <span className="mt-1 block text-[10px] text-slate-500">Penggunaan Portal ditampilkan sebagai perkiraan dari sesi PPPoE aktif.</span>
-                </label>
-                <button type="submit" disabled={!packageRouterProfiles.length} className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50 sm:col-span-2">Tambah Paket PPPoE</button>
-                {!packageRouterProfiles.length && packageRouterId && <p className="text-[11px] text-amber-300 sm:col-span-2">Tidak ada PPP profile yang terbaca. Pastikan router tersambung dan profile dibuat di menu Router & MikroTik.</p>}
-              </form>
-              <div className="divide-y divide-slate-800 overflow-hidden rounded-xl border border-slate-800">
-                {pppoePackages.map(item => (
-                  <div key={item.id} className="flex items-center justify-between gap-3 p-4">
-                    <div>
-                      <p className="text-sm font-bold">{item.name}</p>
-                      <p className="mt-1 text-xs text-slate-400">{item.routerProfileName} · {item.speedLimit || 'tanpa batas'} · Rp {item.monthlyFee.toLocaleString('id-ID')}/bulan{item.dataLimitMb ? ` · ${(item.dataLimitMb / 1024).toFixed(1)} GB` : ' · kuota tanpa batas'}</p>
-                    </div>
-                    <button type="button" onClick={() => void handleDeletePppoePackage(item)} className="rounded-lg p-2 text-slate-400 hover:bg-rose-950 hover:text-rose-300" title="Hapus paket"><Trash2 className="h-4 w-4" /></button>
-                  </div>
-                ))}
-                {!pppoePackages.length && <p className="p-4 text-xs text-slate-500">Belum ada paket PPPoE. Buat profile di MikroTik, lalu daftarkan sebagai paket di atas.</p>}
+            <div className="shrink-0 border-b border-slate-800 px-5 pt-3">
+              <div className="flex gap-2" role="tablist" aria-label="Pengelolaan PPPoE">
+                <button type="button" role="tab" aria-selected={packageModalTab === 'packages'} onClick={() => setPackageModalTab('packages')} className={`border-b-2 px-3 py-3 text-sm font-semibold ${packageModalTab === 'packages' ? 'border-indigo-500 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>
+                  Paket Billing <span className="ml-1 text-xs text-slate-500">{pppoePackages.length}</span>
+                </button>
+                <button type="button" role="tab" aria-selected={packageModalTab === 'profiles'} onClick={() => setPackageModalTab('profiles')} className={`border-b-2 px-3 py-3 text-sm font-semibold ${packageModalTab === 'profiles' ? 'border-indigo-500 text-white' : 'border-transparent text-slate-400 hover:text-white'}`}>
+                  PPP Profile <span className="ml-1 text-xs text-slate-500">{packageRouterProfiles.length}</span>
+                </button>
               </div>
             </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5">
+              {packageModalTab === 'packages' ? (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-bold">Paket layanan pelanggan</h4>
+                      <p className="mt-1 text-xs text-slate-400">Hubungkan harga dan kuota billing ke profile MikroTik.</p>
+                    </div>
+                    {!isPackageFormOpen && (
+                      <button type="button" onClick={() => { setPackageForm({ id: '', name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 }); setIsPackageFormOpen(true); }} className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-500">
+                        <Plus className="mr-1 inline h-4 w-4" /> Tambah Paket
+                      </button>
+                    )}
+                  </div>
+                  {isPackageFormOpen && (
+                    <form onSubmit={handleSavePppoePackage} className="grid gap-4 rounded-xl border border-slate-800 bg-slate-950 p-4 sm:grid-cols-2">
+                      <div className="flex items-center justify-between sm:col-span-2">
+                        <h5 className="text-sm font-bold">{packageForm.id ? 'Edit Paket' : 'Paket Baru'}</h5>
+                        <button type="button" onClick={() => { setIsPackageFormOpen(false); setPackageForm({ id: '', name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 }); }} className="text-xs text-slate-400 hover:text-white">Batal</button>
+                      </div>
+                      <label className="text-xs text-slate-300">Nama paket
+                        <input required minLength={2} maxLength={80} value={packageForm.name} onChange={event => setPackageForm({ ...packageForm, name: event.target.value })} placeholder="Internet 10 Mbps" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
+                      </label>
+                      <label className="text-xs text-slate-300">Router MikroTik
+                        <select required disabled={!!packageForm.id} value={packageRouterId} onChange={event => { setPackageRouterId(event.target.value); setPackageForm({ ...packageForm, routerProfileName: '' }); }} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white disabled:opacity-60">
+                          <option value="">Pilih router</option>
+                          {routers.map(router => <option key={router.id} value={router.id}>{router.name} ({router.host})</option>)}
+                        </select>
+                      </label>
+                      <label className="text-xs text-slate-300 sm:col-span-2">PPP Profile MikroTik
+                        <select required value={packageForm.routerProfileName} onChange={event => setPackageForm({ ...packageForm, routerProfileName: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white">
+                          <option value="">Pilih profile dari router</option>
+                          {packageRouterProfiles.map(profile => <option key={profile.name} value={profile.name}>{profile.name}{profile.rateLimit ? ` · ${profile.rateLimit}` : ''}</option>)}
+                        </select>
+                        {profilesLoading && <span className="mt-1 block text-[11px] text-slate-500">Memuat profile dari router...</span>}
+                        {!profilesLoading && !packageRouterProfiles.length && packageRouterId && <span className="mt-1 block text-[11px] text-amber-300">Profile tidak tersedia. Tambahkan dari tab PPP Profile.</span>}
+                      </label>
+                      <label className="text-xs text-slate-300">Biaya bulanan (Rp)
+                        <input required type="number" min={1} step={1} value={packageForm.monthlyFee || ''} onChange={event => setPackageForm({ ...packageForm, monthlyFee: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
+                      </label>
+                      <label className="text-xs text-slate-300">Kuota bulanan (MB, opsional)
+                        <input type="number" min={0} step={1} value={packageForm.dataLimitMb || ''} onChange={event => setPackageForm({ ...packageForm, dataLimitMb: Number(event.target.value) })} placeholder="Tanpa batas" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
+                        <span className="mt-1 block text-[10px] text-slate-500">Perkiraan penggunaan sesi aktif.</span>
+                      </label>
+                      <button type="submit" disabled={!packageRouterProfiles.some(profile => profile.name === packageForm.routerProfileName)} className="rounded-lg bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50 sm:col-span-2">{packageForm.id ? 'Simpan Perubahan' : 'Simpan Paket'}</button>
+                    </form>
+                  )}
+                  <section className="overflow-hidden rounded-xl border border-slate-800">
+                    <div className="border-b border-slate-800 bg-slate-950 px-4 py-3 text-xs font-semibold text-slate-300">Paket terdaftar <span className="text-slate-500">({pppoePackages.length})</span></div>
+                    {pppoePackages.map(item => (
+                      <div key={item.id} className="flex items-center justify-between gap-3 border-b border-slate-800/80 p-4 last:border-b-0">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-bold">{item.name}</p>
+                          <p className="mt-1 text-xs text-slate-400">{routers.find(router => router.id === item.routerId)?.name || 'Router'} · {item.routerProfileName} · {item.speedLimit || 'tanpa batas'}</p>
+                          <p className="mt-1 text-xs text-slate-300">Rp {item.monthlyFee.toLocaleString('id-ID')}/bulan{item.dataLimitMb ? ` · ${(item.dataLimitMb / 1024).toFixed(1)} GB` : ' · kuota tanpa batas'}</p>
+                        </div>
+                        <div className="flex shrink-0 gap-1">
+                          <button type="button" onClick={() => handleEditPppoePackage(item)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white" title="Edit paket"><Edit2 className="h-4 w-4" /></button>
+                          <button type="button" onClick={() => void handleDeletePppoePackage(item)} className="rounded-lg p-2 text-slate-400 hover:bg-rose-950 hover:text-rose-300" title="Hapus paket"><Trash2 className="h-4 w-4" /></button>
+                        </div>
+                      </div>
+                    ))}
+                    {!pppoePackages.length && <p className="p-6 text-center text-xs text-slate-500">Belum ada paket billing PPPoE.</p>}
+                  </section>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-bold">Profile di MikroTik</h4>
+                      <p className="mt-1 text-xs text-slate-400">Data live dari router; perubahan diterapkan langsung ke router.</p>
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <label className="text-xs text-slate-400">Router
+                        <select disabled={!!packageForm.id} value={packageRouterId} onChange={event => { setPackageRouterId(event.target.value); setPackageForm(current => ({ ...current, routerProfileName: '' })); }} className="mt-1 block min-w-52 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white disabled:opacity-60">
+                          <option value="">Pilih router</option>
+                          {routers.map(router => <option key={router.id} value={router.id}>{router.name} ({router.host})</option>)}
+                        </select>
+                      </label>
+                      <button type="button" onClick={() => setProfilesReloadKey(key => key + 1)} disabled={!packageRouterId || profilesLoading} className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-bold disabled:opacity-50" title="Segarkan profile">
+                        <RefreshCw className={`h-4 w-4 ${profilesLoading ? 'animate-spin' : ''}`} />
+                      </button>
+                      <button type="button" onClick={() => { setProfileError(''); setProfileForm({ existingName: '', routerId: packageRouterId, name: '', rateLimit: '', localAddress: '', remoteAddress: '', dnsServers: '' }); setIsProfileModalOpen(true); }} disabled={!packageRouterId} className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
+                        <Plus className="mr-1 inline h-4 w-4" /> Tambah Profile
+                      </button>
+                    </div>
+                  </div>
+                  {profilesLoading && <p role="status" className="rounded-lg border border-slate-800 bg-slate-950 p-4 text-xs text-slate-400">Memuat profile dari MikroTik...</p>}
+                  {!profilesLoading && !packageRouterProfiles.length && <p className="rounded-xl border border-dashed border-slate-700 bg-slate-950 p-8 text-center text-xs text-slate-400">{packageRouterId ? 'Tidak ada profile PPP yang terbaca dari router ini.' : 'Pilih router untuk melihat PPP profile.'}</p>}
+                  <div className="space-y-2">
+                    {packageRouterProfiles.map(profile => (
+                      <div key={profile.name} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-4">
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold">{profile.name}</p>
+                          <p className="mt-1 text-xs text-slate-400">{profile.rateLimit || 'Tanpa batas'} · Local {profile.localAddress || 'otomatis'} · Remote {profile.remoteAddress || 'tidak diatur'}</p>
+                          <p className="mt-1 text-[11px] text-slate-500">DNS {profile.dnsServers || 'default router'}</p>
+                        </div>
+                        <div className="flex shrink-0 gap-2">
+                          <button type="button" onClick={() => handleEditPppProfile(profile)} className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-bold hover:bg-slate-700">Edit</button>
+                          <button type="button" onClick={() => void handleDeletePppProfile(profile)} className="rounded-lg border border-rose-500/30 bg-rose-950/30 px-3 py-2 text-xs font-bold text-rose-200 hover:bg-rose-950">Hapus</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </section>
+        </div>
+      )}
+      {isProfileModalOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/80 p-4 backdrop-blur-sm">
+          <form onSubmit={handleSavePppProfile} className="my-auto w-full max-w-xl space-y-4 rounded-2xl border border-slate-800 bg-slate-900 p-5 text-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="font-bold">{profileForm.existingName ? 'Edit PPP Profile MikroTik' : 'Tambah PPP Profile MikroTik'}</h3>
+                <p className="mt-1 text-xs text-slate-400">Perubahan disimpan langsung ke router terpilih dan paket terkait ikut disinkronkan.</p>
+              </div>
+              <button type="button" onClick={() => setIsProfileModalOpen(false)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white"><X className="h-4 w-4" /></button>
+            </div>
+            {profileError && <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-950/30 p-3 text-xs text-rose-200">{profileError}</p>}
+            <label className="block text-xs text-slate-300">Nama PPP profile
+              <input required maxLength={64} value={profileForm.name} onChange={event => setProfileForm({ ...profileForm, name: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-xs text-slate-300">Local address
+                <input maxLength={128} value={profileForm.localAddress} onChange={event => setProfileForm({ ...profileForm, localAddress: event.target.value })} placeholder="IP router / pool" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+              </label>
+              <label className="text-xs text-slate-300">Remote address / IP pool
+                <input maxLength={128} value={profileForm.remoteAddress} onChange={event => setProfileForm({ ...profileForm, remoteAddress: event.target.value })} placeholder="Nama IP pool" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+              </label>
+              <label className="text-xs text-slate-300">Rate limit
+                <input maxLength={128} value={profileForm.rateLimit} onChange={event => setProfileForm({ ...profileForm, rateLimit: event.target.value })} placeholder="Contoh: 10M/10M" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+              </label>
+              <label className="text-xs text-slate-300">DNS server
+                <input maxLength={128} value={profileForm.dnsServers} onChange={event => setProfileForm({ ...profileForm, dnsServers: event.target.value })} placeholder="Opsional" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+              </label>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-800 pt-4">
+              <button type="button" onClick={() => setIsProfileModalOpen(false)} className="rounded-lg bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200">Batal</button>
+              <button type="submit" disabled={profileSaving || !profileForm.routerId} className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{profileSaving ? 'Menyimpan...' : 'Simpan ke MikroTik'}</button>
+            </div>
+          </form>
         </div>
       )}
     </div>
