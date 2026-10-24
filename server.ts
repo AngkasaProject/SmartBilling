@@ -20,6 +20,8 @@ import {
   getAdminUserDb,
   getAdminUsersDb,
   getAppSettingsDb,
+  getPaymentPublicUrlsDb,
+  savePaymentPublicUrlsDb,
   saveRouterCredentialDb,
   saveAppDataCollectionDb,
   saveHotspotProfileDataDb,
@@ -529,14 +531,17 @@ async function startServer() {
     await saveAppDataCollectionDb('whatsappLogs', [log, ...(stored.data.whatsappLogs || [])].slice(0, 2000));
   }
 
-  function configuredPaymentAppUrl(): URL | null {
+  function parsePaymentAppUrl(value: string): URL | null {
     try {
-      const configuredUrl = new URL(process.env.APP_URL || '');
+      const configuredUrl = new URL(value);
       const localDevelopmentHost = ['localhost', '127.0.0.1', '::1'].includes(configuredUrl.hostname);
       if (
         configuredUrl.username ||
         configuredUrl.password ||
         !['http:', 'https:'].includes(configuredUrl.protocol) ||
+        configuredUrl.pathname !== '/' ||
+        configuredUrl.search ||
+        configuredUrl.hash ||
         (isProd && configuredUrl.protocol !== 'https:') ||
         (configuredUrl.protocol === 'http:' && !localDevelopmentHost)
       ) {
@@ -548,9 +553,9 @@ async function startServer() {
     }
   }
 
-  function configuredPaymentWebhookUrl(): URL | null {
+  function parsePaymentWebhookUrl(value: string): URL | null {
     try {
-      const webhookUrl = new URL(process.env.PAYMENT_WEBHOOK_URL || '');
+      const webhookUrl = new URL(value);
       const localDevelopmentHost = ['localhost', '127.0.0.1', '::1'].includes(webhookUrl.hostname);
       if (
         webhookUrl.username ||
@@ -568,6 +573,37 @@ async function startServer() {
     } catch {
       return null;
     }
+  }
+
+  async function paymentPublicUrlState(): Promise<{
+    appUrl: string;
+    webhookUrl: string;
+    appUrlManagedByEnvironment: boolean;
+    webhookUrlManagedByEnvironment: boolean;
+    parsedAppUrl: URL | null;
+    parsedWebhookUrl: URL | null;
+  }> {
+    const saved = await getPaymentPublicUrlsDb();
+    const appUrlManagedByEnvironment = Boolean(process.env.APP_URL?.trim());
+    const webhookUrlManagedByEnvironment = Boolean(process.env.PAYMENT_WEBHOOK_URL?.trim());
+    const appUrl = appUrlManagedByEnvironment ? process.env.APP_URL!.trim() : saved.appUrl;
+    const webhookUrl = webhookUrlManagedByEnvironment ? process.env.PAYMENT_WEBHOOK_URL!.trim() : saved.webhookUrl;
+    return {
+      appUrl,
+      webhookUrl,
+      appUrlManagedByEnvironment,
+      webhookUrlManagedByEnvironment,
+      parsedAppUrl: appUrl ? parsePaymentAppUrl(appUrl) : null,
+      parsedWebhookUrl: webhookUrl ? parsePaymentWebhookUrl(webhookUrl) : null,
+    };
+  }
+
+  async function configuredPaymentAppUrl(): Promise<URL | null> {
+    return (await paymentPublicUrlState()).parsedAppUrl;
+  }
+
+  async function configuredPaymentWebhookUrl(): Promise<URL | null> {
+    return (await paymentPublicUrlState()).parsedWebhookUrl;
   }
 
   function formatDateTime(value: string, timezone: string, timeFormat: '24h' | '12h' = '24h'): string {
@@ -659,8 +695,12 @@ async function startServer() {
     };
   }
 
-  function paymentGatewayReady(config: PaymentGatewayCredentials): boolean {
-    if (!configuredPaymentAppUrl() || !configuredPaymentWebhookUrl()) return false;
+  async function paymentGatewayReady(config: PaymentGatewayCredentials): Promise<boolean> {
+    const [appUrl, webhookUrl] = await Promise.all([
+      configuredPaymentAppUrl(),
+      configuredPaymentWebhookUrl(),
+    ]);
+    if (!appUrl || !webhookUrl) return false;
     if (config.provider === 'midtrans') return Boolean(config.serverKey);
     if (config.provider === 'doku') return Boolean(config.dokuClientId && config.dokuSecretKey);
     if (config.provider === 'xendit') return Boolean(config.xenditApiKey && config.xenditCallbackToken);
@@ -857,7 +897,7 @@ async function startServer() {
       config.tripayApiKey &&
       config.tripayPrivateKey
     ) {
-      const webhookUrl = configuredPaymentWebhookUrl();
+      const webhookUrl = await configuredPaymentWebhookUrl();
       if (!webhookUrl) {
         throw new Error('PAYMENT_WEBHOOK_URL must point to the public SmartBilling /api/payment/webhook endpoint.');
       }
@@ -1452,7 +1492,7 @@ async function startServer() {
     const customer = updatedCustomers.find(item => item.id === invoice.customerId);
     if (customer) {
       const token = createPortalLinkToken({ invoiceId: invoice.id }, Date.now() + 30 * 24 * 60 * 60 * 1000, await getOrCreatePortalLinkSecretDb());
-      const appUrl = configuredPaymentAppUrl();
+      const appUrl = await configuredPaymentAppUrl();
       const billingUrl = appUrl ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(token)}` : '';
       const settings = await getAppSettingsDb();
       const message = renderWhatsAppTemplate('paymentSuccess', settings.whatsappTemplates, {
@@ -1797,7 +1837,7 @@ async function startServer() {
         },
         invoices,
         upgradePackages,
-        paymentAvailable: paymentGatewayReady(await paymentGatewayCredentials()),
+        paymentAvailable: await paymentGatewayReady(await paymentGatewayCredentials()),
       });
     } catch (error) {
       return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -2044,7 +2084,7 @@ async function startServer() {
       const operatorPhone = settings.phoneContact.replace(/[^0-9]/g, '');
       res.setHeader('Cache-Control', 'no-store');
       res.json({
-        automaticAvailable: paymentGatewayReady(gateway),
+        automaticAvailable: await paymentGatewayReady(gateway),
         provider: gateway.provider,
         manualMethods: (config?.manualPaymentMethods || []).filter(isManualPaymentMethodReady),
         timeoutMinutes: config?.manualTimeoutMinutes ?? 60,
@@ -2101,7 +2141,7 @@ async function startServer() {
           method.id === methodId && isManualPaymentMethodReady(method)
         );
         if (!manualMethod) return res.status(400).json({ error: 'Pilih metode pembayaran manual yang tersedia' });
-      } else if (!paymentGatewayReady(gateway)) {
+      } else if (!await paymentGatewayReady(gateway)) {
         return res.status(503).json({ error: 'Gateway otomatis belum siap. Hubungi operator.' });
       }
       if (!Number.isSafeInteger(profile.price) || profile.price <= 0) {
@@ -2191,7 +2231,7 @@ async function startServer() {
         });
       }
 
-      const appUrl = configuredPaymentAppUrl()!;
+      const appUrl = (await configuredPaymentAppUrl())!;
       const checkout = await createOnlineCheckout({
         config: gateway,
         orderId,
@@ -3063,7 +3103,7 @@ async function startServer() {
           status: publicStatus,
         },
         invoices,
-        paymentAvailable: paymentGatewayReady(await paymentGatewayCredentials()),
+        paymentAvailable: await paymentGatewayReady(await paymentGatewayCredentials()),
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3126,7 +3166,7 @@ async function startServer() {
             latestPaymentChannel: payment?.paymentChannel,
           };
         }),
-        paymentAvailable: paymentGatewayReady(await paymentGatewayCredentials()),
+        paymentAvailable: await paymentGatewayReady(await paymentGatewayCredentials()),
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3140,7 +3180,7 @@ async function startServer() {
       if (!customer) return res.status(404).json({ error: 'Data pelanggan tidak ditemukan' });
       const createUpcomingInvoice = req.body?.createUpcomingInvoice === true;
       const invoice = await ensureDueInvoice(customer.id, false, createUpcomingInvoice);
-      const appUrl = configuredPaymentAppUrl() || (!isProd ? new URL('http://localhost:3000') : null);
+      const appUrl = await configuredPaymentAppUrl() || (!isProd ? new URL('http://localhost:3000') : null);
       if (!appUrl) return res.status(503).json({ error: 'APP_URL HTTPS harus dikonfigurasi sebelum membuat tautan pelanggan' });
       const secret = await getOrCreatePortalLinkSecretDb();
       const token = createPortalLinkToken(
@@ -3157,7 +3197,7 @@ async function startServer() {
           url,
           await getAppSettingsDb(),
           latest.data.paymentConfig,
-          paymentGatewayReady(await paymentGatewayCredentials())
+          await paymentGatewayReady(await paymentGatewayCredentials())
         )
         : undefined;
       res.json({ url, invoice, message });
@@ -3350,7 +3390,7 @@ async function startServer() {
       const stored = await getAppDataDb();
       const invoice = (stored.data.invoices || []).find(item => item.id === req.params.invoiceId && item.status === 'unpaid');
       if (!invoice) return res.status(404).json({ error: 'Invoice belum lunas tidak ditemukan' });
-      const appUrl = configuredPaymentAppUrl() || (!isProd ? new URL('http://localhost:3000') : null);
+      const appUrl = await configuredPaymentAppUrl() || (!isProd ? new URL('http://localhost:3000') : null);
       if (!appUrl) return res.status(503).json({ error: 'APP_URL HTTPS harus dikonfigurasi sebelum membuat tautan pembayaran' });
       const secret = await getOrCreatePortalLinkSecretDb();
       const token = createPortalLinkToken({ invoiceId: invoice.id }, Date.now() + 30 * 24 * 60 * 60 * 1000, secret);
@@ -3496,8 +3536,8 @@ async function startServer() {
         });
       }
 
-      const appUrl = configuredPaymentAppUrl();
-      if (!paymentGatewayReady(gateway) || !appUrl) {
+      const appUrl = await configuredPaymentAppUrl();
+      if (!await paymentGatewayReady(gateway) || !appUrl) {
         return res.status(503).json({ error: 'Gateway otomatis belum dikonfigurasi oleh administrator' });
       }
       if (paymentCheckoutInProgress.has(invoice.id)) {
@@ -3564,8 +3604,9 @@ async function startServer() {
   app.get('/api/payment/config', requireAdminSession, async (_req, res) => {
     try {
       const config = await paymentGatewayCredentials();
-      const appOrigin = configuredPaymentAppUrl()?.origin || '';
-      const webhookUrl = configuredPaymentWebhookUrl()?.toString() || '';
+      const publicUrls = await paymentPublicUrlState();
+      const appOrigin = publicUrls.parsedAppUrl?.origin || '';
+      const webhookUrl = publicUrls.webhookUrl;
       res.setHeader('Cache-Control', 'no-store');
       res.json({
         provider: config.provider,
@@ -3581,9 +3622,12 @@ async function startServer() {
         tripayPrivateKeyConfigured: Boolean(config.tripayPrivateKey),
         tripayPaymentMethod: config.tripayPaymentMethod || 'QRIS',
         appUrlConfigured: Boolean(appOrigin),
-        webhookUrlConfigured: Boolean(webhookUrl),
-        checkoutEnabled: paymentGatewayReady(config),
+        webhookUrlConfigured: Boolean(publicUrls.parsedWebhookUrl),
+        appUrl: publicUrls.appUrl,
         webhookUrl,
+        appUrlManagedByEnvironment: publicUrls.appUrlManagedByEnvironment,
+        webhookUrlManagedByEnvironment: publicUrls.webhookUrlManagedByEnvironment,
+        checkoutEnabled: await paymentGatewayReady(config),
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3599,6 +3643,26 @@ async function startServer() {
       return res.status(400).json({ error: 'Pilih satu gateway otomatis valid atau nonaktifkan gateway otomatis' });
     }
     try {
+      const savedPublicUrls = await getPaymentPublicUrlsDb();
+      const appUrlManagedByEnvironment = Boolean(process.env.APP_URL?.trim());
+      const webhookUrlManagedByEnvironment = Boolean(process.env.PAYMENT_WEBHOOK_URL?.trim());
+      const appUrl = appUrlManagedByEnvironment
+        ? savedPublicUrls.appUrl
+        : typeof req.body.appUrl === 'string' ? req.body.appUrl.trim() : savedPublicUrls.appUrl;
+      const webhookUrl = webhookUrlManagedByEnvironment
+        ? savedPublicUrls.webhookUrl
+        : typeof req.body.webhookUrl === 'string' ? req.body.webhookUrl.trim() : savedPublicUrls.webhookUrl;
+      if (
+        (!appUrlManagedByEnvironment && req.body.appUrl !== undefined &&
+          (typeof req.body.appUrl !== 'string' || (appUrl && !parsePaymentAppUrl(appUrl)))) ||
+        (!webhookUrlManagedByEnvironment && req.body.webhookUrl !== undefined &&
+          (typeof req.body.webhookUrl !== 'string' || (webhookUrl && !parsePaymentWebhookUrl(webhookUrl))))
+      ) {
+        return res.status(400).json({
+          error: 'APP_URL harus berupa origin Portal yang valid, dan webhook harus berakhir tepat di /api/payment/webhook. Gunakan HTTPS untuk domain publik.',
+        });
+      }
+
       const previous = await paymentGatewayCredentials();
       const config: PaymentGatewayCredentials = {
         provider,
@@ -3684,7 +3748,13 @@ async function startServer() {
         }
       }
       await savePaymentGatewayCredentialsDb(config);
-      const webhookUrl = configuredPaymentWebhookUrl()?.toString() || '';
+      if (
+        (!appUrlManagedByEnvironment && req.body.appUrl !== undefined) ||
+        (!webhookUrlManagedByEnvironment && req.body.webhookUrl !== undefined)
+      ) {
+        await savePaymentPublicUrlsDb({ appUrl, webhookUrl });
+      }
+      const publicUrls = await paymentPublicUrlState();
       res.json({
         provider: config.provider,
         isProduction: config.isProduction,
@@ -3698,10 +3768,13 @@ async function startServer() {
         tripayApiKeyConfigured: Boolean(config.tripayApiKey),
         tripayPrivateKeyConfigured: Boolean(config.tripayPrivateKey),
         tripayPaymentMethod: config.tripayPaymentMethod || 'QRIS',
-        appUrlConfigured: Boolean(configuredPaymentAppUrl()),
-        webhookUrlConfigured: Boolean(webhookUrl),
-        checkoutEnabled: paymentGatewayReady(config),
-        webhookUrl,
+        appUrlConfigured: Boolean(publicUrls.parsedAppUrl),
+        webhookUrlConfigured: Boolean(publicUrls.parsedWebhookUrl),
+        appUrl: publicUrls.appUrl,
+        webhookUrl: publicUrls.webhookUrl,
+        appUrlManagedByEnvironment: publicUrls.appUrlManagedByEnvironment,
+        webhookUrlManagedByEnvironment: publicUrls.webhookUrlManagedByEnvironment,
+        checkoutEnabled: await paymentGatewayReady(config),
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -5122,7 +5195,7 @@ async function startServer() {
         const businessName = settings.companyName.trim() || settings.brandName.trim() || settings.appName;
         const secret = await getOrCreatePortalLinkSecretDb();
         const token = createPortalLinkToken({ customerId: customer.id }, Date.now() + 30 * 24 * 60 * 60 * 1000, secret);
-        const appUrl = configuredPaymentAppUrl();
+        const appUrl = await configuredPaymentAppUrl();
         const paymentUrl = appUrl
           ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(token)}`
           : '';
@@ -5180,7 +5253,7 @@ async function startServer() {
         if (!customer) continue;
         const secret = await getOrCreatePortalLinkSecretDb();
         const token = createPortalLinkToken({ invoiceId: invoice.id }, Date.now() + 30 * 24 * 60 * 60 * 1000, secret);
-        const appUrl = configuredPaymentAppUrl();
+        const appUrl = await configuredPaymentAppUrl();
         if (!appUrl) {
           console.error(`[Reminder] Skipping invoice ${invoice.invoiceNumber}: APP_URL is not configured.`);
           continue;
@@ -5192,7 +5265,7 @@ async function startServer() {
           paymentUrl,
           settings,
           stored.data.paymentConfig,
-          paymentGatewayReady(await paymentGatewayCredentials())
+          await paymentGatewayReady(await paymentGatewayCredentials())
         );
         try {
           const sent = await sendWhatsAppMessage(customer.phone, message);

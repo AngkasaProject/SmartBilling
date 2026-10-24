@@ -386,39 +386,32 @@ function AppContent() {
     }
   };
 
-  // Billing status and RouterOS access are separate; router changes require a second confirmation.
+  // A single billing action also synchronizes the PPPoE secret on RouterOS.
   const handleToggleIsolir = async (customer: Customer) => {
     const isBlocked =
       customer.status === "isolated" || customer.status === "disabled";
     const newStatus = isBlocked ? "active" : "isolated";
     if (!await confirmAction(
-      `${newStatus === "isolated" ? "Isolir billing" : "Aktifkan billing"}?`,
-      `Hanya status billing pelanggan ${customer.name} yang akan diubah. Status secret dan sesi PPPoE di MikroTik tidak berubah otomatis.`
+      `${newStatus === "isolated" ? "Isolir pelanggan" : "Aktifkan pelanggan"}?`,
+      `Status billing ${customer.name} dan secret PPPoE "${customer.pppoeUsername}" di RouterOS akan ${newStatus === "isolated" ? "dinonaktifkan" : "diaktifkan"}.`
     )) return;
 
-    const updateRouter = await confirmAction(
-      `${newStatus === "isolated" ? "Nonaktifkan" : "Aktifkan"} juga akses RouterOS?`,
-      `Pilihan ini ${newStatus === "isolated" ? "menonaktifkan secret PPPoE" : "mengaktifkan kembali secret PPPoE"} "${customer.pppoeUsername}" di router. Jika tidak, hanya status billing yang berubah.`,
-      newStatus === "isolated"
-    );
     let routerUpdated = false;
     let routerUpdateError = "";
-    if (updateRouter) {
-      try {
-        const response = await fetch(
-          `/api/mikrotik/pppoe/secrets/${encodeURIComponent(customer.routerId)}/${encodeURIComponent(customer.pppoeUsername)}`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ disabled: newStatus === "isolated" }),
-          },
-        );
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || `RouterOS returned ${response.status}`);
-        routerUpdated = true;
-      } catch (error) {
-        routerUpdateError = error instanceof Error ? error.message : String(error);
-      }
+    try {
+      const response = await fetch(
+        `/api/mikrotik/pppoe/secrets/${encodeURIComponent(customer.routerId)}/${encodeURIComponent(customer.pppoeUsername)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ disabled: newStatus === "isolated" }),
+        },
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `RouterOS returned ${response.status}`);
+      routerUpdated = true;
+    } catch (error) {
+      routerUpdateError = error instanceof Error ? error.message : String(error);
     }
     try {
       const updated: Customer = {
@@ -426,8 +419,8 @@ function AppContent() {
         status: newStatus,
         notes:
           newStatus === "isolated"
-            ? `Status billing diisolir manual oleh NOC.${routerUpdated ? " Secret RouterOS juga dinonaktifkan." : " Status akses RouterOS tidak diubah."}`
-            : `Status billing diaktifkan manual oleh NOC.${routerUpdated ? " Secret RouterOS juga diaktifkan." : " Status akses RouterOS tidak diubah."}`,
+            ? `Status billing diisolir manual oleh NOC.${routerUpdated ? " Secret RouterOS juga dinonaktifkan." : " Gagal menyelaraskan akses RouterOS."}`
+            : `Status billing diaktifkan manual oleh NOC.${routerUpdated ? " Secret RouterOS juga diaktifkan." : " Gagal menyelaraskan akses RouterOS."}`,
       };
       StorageService.saveCustomer(updated);
 
@@ -480,8 +473,8 @@ function AppContent() {
         routerUpdateError
           ? `Status billing tersimpan, tetapi RouterOS gagal diubah: ${routerUpdateError}`
           : routerUpdated
-            ? "Billing dan secret RouterOS diselaraskan sesuai konfirmasi."
-            : "Secret RouterOS tidak diubah. Periksa indikator perbedaan status pada daftar pelanggan."
+            ? "Billing dan secret RouterOS berhasil diselaraskan."
+            : "RouterOS tidak berhasil diselaraskan."
       );
     } catch (error) {
       toast(

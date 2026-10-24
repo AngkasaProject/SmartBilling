@@ -978,6 +978,31 @@ export async function getAppSettingsDb(): Promise<AppSettings> {
   return DEFAULT_APP_SETTINGS;
 }
 
+export async function getPaymentPublicUrlsDb(): Promise<{ appUrl: string; webhookUrl: string }> {
+  const database = await getDb();
+  const result = database.exec('SELECT value FROM app_settings WHERE key = ?', ['payment_public_urls']);
+  const value = result[0]?.values[0]?.[0];
+  if (typeof value !== 'string') return { appUrl: '', webhookUrl: '' };
+  const parsed: unknown = JSON.parse(value);
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Stored payment public URLs are invalid');
+  }
+  const urls = parsed as Record<string, unknown>;
+  return {
+    appUrl: typeof urls.appUrl === 'string' ? urls.appUrl : '',
+    webhookUrl: typeof urls.webhookUrl === 'string' ? urls.webhookUrl : '',
+  };
+}
+
+export async function savePaymentPublicUrlsDb(urls: { appUrl: string; webhookUrl: string }): Promise<void> {
+  const database = await getDb();
+  database.run(
+    'INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
+    ['payment_public_urls', JSON.stringify(urls), new Date().toISOString()]
+  );
+  saveDbToDisk();
+}
+
 export async function saveAppSettingsDb(settings: Partial<AppSettings>): Promise<AppSettings> {
   const database = await getDb();
   const current = await getAppSettingsDb();

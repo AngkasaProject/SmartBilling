@@ -18,6 +18,9 @@ interface PaymentEnvironment {
   tripayApiKeyConfigured: boolean;
   tripayPrivateKeyConfigured: boolean;
   tripayPaymentMethod: string;
+  appUrl: string;
+  appUrlManagedByEnvironment: boolean;
+  webhookUrlManagedByEnvironment: boolean;
   appUrlConfigured: boolean;
   webhookUrlConfigured: boolean;
   checkoutEnabled: boolean;
@@ -62,6 +65,8 @@ export const PaymentGatewayTab: React.FC = () => {
   const [tripayApiKey, setTripayApiKey] = useState('');
   const [tripayPrivateKey, setTripayPrivateKey] = useState('');
   const [tripayPaymentMethod, setTripayPaymentMethod] = useState('QRIS');
+  const [appUrl, setAppUrl] = useState('');
+  const [webhookUrl, setWebhookUrl] = useState('');
   const [error, setError] = useState('');
   const [savingGateway, setSavingGateway] = useState(false);
   const [methods, setMethods] = useState<ManualMethod[]>([]);
@@ -79,6 +84,8 @@ export const PaymentGatewayTab: React.FC = () => {
         if (!paymentResponse.ok) throw new Error(payment.error || `HTTP ${paymentResponse.status}`);
         if (!manualResponse.ok) throw new Error(manual.error || `HTTP ${manualResponse.status}`);
         setEnvironment(payment);
+        setAppUrl(payment.appUrl || '');
+        setWebhookUrl(payment.webhookUrl || '');
         setChoice(payment.provider === 'doku' ? 'doku' : payment.provider === 'xendit' || payment.provider === 'tripay' ? 'custom' : 'midtrans');
         setDisableAutomatic(payment.provider === 'none');
         if (payment.provider === 'xendit' || payment.provider === 'tripay') setCustomProvider(payment.provider);
@@ -115,6 +122,8 @@ export const PaymentGatewayTab: React.FC = () => {
         body: JSON.stringify({
           provider: selectedProvider,
           isProduction,
+          appUrl,
+          webhookUrl,
           ...(selectedProvider === 'midtrans' ? { serverKey, clientKey } : {}),
           ...(selectedProvider === 'doku' ? { dokuClientId, dokuSecretKey } : {}),
           ...(selectedProvider === 'xendit' ? { xenditApiKey, xenditCallbackToken } : {}),
@@ -129,6 +138,8 @@ export const PaymentGatewayTab: React.FC = () => {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       setEnvironment(result);
+      setAppUrl(result.appUrl || '');
+      setWebhookUrl(result.webhookUrl || '');
       setServerKey('');
       setClientKey('');
       setDokuClientId('');
@@ -403,6 +414,41 @@ export const PaymentGatewayTab: React.FC = () => {
             </>
           )}
 
+          <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+            <div>
+              <h3 className="text-xs font-bold text-white">URL Portal & Webhook Pembayaran</h3>
+              <p className="mt-1 text-[11px] text-slate-400">APP_URL dipakai untuk tautan dan redirect pelanggan. Webhook harus menunjuk ke endpoint API SmartBilling.</p>
+            </div>
+            <label className="block text-xs text-slate-300">
+              APP_URL — origin Portal publik
+              <input
+                type="url"
+                value={appUrl}
+                onChange={event => setAppUrl(event.target.value)}
+                placeholder="https://portal.domain-anda"
+                disabled={environment?.appUrlManagedByEnvironment}
+                className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-60`}
+              />
+              <span className="mt-1 block text-[10px] text-slate-500">
+                {environment?.appUrlManagedByEnvironment ? 'Dikelola environment server; ubah melalui .env.' : 'Gunakan HTTPS dan masukkan origin saja, tanpa path.'}
+              </span>
+            </label>
+            <label className="block text-xs text-slate-300">
+              PAYMENT_WEBHOOK_URL — endpoint callback SmartBilling
+              <input
+                type="url"
+                value={webhookUrl}
+                onChange={event => setWebhookUrl(event.target.value)}
+                placeholder="https://billing.domain-anda/api/payment/webhook"
+                disabled={environment?.webhookUrlManagedByEnvironment}
+                className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-60`}
+              />
+              <span className="mt-1 block text-[10px] text-slate-500">
+                {environment?.webhookUrlManagedByEnvironment ? 'Dikelola environment server; ubah melalui .env.' : 'URL harus berakhir tepat dengan /api/payment/webhook dan dapat diakses provider.'}
+              </span>
+            </label>
+          </div>
+
           {environment?.webhookUrl && !disableAutomatic && (
             <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 text-xs">
               <p className="font-bold text-white">Callback / Webhook URL</p>
@@ -416,12 +462,12 @@ export const PaymentGatewayTab: React.FC = () => {
 
           {(!environment?.appUrlConfigured && !disableAutomatic) && (
             <p className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-950/30 p-3 text-xs text-amber-100">
-              <AlertCircle className="h-4 w-4 shrink-0" /> Atur APP_URL publik HTTPS di environment server sebagai alamat Portal untuk tautan dan redirect pelanggan.
+              <AlertCircle className="h-4 w-4 shrink-0" /> APP_URL belum valid. Isi URL Portal HTTPS di atas atau atur APP_URL di environment server.
             </p>
           )}
           {environment?.appUrlConfigured && !environment.webhookUrlConfigured && !disableAutomatic && (
             <p className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-950/30 p-3 text-xs text-amber-100">
-              <AlertCircle className="h-4 w-4 shrink-0" /> Atur PAYMENT_WEBHOOK_URL ke endpoint publik SmartBilling, misalnya https://billing.domain-anda/api/payment/webhook. Gateway otomatis nonaktif sampai URL webhook dikonfigurasi.
+              <AlertCircle className="h-4 w-4 shrink-0" /> PAYMENT_WEBHOOK_URL belum valid. Isi endpoint publik SmartBilling di atas. Gateway otomatis belum aktif sampai webhook dikonfigurasi.
             </p>
           )}
           {environment?.checkoutEnabled && !disableAutomatic && (

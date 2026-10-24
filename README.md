@@ -199,7 +199,7 @@ Gunakan `npm run dev` untuk menjalankan Vite (port `3000`) dan backend Express/S
    # Endpoint webhook publik SmartBilling API (bukan origin Portal).
    PAYMENT_WEBHOOK_URL="https://billing.domain-anda/api/payment/webhook"
    ```
-   Pilih gateway dan masukkan kredensial akun setelah login melalui **Admin > Pembayaran**.
+   Kedua URL juga dapat diatur melalui **Admin > Pembayaran**. Jika variabel terkait di `.env` diisi, nilainya menjadi sumber utama dan kolom UI terkunci. Pilih gateway dan masukkan kredensial akun setelah login.
 
 2. **Jalankan Docker Compose**:
    ```bash
@@ -297,9 +297,9 @@ Menu **Pembayaran** mengatur metode manual dan addon gateway otomatis secara ter
   - **DOKU** — Client ID dan Secret Key; pilih sandbox atau production.
   - **Custom** — adapter Xendit (API Key dan Callback Token) atau Tripay (Merchant Code, API Key, Private Key, dan kode metode pembayaran).
 
-Kredensial online disimpan terenkripsi menggunakan kunci aplikasi yang sama dengan kredensial router. Cadangkan `data/router-secrets.key` bersama database bila `APP_ENCRYPTION_KEY` tidak ditetapkan melalui environment. Gateway otomatis memerlukan `APP_URL` HTTPS untuk return pelanggan dan `PAYMENT_WEBHOOK_URL` HTTPS yang dapat diakses publik di SmartBilling.
+Kredensial online disimpan terenkripsi menggunakan kunci aplikasi yang sama dengan kredensial router. Cadangkan `data/router-secrets.key` bersama database bila `APP_ENCRYPTION_KEY` tidak ditetapkan melalui environment. Gateway otomatis memerlukan APP_URL HTTPS untuk return pelanggan serta PAYMENT_WEBHOOK_URL HTTPS yang dapat diakses publik di SmartBilling. Keduanya dapat diatur lewat UI **Pembayaran** atau `.env`; nilai `.env` mengunci dan mengutamakan field terkait di UI.
 
-Setelah konfigurasi gateway disimpan, daftarkan Notification/Webhook URL yang tampil di menu **Pembayaran** pada dashboard provider. Pastikan `PAYMENT_WEBHOOK_URL` menuju host SmartBilling API, sedangkan `APP_URL` menuju Portal pelanggan. Invoice dan voucher otomatis hanya diproses setelah callback provider tervalidasi dan nominal cocok. Uji dengan sandbox/test mode terlebih dahulu sebelum beralih ke production. Pengaturan melalui panel menjadi konfigurasi aktif; variabel Midtrans di `.env` hanya dipakai sebagai fallback untuk instalasi lama yang belum menyimpan pilihan gateway.
+Setelah konfigurasi gateway disimpan, daftarkan Notification/Webhook URL yang tampil di menu **Pembayaran** pada dashboard provider. Pastikan `PAYMENT_WEBHOOK_URL` menuju host SmartBilling API, sedangkan `APP_URL` menuju Portal pelanggan. Jika memakai Docker Compose, pastikan kedua variabel tersebut ada di `.env` dan diteruskan oleh `docker-compose.yml`. Invoice dan voucher otomatis hanya diproses setelah callback provider tervalidasi dan nominal cocok. Uji dengan sandbox/test mode terlebih dahulu sebelum beralih ke production. Pengaturan gateway melalui panel menjadi konfigurasi aktif; variabel Midtrans di `.env` hanya dipakai sebagai fallback untuk instalasi lama yang belum menyimpan pilihan gateway.
 
 ---
 

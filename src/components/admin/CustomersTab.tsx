@@ -1153,146 +1153,128 @@ export const CustomersTab: React.FC<Props> = ({
                   return (
                     <tr key={cust.id} className="hover:bg-slate-800/30 transition">
                       {/* Name & ID */}
-                      <td className="py-3.5 px-4">
-                        <div className="font-bold text-white text-sm">{cust.name}</div>
-                        <div className="text-[11px] text-slate-400 font-mono flex items-center gap-1.5 mt-0.5">
-                          <span className="bg-slate-800 px-1.5 py-0.5 rounded text-[10px] text-indigo-300 font-semibold">
+                      <td className="py-2.5 px-3">
+                        <div className="font-bold text-white text-sm whitespace-nowrap">{cust.name}</div>
+                        <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1.5 mt-0.5 whitespace-nowrap">
+                          <span className="bg-slate-800 px-1.5 py-0.5 rounded text-[9px] text-indigo-300 font-semibold">
                             {cust.customerId}
                           </span>
                           <span>• {cust.phone}</span>
                         </div>
-                        {cust.address && (
-                          <div className="text-[10px] text-slate-500 truncate max-w-xs mt-0.5">
-                            {cust.address}
-                          </div>
-                        )}
                       </td>
 
                       {/* PPPoE */}
-                      <td className="py-3.5 px-4 font-mono">
-                        <div className="flex items-center gap-1.5 text-slate-200 font-semibold">
+                      <td className="py-2.5 px-3 font-mono">
+                        <div className="flex items-center gap-1.5 text-slate-200 font-semibold whitespace-nowrap">
                           <Key className="w-3 h-3 text-amber-400" />
                           <span>{cust.pppoeUsername}</span>
                         </div>
-                        <div className="text-[11px] text-slate-400 mt-0.5">
-                          IP: <span className="text-slate-300">{cust.ipAddress || 'Dynamic Pool'}</span>
+                        <div className="text-[10px] text-slate-400 mt-0.5 whitespace-nowrap">
+                          {cust.ipAddress || 'Dynamic Pool'}
                         </div>
                         {liveRouter?.error ? (
-                          <div className="mt-1 text-[10px] text-rose-300" title={liveRouter.error}>Status router gagal dimuat</div>
+                          <div className="mt-1 text-[9px] text-rose-300 whitespace-nowrap" title={liveRouter.error}>Router gagal dimuat</div>
                         ) : liveSecret ? (
                           <>
-                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                              <span className="rounded-full bg-indigo-500/15 px-2 py-0.5 text-[9px] font-bold text-indigo-300">TERHUBUNG</span>
-                              <span className={`rounded-full px-2 py-0.5 text-[9px] font-bold ${liveSecret.disabled ? 'bg-rose-500/15 text-rose-300' : 'bg-emerald-500/15 text-emerald-300'}`}>
-                                Secret {liveSecret.disabled ? 'NONAKTIF' : 'AKTIF'}
+                            <div className="mt-1 flex items-center gap-1 whitespace-nowrap">
+                              <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-bold ${liveSecret.disabled ? 'bg-rose-500/15 text-rose-300' : 'bg-emerald-500/15 text-emerald-300'}`}>
+                                {liveSecret.disabled ? 'SECRET OFF' : 'SECRET ON'}
                               </span>
                               {routerStatusMismatch && (
-                                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[9px] font-bold text-amber-300">
-                                  STATUS BILLING / ROUTER BERBEDA
-                                </span>
+                                <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[8px] font-bold text-amber-300" title="Status billing berbeda dengan status secret di router">STATUS BEDA</span>
                               )}
                               {liveSessions.length > 0
-                                ? <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[9px] font-bold text-sky-300">ONLINE · {liveSessions.length} sesi</span>
-                                : <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[9px] font-bold text-slate-400">OFFLINE</span>}
+                                ? <span className="rounded-full bg-sky-500/15 px-1.5 py-0.5 text-[8px] font-bold text-sky-300" title="Online">ONLINE {liveSessions.length}</span>
+                                : <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-[8px] font-bold text-slate-400">OFFLINE</span>}
                             </div>
                             {routerStatusMismatch && (
-                              <div className="mt-1 text-[10px] text-amber-200">
-                                Billing {billingShouldDisable ? 'terisolir' : 'aktif'}, tetapi secret router {liveSecret.disabled ? 'nonaktif' : 'aktif'}.
+                              <div className="mt-0.5 text-[9px] text-amber-200 whitespace-nowrap">
                                 <button
                                   type="button"
                                   disabled={pppoeActionBusy}
                                   onClick={() => void handleTogglePppoeSecret(cust, billingShouldDisable)}
-                                  className="ml-1 font-semibold text-indigo-300 underline underline-offset-2 hover:text-indigo-200 disabled:opacity-50"
+                                  className="font-semibold text-indigo-300 underline underline-offset-2 hover:text-indigo-200 disabled:opacity-50"
+                                  title={`Samakan status secret RouterOS dengan status billing (${billingShouldDisable ? 'nonaktif' : 'aktif'})`}
                                 >
-                                  Samakan status RouterOS
+                                  Samakan status
                                 </button>
                               </div>
                             )}
-                            {liveSessions.map((session, index) => (
-                              <div key={`${session.callerId}-${index}`} className="mt-1 max-w-[260px] break-words text-[10px] leading-relaxed text-slate-400">
-                                {session.address || 'IP —'} · {session.uptime || 'uptime —'}{session.callerId ? ` · ${session.callerId}` : ''}
-                                <span className="block text-slate-500">RX {formatPppoeTraffic(session.bytesIn)} / TX {formatPppoeTraffic(session.bytesOut)}</span>
-                              </div>
-                            ))}
                           </>
                         ) : (
-                          <div className="mt-1">
+                          <div className="mt-1 whitespace-nowrap">
                             {pppoeLiveLoading && !liveRouter
-                              ? <span className="text-[10px] text-slate-500">Membaca status router...</span>
+                              ? <span className="text-[9px] text-slate-500">Memuat status...</span>
                               : liveRouter
                                 ? <span className="inline-flex flex-wrap items-center gap-2">
-                                  <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[9px] font-bold text-amber-300">SECRET TIDAK DITEMUKAN DI ROUTER</span>
-                                  <button type="button" onClick={() => {
+                                  <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[8px] font-bold text-amber-300">SECRET TIDAK ADA</span>
+                                  <button type="button" title="Cari akun PPPoE di data router" onClick={() => {
                                     setRouterWorkspaceId(cust.routerId);
                                     setWorkspaceSection('router');
                                     setRouterWorkspaceSection('accounts');
                                     setRouterAccountSearch(cust.pppoeUsername);
                                     setPppoeLiveReloadKey(key => key + 1);
-                                  }} className="text-[9px] font-semibold text-indigo-300 hover:text-indigo-200">Cari di data router</button>
+                                  }} className="text-[9px] font-semibold text-indigo-300 hover:text-indigo-200">Cari</button>
                                 </span>
-                                : <span className="text-[10px] text-slate-500">Status live belum dimuat</span>}
+                                : <span className="text-[9px] text-slate-500">Status belum dimuat</span>}
                           </div>
                         )}
                       </td>
 
                       {/* Package */}
-                      <td className="py-3.5 px-4">
-                        <div className="font-semibold text-slate-200">{cust.servicePackageName || cust.profileName}</div>
-                        {cust.servicePackageName && <div className="text-[10px] text-slate-500">PPP profile: {cust.profileName}</div>}
-                        <div className="text-[11px] font-mono text-emerald-400 mt-0.5">
-                          {cust.bandwidthLimit}
-                        </div>
-                        <div className="text-[11px] font-bold text-white mt-0.5">
-                          Rp {cust.monthlyFee.toLocaleString('id-ID')} /bln
+                      <td className="py-2.5 px-3">
+                        <div className="font-semibold text-slate-200 whitespace-nowrap">{cust.servicePackageName || cust.profileName}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5 whitespace-nowrap">
+                          <span className="font-mono text-emerald-400">{cust.bandwidthLimit}</span>
+                          <span className="mx-1">·</span>
+                          <span className="font-bold text-white">Rp {cust.monthlyFee.toLocaleString('id-ID')}</span>
                         </div>
                       </td>
 
                       {/* Expiration */}
-                      <td className="py-3.5 px-4">
-                        <div className="flex items-center gap-1.5 font-medium text-slate-200">
-                          <Calendar className="w-3.5 h-3.5 text-indigo-400" />
+                      <td className="py-2.5 px-3">
+                        <div className="flex items-center gap-1.5 font-medium text-slate-200 whitespace-nowrap">
+                          <Calendar className="w-3 h-3 text-indigo-400" />
                           <span>{cust.expiredDate}</span>
                         </div>
-                        <div className="text-[10px] text-slate-400 mt-0.5">
-                          Siklus: Tgl {cust.billingDate} tiap bulan
-                        </div>
+                        <div className="text-[9px] text-slate-500 mt-0.5 whitespace-nowrap">Jatuh tempo tgl {cust.billingDate}</div>
                       </td>
 
                       {/* Status */}
-                      <td className="py-3.5 px-4">
+                      <td className="py-2.5 px-3 whitespace-nowrap">
                         {cust.status === 'active' && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[9px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
                             <CheckCircle2 className="w-3 h-3" /> AKTIF
                           </span>
                         )}
                         {cust.status === 'expiring' && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[9px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
                             <AlertCircle className="w-3 h-3" /> JATUH TEMPO
                           </span>
                         )}
                         {(cust.status === 'isolated' || cust.status === 'disabled') && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30">
+                          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[9px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30">
                             <ShieldAlert className="w-3 h-3" /> {cust.status === 'disabled' ? 'NONAKTIF' : 'TER-ISOLIR'}
                           </span>
                         )}
                       </td>
 
                       {/* Actions */}
-                      <td className="py-3.5 px-4 text-right">
-                        <div className="inline-flex items-center gap-1.5">
+                      <td className="py-2.5 px-3 text-right">
+                        <div className="inline-flex items-center gap-1 whitespace-nowrap">
                           {/* Toggle PPPoE access */}
                           <button
                             onClick={() => onToggleIsolir(cust)}
-                            className={`inline-flex items-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-bold transition ${
+                            className={`inline-flex items-center justify-center p-1.5 rounded-lg text-[10px] font-bold transition ${
                               cust.status === 'isolated' || cust.status === 'disabled'
                                 ? 'bg-indigo-600/30 hover:bg-indigo-600 text-indigo-300 hover:text-white'
                                 : 'bg-rose-500/20 hover:bg-rose-600 text-rose-300 hover:text-white'
                             }`}
-                            title="Ubah status billing; perubahan akses RouterOS dikonfirmasi terpisah"
+                            title="Ubah status billing dan selaraskan secret PPPoE di RouterOS"
                           >
                             {cust.status === 'isolated' || cust.status === 'disabled'
-                              ? <><CheckCircle2 className="w-3.5 h-3.5" /><span>Aktifkan billing</span></>
-                              : <><ShieldAlert className="w-3.5 h-3.5" /><span>Isolir billing</span></>}
+                                ? <CheckCircle2 className="w-3.5 h-3.5" />
+                                : <ShieldAlert className="w-3.5 h-3.5" />}
                           </button>
 
                           {liveSecret && (
@@ -1300,10 +1282,10 @@ export const CustomersTab: React.FC<Props> = ({
                               type="button"
                               disabled={pppoeActionBusy}
                               onClick={() => void handleTogglePppoeSecret(cust, !liveSecret.disabled)}
-                              className={`inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-bold transition disabled:opacity-50 ${liveSecret.disabled ? 'bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600 hover:text-white' : 'bg-amber-500/15 text-amber-300 hover:bg-amber-600 hover:text-white'}`}
+                              className={`inline-flex items-center justify-center rounded-lg px-2 py-1.5 text-[9px] font-bold transition disabled:opacity-50 ${liveSecret.disabled ? 'bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600 hover:text-white' : 'bg-amber-500/15 text-amber-300 hover:bg-amber-600 hover:text-white'}`}
                               title={`${liveSecret.disabled ? 'Aktifkan' : 'Nonaktifkan'} secret langsung di MikroTik; status billing tidak berubah`}
                             >
-                              {liveSecret.disabled ? 'Aktifkan secret' : 'Nonaktifkan secret'}
+                              Secret {liveSecret.disabled ? 'OFF' : 'ON'}
                             </button>
                           )}
                           {liveSessions.length > 0 && (
@@ -1311,10 +1293,10 @@ export const CustomersTab: React.FC<Props> = ({
                               type="button"
                               disabled={pppoeActionBusy}
                               onClick={() => void handleDisconnectPppoeSession(cust, liveSessions[0])}
-                              className="inline-flex items-center gap-1 rounded-lg bg-sky-500/15 px-2 py-1.5 text-[10px] font-bold text-sky-300 transition hover:bg-sky-600 hover:text-white disabled:opacity-50"
-                              title={`Putuskan ${liveSessions.length} sesi aktif tanpa menghapus akun`}
+                              className="inline-flex items-center gap-1 rounded-lg bg-sky-500/15 px-2 py-1.5 text-[9px] font-bold text-sky-300 transition hover:bg-sky-600 hover:text-white disabled:opacity-50"
+                              title={`Putuskan ${liveSessions.length} sesi aktif tanpa menghapus akun${liveSessions[0]?.address ? ` · IP ${liveSessions[0].address}` : ''}${liveSessions[0]?.uptime ? ` · ${liveSessions[0].uptime}` : ''}${liveSessions[0] ? ` · RX ${formatPppoeTraffic(liveSessions[0].bytesIn)} / TX ${formatPppoeTraffic(liveSessions[0].bytesOut)}` : ''}`}
                             >
-                              <Wifi className="h-3.5 w-3.5" /> Putus sesi ({liveSessions.length})
+                              <Wifi className="h-3.5 w-3.5" /> {liveSessions.length}
                             </button>
                           )}
 
