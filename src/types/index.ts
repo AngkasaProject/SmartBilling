@@ -45,6 +45,8 @@ export interface Invoice {
   paymentMethod?: string;
   paymentChannel?: string;
   paymentRef?: string;
+  canceledAt?: string;
+  cancellationReason?: 'grace_period' | 'subscription_ending' | 'late_payment' | 'operator';
 }
 
 export interface HotspotProfile {
@@ -134,6 +136,7 @@ export interface RouterConfig {
 export type WhatsAppMsgType =
   | 'reminder_h3'
   | 'reminder_h1'
+  | 'invoice_canceled'
   | 'due_today'
   | 'isolated'
   | 'payment_success'

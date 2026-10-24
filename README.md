@@ -21,6 +21,11 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 
 - **👥 Manajemen Pelanggan PPPoE**:
   - Menu Paket PPPoE menampilkan PPP profile langsung dari router terpilih, serta mendukung tambah, edit, dan hapus profile MikroTik. Paket billing ditautkan ke profile live; perubahan nama/kecepatan menyinkronkan paket dan data pelanggan, sedangkan profile yang masih dipakai secret atau pelanggan tidak dapat dihapus.
+  - Workspace Data Router menampilkan seluruh PPPoE secret dan sesi aktif pada router terpilih, termasuk akun yang belum terdaftar di billing. Akun dapat dibuat, diedit, diaktifkan/nonaktifkan, dihapus, atau ditautkan secara opsional ke pelanggan billing tanpa membuat secret baru. Form penautan membuat ID pelanggan unik serta menyediakan data pelanggan, paket, siklus tagihan, dan tanggal jatuh tempo.
+  - Daftar billing membedakan akun yang terhubung dari secret yang tidak ditemukan di router; akun router yang belum tertaut dapat dibuka lewat dialog penautan tanpa mengubah password atau membuat secret duplikat.
+  - Status secret aktif/nonaktif dibedakan dari status billing. Jika keduanya berbeda, daftar menampilkan peringatan dan menyediakan aksi untuk menyamakan status RouterOS setelah konfirmasi.
+  - Sesi aktif menampilkan IP, caller ID, uptime, dan trafik live; operator dapat memutus sesi tanpa menghapus akun atau mengubah billing, serta mengaktifkan/nonaktifkan secret langsung pada router dengan dialog konfirmasi.
+  - Isolir billing dan pemblokiran secret RouterOS merupakan tindakan terpisah. Operator dapat memilih secara eksplisit apakah perubahan status billing juga mengubah akses PPPoE.
   - Saat mendaftarkan pelanggan, operator memilih paket; profile, kecepatan, dan harga terisi dari paket.
   - Pendaftaran user secret, assign static / dynamic IP pool, profile kecepatan (*rate-limit*), dan penetapan tanggal jatuh tempo.
   - Pencatatan pembayaran manual memperpanjang masa aktif; aktivasi router hanya dilakukan setelah RouterOS mengonfirmasi perubahan.
@@ -30,7 +35,9 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
   - Isolir dan aktivasi PPPoE dilakukan dengan mengubah status secret RouterOS secara langsung.
   - Dashboard menampilkan log server MikroTik dan menyediakan tab pemilih saat lebih dari satu router dikonfigurasi. Koneksi API digunakan ulang per router, ditutup setelah satu jam tanpa aktivitas, serta dibersihkan saat server berhenti.
 
-- **📈 Laporan pendapatan**:
+- **💳 Keuangan (Tagihan & Pendapatan)**:
+  - Menu Keuangan menyatukan pengelolaan invoice, persetujuan pembayaran, generate tagihan, pembayaran manual, dan riwayat pendapatan dalam tab terpisah.
+  - Invoice yang belum dibayar otomatis dibatalkan 7 hari setelah jatuh tempo dan dipindahkan ke riwayat; operator juga dapat membatalkan invoice aktif secara manual. Invoice periode baru tetap dapat dibuat pada siklus bulan berikutnya. PPPoE secret tidak dinonaktifkan otomatis ketika invoice dibatalkan. Pembayaran yang masuk setelah pembatalan memerlukan rekonsiliasi manual dan tidak mengaktifkan layanan otomatis. Jika notifikasi otomatis aktif, WhatsApp mengirim pengingat H-1 dan pemberitahuan saat invoice dibatalkan. Menu Tagihan memisahkan invoice aktif dari riwayat invoice lunas, jatuh tempo, dan dibatalkan. Riwayat dapat difilter berdasarkan status atau bulan jatuh tempo (termasuk bulan lalu), dihapus satu per satu, atau dibersihkan sekaligus setelah konfirmasi; pembayaran yang masih diproses mencegah penghapusan. Menghapus invoice lunas mengeluarkannya dari laporan pendapatan, sedangkan catatan transaksi pembayaran tetap disimpan.
   - Riwayat invoice lunas dan voucher terbayar dapat dicari, difilter, dan diekspor ke CSV yang kompatibel dengan Excel.
   - Statistik dapat direset terpisah dari riwayat; reset laporan tidak menghapus data transaksi operasional.
 
@@ -51,7 +58,9 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
   - Portal dapat berjalan pada origin terpisah. Data pelanggan, paket, pembayaran, dan konfigurasi bisnis tetap dikelola oleh SmartBilling API.
 
 - **🎫 Penjualan voucher hotspot**:
-  - Workspace Hotspot memakai satu pilihan router untuk ringkasan, daftar user, sesi aktif, persediaan voucher, user profile, dan paket. Status sesi diperbarui otomatis setiap 15 detik dan sesi dapat diputus tanpa menghapus akun; user/profile dibaca langsung dari RouterOS, sedangkan harga, kuota billing, dan persetujuan pembayaran tetap merupakan data aplikasi.
+  - Workspace Hotspot memakai satu pilihan router untuk ringkasan, daftar user, sesi aktif, persediaan voucher, user profile, Hotspot Server/Server Profile, dan paket. User dapat diedit atau diaktifkan/nonaktifkan langsung pada RouterOS; sesi diperbarui otomatis setiap 15 detik dan dapat diputus tanpa menghapus akun.
+  - Hotspot Server dapat dibuat, diaktifkan/nonaktifkan, dan dihapus; Server Profile live dapat ditambah, diedit, atau dihapus. Pilihan HTML directory berasal dari folder router yang terdeteksi, dan file dalam folder dapat dilihat serta dihapus dengan konfirmasi. Profile yang masih digunakan server tidak dapat dihapus atau diganti namanya.
+  - User/profile/server dibaca langsung dari RouterOS, sedangkan harga, kuota billing, dan persetujuan pembayaran tetap merupakan data aplikasi.
   - User Profile pada menu Voucher dibaca langsung dari router terpilih dan dapat ditambah, diedit, serta dihapus. Pengaturan billing profil disimpan bersama sinkronisasi RouterOS; menghapus profil juga menghapus konfigurasi layanan dan paket jual yang terkait.
   - Buat paket jual dengan memilih User Profile live dari MikroTik, lalu tetapkan masa berlaku, batas kuota, dan harga. Paket dan generator voucher tersedia sebagai dialog agar halaman administrasi tetap ringkas.
   - Daftar voucher, status online, batas, dan pemakaian dibaca langsung dari `/ip hotspot user` dan sesi aktif router. Hapus voucher menghapus user RouterOS dan data operasional billing terkait; tindakan hapus memakai dialog konfirmasi aplikasi.
@@ -275,7 +284,7 @@ Uji portal dari perangkat yang belum login. Untuk pembayaran otomatis, hostname 
 
 ## 🔒 Operasi Isolir PPPoE MikroTik
 
-Isolir manual di menu pelanggan mengubah properti `disabled` pada PPP secret yang dipilih setelah RouterOS mengonfirmasi perubahan. Aktivasi manual dari daftar pelanggan menggunakan operasi yang sama. Scheduler isolir otomatis dan redirect ke halaman tagihan belum diimplementasikan; jangan mengandalkan aplikasi ini untuk memutus pelanggan otomatis karena jatuh tempo.
+Status isolir billing tidak otomatis mengubah akses MikroTik. Saat mengubah status pelanggan, operator dapat mengonfirmasi secara terpisah apakah secret PPPoE juga harus dinonaktifkan atau diaktifkan. Perbedaan status billing dan secret ditandai pada daftar pelanggan, dengan aksi untuk menyelaraskan secret setelah konfirmasi. Pengiriman notifikasi isolir otomatis hanya dilakukan setelah RouterOS berhasil mengonfirmasi secret dinonaktifkan. Pembatalan langganan yang dijadwalkan tetap menonaktifkan secret saat masa layanan berakhir; isolir otomatis semata-mata karena tagihan jatuh tempo tidak diimplementasikan.
 
 ## 💳 Pembayaran Invoice
 

@@ -11,11 +11,14 @@ import {
   CheckCircle2,
   Clock,
   AlertTriangle,
+  History,
   Send,
   Zap,
   Printer,
   X,
-  DollarSign
+  DollarSign,
+  Trash2,
+  Ban
 } from 'lucide-react';
 
 interface Props {
@@ -35,7 +38,12 @@ export const InvoicesTab: React.FC<Props> = ({
 }) => {
   const { toast, confirm: confirmAction } = useToast();
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'unpaid' | 'paid' | 'expired'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'unpaid' | 'paid' | 'expired' | 'canceled'>('all');
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyMonthFilter, setHistoryMonthFilter] = useState<'all' | 'previous'>('all');
+  const [deletingInvoiceId, setDeletingInvoiceId] = useState('');
+  const [deletingHistory, setDeletingHistory] = useState(false);
+  const [cancelingInvoiceId, setCancelingInvoiceId] = useState('');
   const [manualPayInvoice, setManualPayInvoice] = useState<Invoice | null>(null);
   const [manualPaymentMethod, setManualPaymentMethod] = useState('Cash (Tunai / Kasir)');
   const [isSettlingManual, setIsSettlingManual] = useState(false);
@@ -49,7 +57,7 @@ export const InvoicesTab: React.FC<Props> = ({
     .filter(i => i.status === 'paid')
     .reduce((sum, i) => sum + i.totalAmount, 0);
   const unpaidInvoiced = invoices
-    .filter(i => i.status !== 'paid')
+    .filter(i => i.status === 'unpaid')
     .reduce((sum, i) => sum + i.totalAmount, 0);
 
   // Batch Billing Generation (Run billing for next month)
@@ -171,7 +179,23 @@ export const InvoicesTab: React.FC<Props> = ({
     }
   };
 
+  const historyInvoices = invoices.filter(invoice =>
+    invoice.status === 'paid' || invoice.status === 'expired' || invoice.status === 'canceled'
+  );
+  const jakartaDateParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jakarta',
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(new Date());
+  const currentJakartaYear = Number(jakartaDateParts.find(part => part.type === 'year')?.value);
+  const currentJakartaMonth = Number(jakartaDateParts.find(part => part.type === 'month')?.value);
+  const previousMonthKey = new Date(Date.UTC(currentJakartaYear, currentJakartaMonth - 2, 1))
+    .toISOString()
+    .slice(0, 7);
   const filteredInvoices = invoices.filter(i => {
+    const isHistoryInvoice = i.status === 'paid' || i.status === 'expired' || i.status === 'canceled';
+    if (showHistory !== isHistoryInvoice) return false;
+    if (showHistory && historyMonthFilter === 'previous' && i.dueDate.slice(0, 7) !== previousMonthKey) return false;
     const matchesSearch =
       i.invoiceNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
       i.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -181,6 +205,84 @@ export const InvoicesTab: React.FC<Props> = ({
     if (statusFilter === 'all') return true;
     return i.status === statusFilter;
   });
+
+  const handleDeleteInvoice = async (invoice: Invoice) => {
+    if (!await confirmAction(
+      `Hapus invoice ${invoice.invoiceNumber}?`,
+      `Invoice riwayat milik ${invoice.customerName} akan dihapus permanen. Jika lunas, invoice ini juga tidak lagi dihitung dalam laporan pendapatan. Catatan transaksi pembayaran tidak ikut dihapus.`,
+      true
+    )) return;
+
+    setDeletingInvoiceId(invoice.id);
+    try {
+      const response = await fetch(`/api/admin/invoices/${encodeURIComponent(invoice.id)}`, { method: 'DELETE' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (!Array.isArray(result.deletedIds) || !result.deletedIds.includes(invoice.id)) {
+        throw new Error('Server tidak mengonfirmasi penghapusan invoice');
+      }
+      StorageService.deleteInvoices(result.deletedIds);
+      onRefreshData();
+      toast('Invoice riwayat dihapus', 'success', `${invoice.invoiceNumber} · catatan transaksi pembayaran tetap disimpan.`);
+    } catch (error) {
+      toast('Gagal menghapus invoice riwayat', 'error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setDeletingInvoiceId('');
+    }
+  };
+
+  const handleCancelInvoice = async (invoice: Invoice) => {
+    if (!await confirmAction(
+      `Batalkan invoice ${invoice.invoiceNumber}?`,
+      `Invoice ${invoice.invoiceNumber} milik ${invoice.customerName} akan dipindahkan ke riwayat sebagai dibatalkan. Pembayaran yang masih menunggu akan ikut dibatalkan. Jika pembayaran sudah terkonfirmasi, invoice tidak dapat dibatalkan.`,
+      true
+    )) return;
+
+    setCancelingInvoiceId(invoice.id);
+    try {
+      const response = await fetch(`/api/admin/invoices/${encodeURIComponent(invoice.id)}/cancel`, {
+        method: 'POST',
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (result.invoice?.id !== invoice.id || result.invoice.status !== 'canceled') {
+        throw new Error('Server tidak mengonfirmasi pembatalan invoice');
+      }
+      StorageService.saveInvoice(result.invoice as Invoice);
+      onRefreshData();
+      toast('Invoice dibatalkan', 'success', `${invoice.invoiceNumber} dipindahkan ke riwayat.`);
+    } catch (error) {
+      toast('Gagal membatalkan invoice', 'error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setCancelingInvoiceId('');
+    }
+  };
+
+  const handleDeleteHistory = async () => {
+    if (!historyInvoices.length || !await confirmAction(
+      'Hapus seluruh riwayat invoice?',
+      `${historyInvoices.length} invoice lunas, jatuh tempo, dan dibatalkan akan dihapus permanen. Invoice lunas tidak lagi dihitung dalam laporan pendapatan. Catatan transaksi pembayaran dan tagihan belum lunas tetap disimpan.`,
+      true
+    )) return;
+
+    setDeletingHistory(true);
+    try {
+      const response = await fetch('/api/admin/invoices/history', { method: 'DELETE' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (!Array.isArray(result.deletedIds) || result.deletedIds.some((id: unknown) => typeof id !== 'string')) {
+        throw new Error('Server mengembalikan daftar riwayat terhapus yang tidak valid');
+      }
+      StorageService.deleteInvoices(result.deletedIds);
+      setStatusFilter('all');
+      onRefreshData();
+      toast('Riwayat invoice dihapus', 'success', `${result.deletedIds.length} invoice dihapus. Catatan transaksi pembayaran tetap disimpan.`);
+    } catch (error) {
+      toast('Gagal menghapus riwayat invoice', 'error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setDeletingHistory(false);
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -211,7 +313,7 @@ export const InvoicesTab: React.FC<Props> = ({
             Rp {unpaidInvoiced.toLocaleString('id-ID')}
           </div>
           <span className="text-[11px] text-rose-500/80 mt-1 block">
-            {invoices.filter(i => i.status !== 'paid').length} Invoice Belum Terbayar
+            {invoices.filter(i => i.status === 'unpaid').length} Invoice Belum Terbayar
           </span>
         </div>
       </div>
@@ -225,7 +327,7 @@ export const InvoicesTab: React.FC<Props> = ({
               <span>Daftar Tagihan & Invoice Bulanan</span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Pemantauan tagihan PPPoE, riwayat pembayaran gateway, dan auto-extend subscription
+            Tagihan belum dibayar otomatis dibatalkan 7 hari setelah jatuh tempo dan dipindahkan ke riwayat.
             </p>
           </div>
 
@@ -249,6 +351,50 @@ export const InvoicesTab: React.FC<Props> = ({
 
         {/* Filter & Search Bar */}
         <div className="mt-5 pt-4 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex w-full items-center justify-between gap-3 sm:w-auto">
+            <div className="flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-950 p-1 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowHistory(false);
+                  setHistoryMonthFilter('all');
+                  setStatusFilter('all');
+                }}
+                aria-pressed={!showHistory}
+                className={`rounded-lg px-3 py-1.5 font-medium transition ${
+                  !showHistory ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Tagihan Aktif ({invoices.filter(invoice => invoice.status === 'unpaid').length})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowHistory(true);
+                  setHistoryMonthFilter('all');
+                  setStatusFilter('all');
+                }}
+                aria-pressed={showHistory}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium transition ${
+                  showHistory ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <History className="h-3.5 w-3.5" />
+                Riwayat ({historyInvoices.length})
+              </button>
+            </div>
+            {showHistory && (
+              <button
+                type="button"
+                onClick={() => void handleDeleteHistory()}
+                disabled={!historyInvoices.length || deletingHistory}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] font-semibold text-rose-300 transition hover:bg-rose-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {deletingHistory ? 'Menghapus...' : 'Hapus semua riwayat'}
+              </button>
+            )}
+          </div>
           <div className="relative w-full sm:w-80">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
@@ -267,32 +413,66 @@ export const InvoicesTab: React.FC<Props> = ({
                 statusFilter === 'all' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
               }`}
             >
-              Semua ({invoices.length})
+              Semua ({showHistory
+                ? historyInvoices.filter(invoice => historyMonthFilter === 'all' || invoice.dueDate.slice(0, 7) === previousMonthKey).length
+                : invoices.filter(i => i.status === 'unpaid').length})
             </button>
-            <button
-              onClick={() => setStatusFilter('unpaid')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition ${
-                statusFilter === 'unpaid' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Belum Bayar ({invoices.filter(i => i.status === 'unpaid').length})
-            </button>
-            <button
-              onClick={() => setStatusFilter('paid')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition ${
-                statusFilter === 'paid' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Lunas ({invoices.filter(i => i.status === 'paid').length})
-            </button>
-            <button
-              onClick={() => setStatusFilter('expired')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition ${
-                statusFilter === 'expired' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Jatuh Tempo ({invoices.filter(i => i.status === 'expired').length})
-            </button>
+            {!showHistory ? (
+              <button
+                onClick={() => setStatusFilter('unpaid')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                  statusFilter === 'unpaid' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Belum Bayar ({invoices.filter(i => i.status === 'unpaid').length})
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setHistoryMonthFilter('all')}
+                  className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                    historyMonthFilter === 'all' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Semua bulan
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHistoryMonthFilter('previous')}
+                  className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                    historyMonthFilter === 'previous' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                  aria-label={`Filter riwayat bulan lalu ${previousMonthKey}`}
+                >
+                  Bulan lalu ({previousMonthKey})
+                </button>
+                <button
+                  onClick={() => setStatusFilter('paid')}
+                  className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                    statusFilter === 'paid' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Lunas ({invoices.filter(i => i.status === 'paid').length})
+                </button>
+                <button
+                  onClick={() => setStatusFilter('expired')}
+                  className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                    statusFilter === 'expired' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Jatuh Tempo ({invoices.filter(i => i.status === 'expired').length})
+                </button>
+                <button
+                  onClick={() => setStatusFilter('canceled')}
+                  className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                    statusFilter === 'canceled' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Dibatalkan ({invoices.filter(i => i.status === 'canceled').length})
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -447,6 +627,11 @@ export const InvoicesTab: React.FC<Props> = ({
                             <AlertTriangle className="w-3 h-3" /> JATUH TEMPO
                           </span>
                         )}
+                        {inv.status === 'canceled' && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-700/60 text-slate-300 border border-slate-600">
+                            DIBATALKAN
+                          </span>
+                        )}
                       </td>
 
                       {/* Actions */}
@@ -462,7 +647,7 @@ export const InvoicesTab: React.FC<Props> = ({
                           </button>
 
                           {/* WhatsApp Link */}
-                          {cust && (
+                          {cust && inv.status === 'unpaid' && (
                             <button
                               onClick={() => onSendWa(cust, 'reminder')}
                               className="p-1.5 bg-emerald-500/20 hover:bg-emerald-600 text-emerald-300 hover:text-white rounded-lg transition"
@@ -473,14 +658,40 @@ export const InvoicesTab: React.FC<Props> = ({
                           )}
 
                           {/* Manual Settle (if not paid) */}
-                          {inv.status !== 'paid' && (
+                          {inv.status === 'unpaid' && (
+                            <>
+                              <button
+                                onClick={() => setManualPayInvoice(inv)}
+                                className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[11px] font-semibold transition flex items-center gap-1"
+                                title="Catat Pembayaran Masuk"
+                              >
+                                <DollarSign className="w-3 h-3" />
+                                <span>Bayar</span>
+                              </button>
+                              {!showHistory && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleCancelInvoice(inv)}
+                                  disabled={cancelingInvoiceId === inv.id}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-rose-300 transition hover:bg-rose-600 hover:text-white disabled:opacity-50"
+                                  title="Batalkan invoice dan pindahkan ke riwayat"
+                                >
+                                  <Ban className="h-3 w-3" />
+                                  <span>{cancelingInvoiceId === inv.id ? 'Membatalkan...' : 'Batalkan'}</span>
+                                </button>
+                              )}
+                            </>
+                          )}
+                          {showHistory && (
                             <button
-                              onClick={() => setManualPayInvoice(inv)}
-                              className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[11px] font-semibold transition flex items-center gap-1"
-                              title="Catat Pembayaran Masuk"
+                              type="button"
+                              onClick={() => void handleDeleteInvoice(inv)}
+                              disabled={deletingInvoiceId === inv.id || deletingHistory}
+                              className="rounded-lg bg-rose-500/15 p-1.5 text-rose-300 transition hover:bg-rose-600 hover:text-white disabled:opacity-50"
+                              title="Hapus invoice dari riwayat"
+                              aria-label={`Hapus invoice ${inv.invoiceNumber}`}
                             >
-                              <DollarSign className="w-3 h-3" />
-                              <span>Bayar</span>
+                              <Trash2 className="h-3.5 w-3.5" />
                             </button>
                           )}
                         </div>

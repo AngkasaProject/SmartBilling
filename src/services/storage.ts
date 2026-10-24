@@ -333,6 +333,13 @@ export const StorageService = {
     return list;
   },
 
+  deleteInvoices(ids: string[]): Invoice[] {
+    const deletedIds = new Set(ids);
+    const list = this.getInvoices().filter(invoice => !deletedIds.has(invoice.id));
+    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify(list));
+    return list;
+  },
+
   getHotspotProfiles(): HotspotProfile[] {
     return readStoredList<HotspotProfile>(STORAGE_KEYS.HOTSPOT_PROFILES, ['hp-1', 'hp-2', 'hp-3', 'hp-4']);
   },

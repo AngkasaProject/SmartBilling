@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Voucher, HotspotProfile, HotspotServiceProfile, RouterConfig } from '../../types';
 import { StorageService } from '../../services/storage';
 import { HotspotPackagesManager } from './HotspotPackagesManager';
+import { HotspotRouterPanel } from './HotspotRouterPanel';
 import { PaymentApprovalsPanel } from './PaymentApprovalsPanel';
 import { useToast } from '../ui/toast';
 import {
@@ -20,7 +21,9 @@ import {
   Layers,
   RefreshCw,
   Trash2,
-  Unplug
+  Unplug,
+  Edit2,
+  Power
 } from 'lucide-react';
 
 interface RouterVoucher extends Voucher {
@@ -67,10 +70,17 @@ export const VouchersTab: React.FC<Props> = ({
   const [routerReloadKey, setRouterReloadKey] = useState(0);
   const [deletingVoucher, setDeletingVoucher] = useState('');
   const [disconnectingVoucher, setDisconnectingVoucher] = useState('');
+  const [editingVoucher, setEditingVoucher] = useState<RouterVoucher | null>(null);
+  const [routerUserProfiles, setRouterUserProfiles] = useState<Array<{ name: string }>>([]);
+  const [userProfilesLoading, setUserProfilesLoading] = useState(false);
+  const [userProfileError, setUserProfileError] = useState('');
+  const [savingUser, setSavingUser] = useState(false);
+  const [updatingStatus, setUpdatingStatus] = useState('');
+  const [userForm, setUserForm] = useState({ password: '', profile: '', limitUptime: '', limitBytesTotal: '0', comment: '' });
   const [isGenerateModalOpen, setIsGenerateModalOpen] = useState(false);
   const [isScriptModalOpen, setIsScriptModalOpen] = useState(false);
   const [copiedScript, setCopiedScript] = useState(false);
-  const [activeSection, setActiveSection] = useState<'overview' | 'all' | 'sessions' | 'unused' | 'approvals' | 'products'>('overview');
+  const [activeSection, setActiveSection] = useState<'overview' | 'all' | 'sessions' | 'unused' | 'products' | 'servers' | 'approvals'>('overview');
   const [isGenerating, setIsGenerating] = useState(false);
   const [pageError, setPageError] = useState('');
 
@@ -137,6 +147,35 @@ export const VouchersTab: React.FC<Props> = ({
     return () => window.clearInterval(interval);
   }, [selectedRouterId]);
 
+  useEffect(() => {
+    if (!editingVoucher || !selectedRouterId) {
+      setRouterUserProfiles([]);
+      setUserProfileError('');
+      return;
+    }
+    let active = true;
+    setUserProfilesLoading(true);
+    setUserProfileError('');
+    fetch(`/api/mikrotik/hotspot/profiles?routerId=${encodeURIComponent(selectedRouterId)}`)
+      .then(async response => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        return result.profiles as Array<{ name: string }>;
+      })
+      .then(profiles => {
+        if (active) setRouterUserProfiles(profiles);
+      })
+      .catch(error => {
+        if (active) setUserProfileError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (active) setUserProfilesLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [editingVoucher, selectedRouterId]);
+
   const handleGenerateBatch = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsGenerating(true);
@@ -202,6 +241,7 @@ export const VouchersTab: React.FC<Props> = ({
     ['sessions', `Sesi aktif (${routerVouchers.filter(v => v.active).length})`],
     ['unused', `Belum dipakai (${routerVouchers.filter(v => v.status === 'unused').length})`],
     ['products', 'Profil & paket'],
+    ['servers', 'Server RouterOS'],
     ['approvals', `Persetujuan (${vouchers.filter(v => v.status === 'pending').length})`],
   ] as const;
   const visibleVouchers = filteredVouchers.filter(voucher =>
@@ -262,6 +302,92 @@ export const VouchersTab: React.FC<Props> = ({
     }
   };
 
+  const openEditVoucher = (voucher: RouterVoucher) => {
+    setUserForm({
+      password: '',
+      profile: voucher.profileName,
+      limitUptime: voucher.limitUptime === '0s' ? '' : voucher.limitUptime,
+      limitBytesTotal: String(voucher.limitBytesTotal),
+      comment: voucher.batchCode === 'MikroTik' ? '' : voucher.batchCode,
+    });
+    setEditingVoucher(voucher);
+  };
+
+  const saveVoucherUser = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingVoucher) return;
+    setSavingUser(true);
+    setPageError('');
+    try {
+      const response = await fetch(`/api/mikrotik/hotspot/users/${encodeURIComponent(selectedRouterId)}/${encodeURIComponent(editingVoucher.code)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...(userForm.password.trim() ? { password: userForm.password } : {}),
+          profile: userForm.profile,
+          limitUptime: userForm.limitUptime,
+          limitBytesTotal: Number(userForm.limitBytesTotal),
+          comment: userForm.comment,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      setEditingVoucher(null);
+      setRouterReloadKey(key => key + 1);
+      toast('User Hotspot diperbarui', 'success', `${editingVoucher.code} berhasil diperbarui pada MikroTik.`);
+    } catch (error) {
+      setPageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingUser(false);
+    }
+  };
+
+  const toggleVoucherStatus = async (voucher: RouterVoucher) => {
+    const disabling = !voucher.disabled;
+    if (!await confirmAction(
+      disabling ? 'Nonaktifkan user Hotspot?' : 'Aktifkan user Hotspot?',
+      disabling
+        ? `Akun "${voucher.code}" akan dinonaktifkan di MikroTik.${voucher.active ? ' Sesi aktifnya juga akan diputus.' : ''}`
+        : `Akun "${voucher.code}" akan diaktifkan kembali di MikroTik.`,
+      disabling,
+    )) return;
+    setUpdatingStatus(voucher.code);
+    setPageError('');
+    try {
+      const response = await fetch(`/api/mikrotik/hotspot/users/${encodeURIComponent(selectedRouterId)}/${encodeURIComponent(voucher.code)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disabled: disabling }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      let sessionWarning = '';
+      if (disabling && voucher.active) {
+        try {
+          const kickResponse = await fetch('/api/mikrotik/hotspot/active', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ routerId: selectedRouterId, name: voucher.code }),
+          });
+          const kickResult = await kickResponse.json();
+          if (!kickResponse.ok) throw new Error(kickResult.error || `HTTP ${kickResponse.status}`);
+        } catch (error) {
+          sessionWarning = error instanceof Error ? error.message : String(error);
+        }
+      }
+      setRouterReloadKey(key => key + 1);
+      if (sessionWarning) {
+        toast('User dinonaktifkan, sesi belum terputus', 'error', sessionWarning);
+      } else {
+        toast(disabling ? 'User dinonaktifkan' : 'User diaktifkan', 'success', `${voucher.code} diperbarui langsung di MikroTik.`);
+      }
+    } catch (error) {
+      setPageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setUpdatingStatus('');
+    }
+  };
+
   return (
     <div className="space-y-5">
       <header className="rounded-2xl border border-slate-800 bg-slate-900/90 p-5">
@@ -298,6 +424,7 @@ export const VouchersTab: React.FC<Props> = ({
       </header>
       {pageError && <p role="alert" className="rounded-xl border border-rose-500/30 bg-rose-950/30 p-3 text-xs text-rose-200">{pageError}</p>}
       {activeSection === 'products' && <HotspotPackagesManager profiles={profiles} serviceProfiles={serviceProfiles} routers={routers} selectedRouterId={selectedRouterId} onSelectRouter={setSelectedRouterId} onRefreshData={onRefreshData} onManageRouters={onManageRouters} />}
+      {activeSection === 'servers' && <HotspotRouterPanel routerId={selectedRouterId} routers={routers} />}
       {activeSection === 'approvals' && <PaymentApprovalsPanel orderType="voucher" onRefreshData={onRefreshData} />}
       {activeSection === 'overview' && (
         <div className="space-y-5">
@@ -514,7 +641,7 @@ export const VouchersTab: React.FC<Props> = ({
                     </td>
 
                     <td className="py-3.5 px-4 text-slate-400 text-[11px]">
-                      <div>{activeSection === 'sessions' ? `Online ${v.sessionUptime || '—'}` : v.limitUptime || 'Tanpa batas waktu'}</div>
+                      <div>{activeSection === 'sessions' ? `Online ${v.sessionUptime || '—'}` : v.limitUptime && v.limitUptime !== '0s' ? v.limitUptime : 'Tanpa batas waktu'}</div>
                       <div>{((v.bytesIn + v.bytesOut) / (1024 * 1024)).toFixed(2)} MB / {v.limitBytesTotal ? `${(v.limitBytesTotal / (1024 * 1024)).toFixed(0)} MB` : 'tanpa batas kuota'}</div>
                     </td>
 
@@ -543,6 +670,25 @@ export const VouchersTab: React.FC<Props> = ({
 
                     <td className="py-3.5 px-4 text-right font-sans">
                       <div className="flex justify-end gap-1.5">
+                        <button
+                          type="button"
+                          disabled={updatingStatus === v.code}
+                          onClick={() => void toggleVoucherStatus(v)}
+                          className={`p-1.5 rounded-lg border inline-flex items-center gap-1 text-[11px] disabled:opacity-50 ${v.disabled ? 'border-emerald-500/30 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/50' : 'border-amber-500/30 bg-amber-950/30 text-amber-200 hover:bg-amber-900/50'}`}
+                          title={v.disabled ? 'Aktifkan user di MikroTik' : 'Nonaktifkan user di MikroTik'}
+                        >
+                          <Power className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">{updatingStatus === v.code ? 'Menyimpan...' : v.disabled ? 'Aktifkan' : 'Nonaktifkan'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openEditVoucher(v)}
+                          className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 inline-flex items-center gap-1 text-[11px]"
+                          title="Edit user di MikroTik"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                          <span className="hidden sm:inline">Edit</span>
+                        </button>
                         {activeSection === 'sessions' && v.active && (
                           <button
                             type="button"
@@ -719,6 +865,57 @@ export const VouchersTab: React.FC<Props> = ({
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {editingVoucher && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/80 p-4 backdrop-blur-sm">
+          <form onSubmit={saveVoucherUser} className="my-auto w-full max-w-xl space-y-4 rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="font-bold">Edit user Hotspot</h3>
+                <p className="mt-1 text-xs text-slate-400">Perubahan user disimpan langsung ke MikroTik {routers.find(router => router.id === selectedRouterId)?.name || ''}.</p>
+              </div>
+              <button type="button" onClick={() => setEditingVoucher(null)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white" aria-label="Tutup"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-2.5">
+              <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Username (tidak dapat diubah)</span>
+              <span className="mt-1 block font-mono text-sm font-bold">{editingVoucher.code}</span>
+            </div>
+            {editingVoucher.active && <p className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-3 text-[11px] text-amber-200">User sedang online. Perubahan profile atau batas tidak memutus sesi yang sedang berjalan; putuskan sesi secara terpisah bila perlu menerapkan perubahan segera.</p>}
+            <label className="block text-xs text-slate-300">Password baru <span className="text-slate-500">(kosongkan untuk tidak mengubah)</span>
+              <input type="password" autoComplete="new-password" maxLength={128} value={userForm.password} onChange={event => setUserForm({ ...userForm, password: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+            </label>
+            <label className="block text-xs text-slate-300">User profile MikroTik
+              <select required value={userForm.profile} onChange={event => setUserForm({ ...userForm, profile: event.target.value })} disabled={userProfilesLoading} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white disabled:opacity-60">
+                <option value="">Pilih profile live</option>
+                {routerUserProfiles.map(profile => <option key={profile.name} value={profile.name}>{profile.name}</option>)}
+                {userForm.profile && !routerUserProfiles.some(profile => profile.name === userForm.profile) && <option value={userForm.profile}>{userForm.profile} (saat ini)</option>}
+              </select>
+              {userProfilesLoading && <span role="status" className="mt-1 block text-[11px] text-slate-500">Memuat profile dari router...</span>}
+              {userProfileError && <span role="alert" className="mt-1 block text-[11px] text-rose-300">{userProfileError}</span>}
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-xs text-slate-300">Batas waktu (limit-uptime)
+                <input maxLength={64} value={userForm.limitUptime} onChange={event => setUserForm({ ...userForm, limitUptime: event.target.value })} placeholder="Kosongkan untuk tanpa batas" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+                <span className="mt-1 block text-[10px] text-slate-500">Contoh: 12h, 1d, atau 01:00:00.</span>
+              </label>
+              <label className="text-xs text-slate-300">Batas kuota (byte)
+                <input required type="number" min={0} step={1} value={userForm.limitBytesTotal} onChange={event => setUserForm({ ...userForm, limitBytesTotal: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+                <span className="mt-1 block text-[10px] text-slate-500">{Number(userForm.limitBytesTotal || 0) === 0 ? '0 = tanpa batas kuota.' : `${(Number(userForm.limitBytesTotal) / (1024 * 1024)).toFixed(2)} MB`}</span>
+              </label>
+            </div>
+            <label className="block text-xs text-slate-300">Comment RouterOS
+              <input maxLength={200} value={userForm.comment} onChange={event => setUserForm({ ...userForm, comment: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+            </label>
+            {pageError && <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-950/30 p-3 text-xs text-rose-200">{pageError}</p>}
+            <div className="flex justify-end gap-2 border-t border-slate-800 pt-4">
+              <button type="button" onClick={() => setEditingVoucher(null)} className="rounded-lg bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200">Batal</button>
+              <button type="submit" disabled={savingUser || userProfilesLoading || !!userProfileError || !routerUserProfiles.some(profile => profile.name === userForm.profile)} className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
+                {savingUser ? 'Menyimpan ke MikroTik...' : 'Simpan Perubahan'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

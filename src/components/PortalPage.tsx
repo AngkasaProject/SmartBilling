@@ -154,9 +154,14 @@ function InvoiceStatusBadge({ invoice }: { invoice: PortalInvoice }) {
         <CheckCircle2 className="w-3 h-3" /> Lunas
       </span>
     );
+  if (invoice.status === "canceled")
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-700 border border-slate-200">
+        <AlertCircle className="w-3 h-3" /> Tagihan dibatalkan
+      </span>
+    );
   if (
     invoice.status === "expired" ||
-    invoice.status === "canceled" ||
     invoice.latestPaymentStatus === "expired" ||
     invoice.latestPaymentStatus === "canceled"
   )

@@ -59,6 +59,10 @@ import {
   getHotspotUserProfiles,
   getHotspotUsers,
   getHotspotServerProfiles,
+  getHotspotFileListing,
+  deleteHotspotFile,
+  updateHotspotServerProfile,
+  deleteHotspotServerProfile,
   addPppProfile,
   addHotspotUserProfile,
   updateHotspotUserProfile,
@@ -72,11 +76,14 @@ import {
   deleteRouterServiceRecord,
   ensureHotspotUserProfile,
   addHotspotUser,
+  updateHotspotUser,
   PppoeSetup,
   RouterConnection,
   closeRouterApiSessions,
   testRouterConnection,
   getPppoeActiveSessionStats,
+  getPppoeActiveSessions,
+  disconnectPppoeSessions,
   getRouterLogs,
   updatePppoeSecret,
   getPppoeSecrets,
@@ -1188,7 +1195,9 @@ async function startServer() {
       const periodInvoices = invoices.filter(invoice =>
         invoice.customerId === customer.id && invoice.periodMonth === periodMonth
       );
-      if (periodInvoices.some(invoice => invoice.status === 'paid')) return null;
+      if (periodInvoices.some(invoice =>
+        invoice.status === 'paid' || invoice.status === 'canceled' || invoice.status === 'expired'
+      )) return null;
 
       const periodCode = dueDate.slice(0, 7).replace('-', '');
       const numberPattern = new RegExp(`^INV-${periodCode}-(\\d+)$`);
@@ -1912,7 +1921,12 @@ async function startServer() {
       );
       const updatedInvoices = invoices.map(invoice =>
         upcomingInvoices.some(upcoming => upcoming.id === invoice.id)
-          ? { ...invoice, status: 'canceled' as const }
+          ? {
+            ...invoice,
+            status: 'canceled' as const,
+            canceledAt: new Date().toISOString(),
+            cancellationReason: 'subscription_ending' as const,
+          }
           : invoice
       );
       await savePublicPaymentUpdateDb(updatedCustomers, updatedInvoices, transactions);
@@ -2600,6 +2614,35 @@ async function startServer() {
     }
   });
 
+  app.get('/api/mikrotik/hotspot/files', requireAdminSession, async (req, res) => {
+    const routerId = String(req.query.routerId || '');
+    const directory = typeof req.query.directory === 'string' ? req.query.directory : undefined;
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
+      res.json(await getHotspotFileListing(router, directory));
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete('/api/mikrotik/hotspot/files', requireAdminSession, async (req, res) => {
+    const { routerId, directory, name } = req.body || {};
+    if (
+      typeof routerId !== 'string' || !routerId ||
+      typeof directory !== 'string' || !directory || directory.length > 256 ||
+      typeof name !== 'string' || !name || name.length > 512
+    ) return res.status(400).json({ error: 'Router, direktori, dan nama file wajib diisi' });
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
+      await deleteHotspotFile(router, directory, name);
+      res.json({ status: 'success' });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post('/api/mikrotik/hotspot/server-profiles', requireAdminSession, async (req, res) => {
     const { routerId, profile } = req.body || {};
     if (
@@ -2615,6 +2658,61 @@ async function startServer() {
       if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
       await addHotspotServerProfile(router, profile as Parameters<typeof addHotspotServerProfile>[1]);
       res.status(201).json({ status: 'success' });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.put('/api/mikrotik/hotspot/server-profiles', requireAdminSession, async (req, res) => {
+    const { routerId, existingName, profile } = req.body || {};
+    if (
+      typeof routerId !== 'string' || !routerId ||
+      typeof existingName !== 'string' || !existingName || existingName.length > 64 ||
+      !isRecord(profile) ||
+      typeof profile.name !== 'string' || !/^[A-Za-z0-9_. -]{1,64}$/.test(profile.name) ||
+      typeof profile.hotspotAddress !== 'string' || profile.hotspotAddress.length > 128 ||
+      typeof profile.dnsName !== 'string' || profile.dnsName.length > 128 ||
+      typeof profile.htmlDirectory !== 'string' || profile.htmlDirectory.length > 128 ||
+      typeof profile.loginBy !== 'string' || profile.loginBy.length > 128 ||
+      typeof profile.useRadius !== 'boolean'
+    ) return res.status(400).json({ error: 'Data Hotspot Server Profile tidak valid' });
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
+      if (profile.name !== existingName) {
+        const servers = await getRouterServiceRecords(router, 'hotspot');
+        if (servers.some(server => server.profile === existingName)) {
+          return res.status(409).json({ error: 'Nama profile tidak dapat diubah selama masih digunakan Hotspot Server. Pindahkan server ke profile lain terlebih dahulu.' });
+        }
+      }
+      await updateHotspotServerProfile(router, existingName, {
+        name: profile.name,
+        hotspotAddress: profile.hotspotAddress,
+        dnsName: profile.dnsName,
+        htmlDirectory: profile.htmlDirectory,
+        loginBy: profile.loginBy,
+        useRadius: profile.useRadius,
+      });
+      res.json({ status: 'success' });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete('/api/mikrotik/hotspot/server-profiles', requireAdminSession, async (req, res) => {
+    const { routerId, name } = req.body || {};
+    if (typeof routerId !== 'string' || !routerId || typeof name !== 'string' || !name || name.length > 64) {
+      return res.status(400).json({ error: 'Router dan nama Hotspot Server Profile wajib diisi' });
+    }
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
+      const servers = await getRouterServiceRecords(router, 'hotspot');
+      if (servers.some(server => server.profile === name)) {
+        return res.status(409).json({ error: 'Server profile masih digunakan Hotspot Server. Pindahkan server ke profile lain terlebih dahulu.' });
+      }
+      await deleteHotspotServerProfile(router, name);
+      res.json({ status: 'success' });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -2697,6 +2795,50 @@ async function startServer() {
       await saveAppDataCollectionDb('vouchers', (stored.data.vouchers || []).filter(voucher =>
         voucher.code !== name || (voucher.routerId && voucher.routerId !== routerId)
       ));
+      res.json({ status: 'success' });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.patch('/api/mikrotik/hotspot/users/:routerId/:name', requireAdminSession, async (req, res) => {
+    const { password, profile, limitUptime, limitBytesTotal, comment, disabled } = req.body || {};
+    const validUptime = (value: string) =>
+      value === '' || /^(?:\d+[wdhms])*(?:\d{1,3}:\d{2}:\d{2})?$/i.test(value);
+    if (
+      (password !== undefined && (
+        typeof password !== 'string' || !password || password.length > 128 ||
+        password.trim().toLowerCase() === 'undefined'
+      )) ||
+      (profile !== undefined && (typeof profile !== 'string' || !/^[A-Za-z0-9_. -]{1,64}$/.test(profile))) ||
+      (limitUptime !== undefined && (typeof limitUptime !== 'string' || limitUptime.length > 64 || !validUptime(limitUptime))) ||
+      (limitBytesTotal !== undefined && (
+        typeof limitBytesTotal !== 'number' || !Number.isSafeInteger(limitBytesTotal) || limitBytesTotal < 0
+      )) ||
+      (comment !== undefined && (typeof comment !== 'string' || comment.length > 200)) ||
+      (disabled !== undefined && typeof disabled !== 'boolean') ||
+      (password === undefined && profile === undefined && limitUptime === undefined &&
+        limitBytesTotal === undefined && comment === undefined && disabled === undefined)
+    ) {
+      return res.status(400).json({ error: 'Perubahan user Hotspot tidak valid' });
+    }
+    try {
+      const router = await resolveRouterConnection(req.params.routerId);
+      if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
+      if (profile !== undefined) {
+        const profiles = await getHotspotUserProfiles(router);
+        if (!profiles.some(item => item.name === profile)) {
+          return res.status(400).json({ error: 'User profile tidak ditemukan pada router yang dipilih' });
+        }
+      }
+      await updateHotspotUser(router, req.params.name, {
+        password,
+        profile,
+        limitUptime,
+        limitBytesTotal,
+        comment,
+        disabled,
+      });
       res.json({ status: 'success' });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3094,6 +3236,110 @@ async function startServer() {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     } finally {
       manualInvoiceCreationInProgress.delete(customerId);
+    }
+  });
+
+  app.post('/api/admin/invoices/:invoiceId/cancel', requireAdminSession, async (req, res) => {
+    try {
+      const stored = await getAppDataDb();
+      const invoices = stored.data.invoices || [];
+      const invoice = invoices.find(item => item.id === req.params.invoiceId);
+      if (!invoice) return res.status(404).json({ error: 'Invoice tidak ditemukan' });
+      if (invoice.status !== 'unpaid') {
+        return res.status(409).json({ error: 'Hanya invoice belum dibayar yang dapat dibatalkan' });
+      }
+      const hasSettledTransaction = (stored.data.transactions || []).some(transaction =>
+        transaction.orderType === 'invoice' &&
+        transaction.invoiceId === invoice.id &&
+        transaction.status === 'settlement'
+      );
+      if (hasSettledTransaction) {
+        return res.status(409).json({ error: 'Invoice memiliki pembayaran yang sudah lunas dan tidak dapat dibatalkan' });
+      }
+
+      const canceledAt = new Date().toISOString();
+      const updatedInvoice: Invoice = {
+        ...invoice,
+        status: 'canceled',
+        canceledAt,
+        cancellationReason: 'operator',
+      };
+      const updatedInvoices = invoices.map(item => item.id === invoice.id ? updatedInvoice : item);
+      const updatedTransactions = (stored.data.transactions || []).map(transaction =>
+        transaction.orderType === 'invoice' &&
+        transaction.invoiceId === invoice.id &&
+        transaction.status === 'pending'
+          ? { ...transaction, status: 'canceled' as const }
+          : transaction
+      );
+      await savePublicPaymentUpdateDb(
+        stored.data.customers || [],
+        updatedInvoices,
+        updatedTransactions
+      );
+      return res.json({ invoice: updatedInvoice });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete('/api/admin/invoices/history', requireAdminSession, async (_req, res) => {
+    try {
+      const stored = await getAppDataDb();
+      const invoices = stored.data.invoices || [];
+      const historyInvoices = invoices.filter(invoice =>
+        invoice.status === 'paid' || invoice.status === 'expired' || invoice.status === 'canceled'
+      );
+      const historyIds = new Set(historyInvoices.map(invoice => invoice.id));
+      const pendingInvoices = (stored.data.transactions || [])
+        .filter(transaction =>
+          transaction.orderType === 'invoice' &&
+          transaction.status === 'pending' &&
+          transaction.invoiceId &&
+          historyIds.has(transaction.invoiceId)
+        )
+        .map(transaction => transaction.invoiceId);
+      if (pendingInvoices.length) {
+        return res.status(409).json({
+          error: 'Riwayat tidak dapat dihapus karena masih ada pembayaran invoice yang sedang diproses.',
+        });
+      }
+
+      const deletedIds = historyInvoices.map(invoice => invoice.id);
+      await saveAppDataCollectionDb(
+        'invoices',
+        invoices.filter(invoice => !historyIds.has(invoice.id))
+      );
+      return res.json({ deletedIds });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete('/api/admin/invoices/:invoiceId', requireAdminSession, async (req, res) => {
+    try {
+      const stored = await getAppDataDb();
+      const invoices = stored.data.invoices || [];
+      const invoice = invoices.find(item => item.id === req.params.invoiceId);
+      if (!invoice) return res.status(404).json({ error: 'Invoice tidak ditemukan' });
+      if (invoice.status !== 'paid' && invoice.status !== 'expired' && invoice.status !== 'canceled') {
+        return res.status(409).json({ error: 'Hanya invoice dalam riwayat yang dapat dihapus' });
+      }
+      const hasPendingPayment = (stored.data.transactions || []).some(transaction =>
+        transaction.orderType === 'invoice' &&
+        transaction.invoiceId === invoice.id &&
+        transaction.status === 'pending'
+      );
+      if (hasPendingPayment) {
+        return res.status(409).json({ error: 'Invoice memiliki pembayaran yang sedang diproses dan belum dapat dihapus' });
+      }
+      await saveAppDataCollectionDb(
+        'invoices',
+        invoices.filter(item => item.id !== invoice.id)
+      );
+      return res.json({ deletedIds: [invoice.id] });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 
@@ -3827,6 +4073,34 @@ async function startServer() {
     }
   });
 
+  app.get('/api/mikrotik/pppoe/live', requireAdminSession, async (req, res) => {
+    const routerId = String(req.query.routerId || '');
+    if (!routerId) return res.status(400).json({ error: 'Router wajib dipilih' });
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
+      const [secrets, sessions] = await Promise.all([
+        getPppoeSecrets(router),
+        getPppoeActiveSessions(router),
+      ]);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ routerId, secrets, sessions, sampledAt: new Date().toISOString() });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete('/api/mikrotik/pppoe/active/:routerId/:username', requireAdminSession, async (req, res) => {
+    try {
+      const router = await resolveRouterConnection(req.params.routerId);
+      if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
+      const disconnected = await disconnectPppoeSessions(router, req.params.username);
+      res.json({ status: 'success', disconnected });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post('/api/mikrotik/pppoe/profiles', requireAdminSession, async (req, res) => {
     const { routerId, profile } = req.body || {};
     if (
@@ -3971,7 +4245,7 @@ async function startServer() {
   });
 
   app.patch('/api/mikrotik/pppoe/secrets/:routerId/:username', requireAdminSession, async (req, res) => {
-    const { password, profile, disabled } = req.body || {};
+    const { password, profile, disabled, comment } = req.body || {};
     if (
       (password !== undefined && (
         typeof password !== 'string' ||
@@ -3980,15 +4254,16 @@ async function startServer() {
         password.trim().toLowerCase() === 'undefined'
       )) ||
       (profile !== undefined && (typeof profile !== 'string' || !/^[A-Za-z0-9_. -]{1,64}$/.test(profile))) ||
+      (comment !== undefined && (typeof comment !== 'string' || comment.length > 200)) ||
       (disabled !== undefined && typeof disabled !== 'boolean') ||
-      (password === undefined && profile === undefined && disabled === undefined)
+      (password === undefined && profile === undefined && disabled === undefined && comment === undefined)
     ) {
       return res.status(400).json({ error: 'Invalid PPPoE secret update' });
     }
     try {
       const router = await resolveRouterConnection(req.params.routerId);
       if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
-      await updatePppoeSecret(router, req.params.username, { password, profile, disabled });
+      await updatePppoeSecret(router, req.params.username, { password, profile, disabled, comment });
       res.json({ status: 'success' });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
@@ -4465,7 +4740,12 @@ async function startServer() {
         );
         const reconciliationInvoices = invoice.status === 'unpaid'
           ? invoices.map(item => item.id === invoice.id
-            ? { ...item, status: 'canceled' as const }
+            ? {
+              ...item,
+              status: 'canceled' as const,
+              canceledAt: updatedAt,
+              cancellationReason: 'late_payment' as const,
+            }
             : item)
           : invoices;
         await savePublicPaymentUpdateDb(
@@ -4688,6 +4968,7 @@ async function startServer() {
         return `${getPart('year')}-${getPart('month')}-${getPart('day')}`;
       };
       const today = jakartaDate(new Date());
+      const now = new Date();
       const endingCustomers = (stored.data.customers || []).filter(customer =>
         customer.cancelAtExpiry &&
         customer.status !== 'disabled' &&
@@ -4716,13 +4997,108 @@ async function startServer() {
           );
         }
       }
-      if (!settings.autoSendReminderH1) return;
+      stored = await getAppDataDb();
+      const invoicesPastGracePeriod = (stored.data.invoices || []).filter(invoice => {
+        if (invoice.status !== 'unpaid' || !/^\d{4}-\d{2}-\d{2}$/.test(invoice.dueDate)) return false;
+        const graceEnd = new Date(`${invoice.dueDate}T12:00:00+07:00`);
+        graceEnd.setDate(graceEnd.getDate() + 7);
+        if (jakartaDate(graceEnd) > today) return false;
+        const hasUnexpiredPayment = (stored.data.transactions || []).some(transaction =>
+          transaction.orderType === 'invoice' &&
+          transaction.invoiceId === invoice.id &&
+          transaction.status === 'pending' &&
+          transaction.expiresAt &&
+          new Date(transaction.expiresAt).getTime() > now.getTime()
+        );
+        return !hasUnexpiredPayment;
+      });
+      if (invoicesPastGracePeriod.length) {
+        const expiredInvoiceIds = new Set(invoicesPastGracePeriod.map(invoice => invoice.id));
+        await savePublicPaymentUpdateDb(
+          stored.data.customers || [],
+          (stored.data.invoices || []).map(invoice =>
+            expiredInvoiceIds.has(invoice.id)
+              ? {
+                ...invoice,
+                status: 'canceled' as const,
+                canceledAt: now.toISOString(),
+                cancellationReason: 'grace_period' as const,
+              }
+              : invoice
+          ),
+          stored.data.transactions || []
+        );
+        stored = await getAppDataDb();
+      }
       const tomorrow = new Date(`${today}T12:00:00+07:00`);
       tomorrow.setDate(tomorrow.getDate() + 1);
       const dueTomorrow = jakartaDate(tomorrow);
       await Promise.all((stored.data.customers || [])
         .filter(customer => !customer.cancelAtExpiry && (customer.status !== 'active' || customer.expiredDate <= dueTomorrow))
         .map(customer => ensureDueInvoice(customer.id, true)));
+      stored = await getAppDataDb();
+      if (!settings.autoSendReminderH1) return;
+      const cancellationLogs = stored.data.whatsappLogs || [];
+      const cancellationNoticeInvoices = (stored.data.invoices || []).filter(invoice =>
+        invoice.status === 'canceled' &&
+        invoice.cancellationReason === 'grace_period' &&
+        invoice.canceledAt
+      );
+      for (const invoice of cancellationNoticeInvoices) {
+        const marker = `invoice-canceled:${invoice.id}`;
+        const attempts = cancellationLogs
+          .filter(log => log.type === 'invoice_canceled' && log.responseInfo?.includes(marker))
+          .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+        if (attempts.some(log => log.status === 'sent') || attempts.length >= 3) continue;
+        if (attempts[0] && Date.now() - new Date(attempts[0].timestamp).getTime() < 30 * 60 * 1000) continue;
+        const customer = (stored.data.customers || []).find(item => item.id === invoice.customerId);
+        if (!customer) continue;
+        const businessName = settings.companyName.trim() || settings.brandName.trim() || settings.appName;
+        const secret = await getOrCreatePortalLinkSecretDb();
+        const token = createPortalLinkToken({ customerId: customer.id }, Date.now() + 30 * 24 * 60 * 60 * 1000, secret);
+        const appUrl = configuredPaymentAppUrl();
+        const paymentUrl = appUrl
+          ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(token)}`
+          : '';
+        const message = [
+          `Yth. ${customer.name},`,
+          '',
+          `Invoice ${invoice.invoiceNumber} yang jatuh tempo pada ${invoice.dueDate} telah dibatalkan karena belum dibayar setelah masa tenggang 7 hari.`,
+          'Akses PPPoE Anda tidak diubah otomatis. Silakan hubungi operator untuk informasi tagihan berikutnya.',
+          paymentUrl ? `Periksa tagihan: ${paymentUrl}` : '',
+          '',
+          businessName,
+        ].filter(Boolean).join('\n');
+        try {
+          if (!appUrl) throw new Error('APP_URL tidak dikonfigurasi; tautan portal tidak dapat dibuat');
+          const sent = await sendWhatsAppMessage(customer.phone, message);
+          await recordWhatsAppLog(customer.phone, customer.name, 'invoice_canceled', message, 'sent', `${marker}:${sent.provider}`);
+          cancellationLogs.unshift({
+            id: randomUUID(),
+            recipientPhone: customer.phone,
+            recipientName: customer.name,
+            type: 'invoice_canceled',
+            message,
+            status: 'sent',
+            timestamp: new Date().toISOString(),
+            responseInfo: `${marker}:${sent.provider}`,
+          });
+        } catch (error) {
+          const failure = error instanceof Error ? error.message : String(error);
+          console.error(`[Invoice] Cancellation notice failed for ${invoice.invoiceNumber}: ${failure}`);
+          await recordWhatsAppLog(customer.phone, customer.name, 'invoice_canceled', message, 'failed', `${marker}:${failure}`);
+          cancellationLogs.unshift({
+            id: randomUUID(),
+            recipientPhone: customer.phone,
+            recipientName: customer.name,
+            type: 'invoice_canceled',
+            message,
+            status: 'failed',
+            timestamp: new Date().toISOString(),
+            responseInfo: `${marker}:${failure}`,
+          });
+        }
+      }
       stored = await getAppDataDb();
       const whatsappLogs = stored.data.whatsappLogs || [];
       for (const invoice of (stored.data.invoices || []).filter(item =>

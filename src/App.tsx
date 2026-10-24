@@ -13,9 +13,8 @@ import {
 import { StorageService } from "./services/storage";
 import { Navbar } from "./components/Navbar";
 import { DashboardTab } from "./components/admin/DashboardTab";
-import { RevenueTab } from "./components/admin/RevenueTab";
+import { FinanceTab } from "./components/admin/FinanceTab";
 import { CustomersTab } from "./components/admin/CustomersTab";
-import { InvoicesTab } from "./components/admin/InvoicesTab";
 import { VouchersTab } from "./components/admin/VouchersTab";
 import { RoutersTab } from "./components/admin/RoutersTab";
 import { WhatsAppTab } from "./components/admin/WhatsAppTab";
@@ -25,14 +24,24 @@ import { AdminAuthPage } from "./components/AdminAuthPage";
 import { InvoicePrintModal } from "./components/InvoicePrintModal";
 import { VoucherPrintModal } from "./components/VoucherPrintModal";
 import { PortalPage } from "./components/PortalPage";
-import { Send, X, Check, ShieldAlert, CheckCircle2 } from "lucide-react";
+import {
+  Send,
+  X,
+  Check,
+  ShieldAlert,
+  CheckCircle2,
+  Database,
+  MessageCircle,
+  Router,
+} from "lucide-react";
 import { ToastProvider, useToast } from "./components/ui/toast";
 import { ThemeProvider } from "./components/ui/theme";
 import { renderWhatsAppTemplate } from "./utils/whatsappTemplates";
 
 function AppContent() {
-  const { toast } = useToast();
+  const { toast, confirm: confirmAction } = useToast();
   const [adminTab, setAdminTab] = useState("dashboard");
+  const [financeSection, setFinanceSection] = useState<"invoices" | "revenue">("invoices");
   const [authStatus, setAuthStatus] = useState<{
     authenticated: boolean;
     username: string;
@@ -114,6 +123,15 @@ function AppContent() {
   const [waSending, setWaSending] = useState(false);
   const [waSuccess, setWaSuccess] = useState(false);
   const [waError, setWaError] = useState("");
+
+  const handleSelectAdminTab = (tab: string) => {
+    if (tab === "invoices" || tab === "revenue") {
+      setFinanceSection(tab);
+      setAdminTab("finance");
+      return;
+    }
+    setAdminTab(tab);
+  };
 
   const refreshAllData = (persist = true) => {
     const freshSettings = StorageService.getSettings();
@@ -368,35 +386,52 @@ function AppContent() {
     }
   };
 
-  // Toggle Isolir
+  // Billing status and RouterOS access are separate; router changes require a second confirmation.
   const handleToggleIsolir = async (customer: Customer) => {
     const isBlocked =
       customer.status === "isolated" || customer.status === "disabled";
     const newStatus = isBlocked ? "active" : "isolated";
-    try {
-      const response = await fetch(
-        `/api/mikrotik/pppoe/secrets/${encodeURIComponent(customer.routerId)}/${encodeURIComponent(customer.pppoeUsername)}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ disabled: newStatus === "isolated" }),
-        },
-      );
-      const result = await response.json();
-      if (!response.ok)
-        throw new Error(result.error || `RouterOS returned ${response.status}`);
+    if (!await confirmAction(
+      `${newStatus === "isolated" ? "Isolir billing" : "Aktifkan billing"}?`,
+      `Hanya status billing pelanggan ${customer.name} yang akan diubah. Status secret dan sesi PPPoE di MikroTik tidak berubah otomatis.`
+    )) return;
 
+    const updateRouter = await confirmAction(
+      `${newStatus === "isolated" ? "Nonaktifkan" : "Aktifkan"} juga akses RouterOS?`,
+      `Pilihan ini ${newStatus === "isolated" ? "menonaktifkan secret PPPoE" : "mengaktifkan kembali secret PPPoE"} "${customer.pppoeUsername}" di router. Jika tidak, hanya status billing yang berubah.`,
+      newStatus === "isolated"
+    );
+    let routerUpdated = false;
+    let routerUpdateError = "";
+    if (updateRouter) {
+      try {
+        const response = await fetch(
+          `/api/mikrotik/pppoe/secrets/${encodeURIComponent(customer.routerId)}/${encodeURIComponent(customer.pppoeUsername)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ disabled: newStatus === "isolated" }),
+          },
+        );
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `RouterOS returned ${response.status}`);
+        routerUpdated = true;
+      } catch (error) {
+        routerUpdateError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    try {
       const updated: Customer = {
         ...customer,
         status: newStatus,
         notes:
           newStatus === "isolated"
-            ? "Diisolir manual oleh NOC"
-            : "Isolir dibuka manual oleh NOC",
+            ? `Status billing diisolir manual oleh NOC.${routerUpdated ? " Secret RouterOS juga dinonaktifkan." : " Status akses RouterOS tidak diubah."}`
+            : `Status billing diaktifkan manual oleh NOC.${routerUpdated ? " Secret RouterOS juga diaktifkan." : " Status akses RouterOS tidak diubah."}`,
       };
       StorageService.saveCustomer(updated);
 
-      if (newStatus === "isolated" && appSettings.autoSendIsolir) {
+      if (newStatus === "isolated" && appSettings.autoSendIsolir && routerUpdated) {
         let status: "sent" | "failed" = "sent";
         let responseInfo = "";
         let message = `PEMBERITAHUAN ISOLIR: Akses internet PPPoE ${customer.name} pada paket ${customer.servicePackageName || customer.profileName} telah dinonaktifkan.`;
@@ -440,14 +475,17 @@ function AppContent() {
 
       refreshAllData();
       toast(
-        newStatus === "isolated"
-          ? "Akses PPPoE dinonaktifkan."
-          : "Akses PPPoE diaktifkan.",
-        "success",
+        newStatus === "isolated" ? "Status billing diisolir." : "Status billing diaktifkan.",
+        routerUpdateError ? "error" : "success",
+        routerUpdateError
+          ? `Status billing tersimpan, tetapi RouterOS gagal diubah: ${routerUpdateError}`
+          : routerUpdated
+            ? "Billing dan secret RouterOS diselaraskan sesuai konfirmasi."
+            : "Secret RouterOS tidak diubah. Periksa indikator perbedaan status pada daftar pelanggan."
       );
     } catch (error) {
       toast(
-        "Gagal mengubah status PPPoE di MikroTik",
+        "Gagal menyimpan status billing",
         "error",
         error instanceof Error ? error.message : String(error),
       );
@@ -494,7 +532,7 @@ function AppContent() {
       {/* Top Navbar */}
       <Navbar
         adminTab={adminTab}
-        onSelectAdminTab={setAdminTab}
+        onSelectAdminTab={handleSelectAdminTab}
         settings={appSettings}
         username={authStatus.username}
         onRefreshData={refreshAllData}
@@ -518,12 +556,24 @@ function AppContent() {
             vouchers={vouchers}
             routers={routers}
             onRefreshData={refreshAllData}
-            onNavigateTab={setAdminTab}
+            onNavigateTab={handleSelectAdminTab}
             onSendWaNotification={handleOpenSendWa}
             onToggleIsolir={handleToggleIsolir}
           />
         )}
-        {adminTab === "revenue" && <RevenueTab />}
+        {adminTab === "finance" && (
+          <FinanceTab
+            section={financeSection}
+            onSelectSection={setFinanceSection}
+            invoices={invoices}
+            customers={customers}
+            onRefreshData={refreshAllData}
+            onViewInvoice={(inv, cust) =>
+              setPrintInvoiceData({ invoice: inv, customer: cust })
+            }
+            onSendWa={handleOpenSendWa}
+          />
+        )}
         {adminTab === "customers" && (
           <CustomersTab
             customers={customers}
@@ -536,17 +586,6 @@ function AppContent() {
               setPrintInvoiceData({ invoice: inv, customer: cust })
             }
             onToggleIsolir={handleToggleIsolir}
-          />
-        )}
-        {adminTab === "invoices" && (
-          <InvoicesTab
-            invoices={invoices}
-            customers={customers}
-            onRefreshData={refreshAllData}
-            onViewInvoice={(inv, cust) =>
-              setPrintInvoiceData({ invoice: inv, customer: cust })
-            }
-            onSendWa={handleOpenSendWa}
           />
         )}
         {adminTab === "vouchers" && (
@@ -582,15 +621,40 @@ function AppContent() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-border bg-background/60 py-4 px-6 text-center text-xs text-muted-foreground">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>
-            {appSettings.appName} • Docker SQLite Persistent
-            (/app/data/billing.sqlite)
-          </span>
-          <span>
-            OpenWA (rmyndharis/OpenWA) • RouterOS v6 & v7 API Compatible
-          </span>
+      <footer className="border-t border-border bg-card/70 px-4 py-5 sm:px-6">
+        <div className="mx-auto flex max-w-7xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary">
+              <Database className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold text-foreground">
+                {appSettings.brandName || appSettings.appName}
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                Smart billing untuk operasional MikroTik
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+            <div className="inline-flex items-center gap-2 rounded-lg border border-border bg-background/80 px-3 py-2 text-[11px] text-muted-foreground">
+              <Database className="h-3.5 w-3.5 text-primary" />
+              <span>SQLite persistent</span>
+              <span className="hidden text-border sm:inline">·</span>
+              <code className="hidden font-mono text-[10px] text-foreground/70 sm:inline">
+                /app/data/billing.sqlite
+              </code>
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-lg border border-border bg-background/80 px-3 py-2 text-[11px] text-muted-foreground">
+              <MessageCircle className="h-3.5 w-3.5 text-emerald-500" />
+              <span>OpenWA API</span>
+            </div>
+            <div className="inline-flex items-center gap-2 rounded-lg border border-border bg-background/80 px-3 py-2 text-[11px] text-muted-foreground">
+              <Router className="h-3.5 w-3.5 text-sky-500" />
+              <span>RouterOS v6 &amp; v7</span>
+            </div>
+          </div>
         </div>
       </footer>
 

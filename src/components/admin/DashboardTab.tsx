@@ -15,7 +15,11 @@ import {
   CreditCard,
   Wifi,
   RefreshCw,
-  Terminal
+  Terminal,
+  Search,
+  CircleCheck,
+  CircleX,
+  ListFilter
 } from 'lucide-react';
 
 interface RouterLogEntry {
@@ -25,13 +29,49 @@ interface RouterLogEntry {
   message: string;
 }
 
+interface ParsedRouterLog extends RouterLogEntry {
+  user: string;
+  ip: string;
+  isHotspot: boolean;
+  isFailure: boolean;
+}
+
+function parseRouterLog(entry: RouterLogEntry): ParsedRouterLog {
+  const source = `${entry.topics} ${entry.message}`;
+  const ipMatch = entry.message.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+  const userIpMatch = entry.message.match(/(?:user\s+)?([^\s(),]+)\s+\(((?:\d{1,3}\.){3}\d{1,3})\)/i);
+  const userFromMatch = entry.message.match(/\buser\s+([^\s(),]+).*?\b(?:from|address)\s+((?:\d{1,3}\.){3}\d{1,3})/i);
+  const userLoginMatch = entry.message.match(/\b(?:login|logged in|logged out)\s+(?:for\s+)?([^\s(),]+).*?\bfrom\s+((?:\d{1,3}\.){3}\d{1,3})/i);
+  const user = userIpMatch?.[1] || userFromMatch?.[1] || userLoginMatch?.[1] || '';
+  const ip = userIpMatch?.[2] || userFromMatch?.[2] || userLoginMatch?.[2] || ipMatch?.[0] || '';
+  const lowerMessage = entry.message.toLowerCase();
+
+  return {
+    ...entry,
+    user,
+    ip,
+    isHotspot: /hotspot|login|logged in|logged out|cookie|chap/.test(source.toLowerCase()),
+    isFailure: /fail|invalid|error|denied|reject/.test(lowerMessage),
+  };
+}
+
 const RouterLogsPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers }) => {
   const [selectedRouterId, setSelectedRouterId] = useState('');
   const [entries, setEntries] = useState<RouterLogEntry[]>([]);
+  const [logFilter, setLogFilter] = useState<'hotspot' | 'all'>('hotspot');
+  const [searchTerm, setSearchTerm] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const selectedRouter = routers.find(router => router.id === selectedRouterId);
+  const parsedEntries = entries.map(parseRouterLog);
+  const visibleEntries = parsedEntries.filter(entry => {
+    if (logFilter === 'hotspot' && !entry.isHotspot) return false;
+    const search = searchTerm.trim().toLowerCase();
+    return !search || `${entry.user} ${entry.ip} ${entry.message} ${entry.topics}`.toLowerCase().includes(search);
+  });
+  const hotspotCount = parsedEntries.filter(entry => entry.isHotspot).length;
+  const failedCount = parsedEntries.filter(entry => entry.isHotspot && entry.isFailure).length;
 
   useEffect(() => {
     if (!routers.some(router => router.id === selectedRouterId)) {
@@ -124,24 +164,102 @@ const RouterLogsPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers }) => 
       {error ? (
         <p role="alert" className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-700 dark:text-rose-300">{error}</p>
       ) : null}
-      <div className="mt-4 max-h-[22rem] min-h-44 overflow-y-auto rounded-xl border border-border bg-background">
+      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <div className="rounded-lg border border-border bg-background px-3 py-2">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Log diterima</p>
+          <p className="mt-1 text-lg font-bold text-foreground">{entries.length}</p>
+        </div>
+        <div className="rounded-lg border border-border bg-background px-3 py-2">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Aktivitas hotspot</p>
+          <p className="mt-1 text-lg font-bold text-sky-600 dark:text-sky-400">{hotspotCount}</p>
+        </div>
+        <div className="col-span-2 rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 sm:col-span-1">
+          <p className="inline-flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            <CircleX className="h-3 w-3 text-rose-500" /> Login gagal / error
+          </p>
+          <p className="mt-1 text-lg font-bold text-rose-600 dark:text-rose-400">{failedCount}</p>
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <label className="relative block flex-1">
+          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={searchTerm}
+            onChange={event => setSearchTerm(event.target.value)}
+            placeholder="Cari username, IP, atau pesan..."
+            className="h-9 w-full rounded-lg border border-input bg-background pl-9 pr-3 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring/30"
+          />
+        </label>
+        <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-background p-1">
+          <ListFilter className="ml-1 h-3.5 w-3.5 text-muted-foreground" />
+          <button
+            type="button"
+            onClick={() => setLogFilter('hotspot')}
+            aria-pressed={logFilter === 'hotspot'}
+            className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold ${logFilter === 'hotspot' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            Hotspot
+          </button>
+          <button
+            type="button"
+            onClick={() => setLogFilter('all')}
+            aria-pressed={logFilter === 'all'}
+            className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold ${logFilter === 'all' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            Semua log
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-3 max-h-[22rem] min-h-44 overflow-auto rounded-xl border border-border bg-background">
         {loading && !entries.length ? (
           <p className="p-6 text-center text-sm text-muted-foreground">Memuat log router...</p>
         ) : error ? (
           <p className="p-6 text-center text-sm text-muted-foreground">Log tidak dapat dimuat. Periksa koneksi router dan coba perbarui.</p>
-        ) : entries.length ? (
-          <div className="divide-y divide-border">
-            {entries.map(entry => (
-              <div key={entry.id} className="grid gap-1 px-3 py-2.5 font-mono text-[11px] sm:grid-cols-[5.5rem_9rem_minmax(0,1fr)] sm:gap-3">
-                <span className="text-slate-600 dark:text-slate-400">{entry.time || '—'}</span>
-                <span className="break-all text-indigo-700 dark:text-indigo-300">{entry.topics || 'system'}</span>
-                <span className="break-words text-foreground">{entry.message || '—'}</span>
-              </div>
-            ))}
-          </div>
+        ) : visibleEntries.length ? (
+          <table className="w-full min-w-[34rem] border-collapse text-left text-[11px]">
+            <thead className="sticky top-0 z-10 bg-secondary text-[10px] uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="w-20 border-b border-border px-3 py-2 font-semibold">Waktu</th>
+                <th className="w-40 border-b border-border px-3 py-2 font-semibold">User (IP)</th>
+                <th className="border-b border-border px-3 py-2 font-semibold">Pesan</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {visibleEntries.map(entry => (
+                <tr key={entry.id} className="align-top transition hover:bg-muted/50">
+                  <td className="whitespace-nowrap px-3 py-2 font-mono text-muted-foreground">{entry.time || '—'}</td>
+                  <td className="px-3 py-2">
+                    {entry.user || entry.ip ? (
+                      <>
+                        <span className="block break-all font-semibold text-foreground">{entry.user || '—'}</span>
+                        {entry.ip && <span className="mt-0.5 block font-mono text-[10px] text-muted-foreground">{entry.ip}</span>}
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-start gap-1.5">
+                      {entry.isFailure
+                        ? <CircleX className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-500" />
+                        : entry.isHotspot
+                          ? <CircleCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                          : <Terminal className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                      <span className="break-words text-foreground">{entry.message || '—'}</span>
+                    </div>
+                    <span className="mt-1 block break-all font-mono text-[9px] text-muted-foreground">{entry.topics || 'system'}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         ) : (
           <p className="p-6 text-center text-sm text-muted-foreground">
-            {selectedRouterId ? 'Belum ada entri log pada router ini.' : 'Belum ada server MikroTik yang dikonfigurasi.'}
+            {entries.length
+              ? 'Tidak ada log yang cocok dengan filter atau pencarian.'
+              : selectedRouterId ? 'Belum ada entri log pada router ini.' : 'Belum ada server MikroTik yang dikonfigurasi.'}
           </p>
         )}
       </div>
@@ -494,7 +612,7 @@ export const DashboardTab: React.FC<Props> = ({
             </div>
             <div className="flex items-center gap-2 mt-2 text-[11px]">
               <span className="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 font-semibold border border-rose-500/20">
-                {isolatedCustomers} Ter-Isolir
+                {isolatedCustomers} Billing Ter-isolir
               </span>
               <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 font-semibold border border-amber-500/20">
                 {expiringCustomers} H-1/H-3
@@ -554,7 +672,7 @@ export const DashboardTab: React.FC<Props> = ({
           <div>
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               <ShieldAlert className="w-4 h-4 text-rose-400" />
-              <span>Perhatian Khusus: Pelanggan Menjelang Expired & Ter-Isolir ({urgentCustomers.length})</span>
+              <span>Perhatian Khusus: Pelanggan Menjelang Expired & Billing Ter-isolir ({urgentCustomers.length})</span>
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
               Daftar pelanggan yang membutuhkan tindak lanjut pengingat WhatsApp atau penanganan isolir
@@ -583,7 +701,7 @@ export const DashboardTab: React.FC<Props> = ({
                   <th className="pb-3 font-semibold">Pelanggan</th>
                   <th className="pb-3 font-semibold">Paket & Biaya</th>
                   <th className="pb-3 font-semibold">Jatuh Tempo</th>
-                  <th className="pb-3 font-semibold">Status Isolir</th>
+                  <th className="pb-3 font-semibold">Status Billing</th>
                   <th className="pb-3 font-semibold text-right">Tindakan Cepat</th>
                 </tr>
               </thead>
@@ -619,7 +737,7 @@ export const DashboardTab: React.FC<Props> = ({
                     <td className="py-3.5 text-right">
                       <div className="inline-flex items-center gap-2">
                         <button
-                          onClick={() => onSendWaNotification(cust, cust.status === 'isolated' || cust.status === 'disabled' ? 'isolir' : 'reminder')}
+                          onClick={() => onSendWaNotification(cust, 'reminder')}
                           className="px-2.5 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 rounded-lg text-[11px] font-semibold transition flex items-center gap-1"
                           title="Kirim pengingat via WhatsApp"
                         >
@@ -629,6 +747,7 @@ export const DashboardTab: React.FC<Props> = ({
 
                         <button
                           onClick={() => onToggleIsolir(cust)}
+                          title="Ubah status billing; perubahan akses RouterOS dikonfirmasi terpisah"
                           className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition flex items-center gap-1 ${
                             cust.status === 'isolated' || cust.status === 'disabled'
                               ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
@@ -638,12 +757,12 @@ export const DashboardTab: React.FC<Props> = ({
                           {cust.status === 'isolated' || cust.status === 'disabled' ? (
                             <>
                               <CheckCircle2 className="w-3 h-3" />
-                              <span>Buka Isolir</span>
+                              <span>Aktifkan billing</span>
                             </>
                           ) : (
                             <>
                               <ShieldAlert className="w-3 h-3" />
-                              <span>Isolir Manual</span>
+                              <span>Isolir billing</span>
                             </>
                           )}
                         </button>

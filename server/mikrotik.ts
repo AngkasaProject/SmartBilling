@@ -58,11 +58,30 @@ export interface PppoeActiveSessionStats {
   bytesOut: number;
 }
 
+export interface PppoeActiveSession {
+  name: string;
+  service: string;
+  callerId: string;
+  address: string;
+  uptime: string;
+  encoding: string;
+  bytesIn: number;
+  bytesOut: number;
+}
+
 export interface RouterLogEntry {
   id: string;
   time: string;
   topics: string;
   message: string;
+}
+
+export interface RouterFileEntry {
+  id: string;
+  name: string;
+  type: string;
+  size: string;
+  isDirectory: boolean;
 }
 
 const ROUTER_API_IDLE_TIMEOUT_MS = 60 * 60 * 1000;
@@ -280,6 +299,73 @@ export async function getPppoeActiveSessionStats(router: RouterConnection): Prom
       bytesOut: parseBytes(row['bytes-out'] ?? row.bytesOut),
     }))
     .filter(session => session.name);
+}
+
+export async function getPppoeActiveSessions(router: RouterConnection): Promise<PppoeActiveSession[]> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ppp/active', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ppp active').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const parseBytes = (value: unknown): number => {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+  };
+  return rows
+    .map(row => ({
+      name: String(row.name || '').trim(),
+      service: String(row.service || ''),
+      callerId: String(row['caller-id'] || row.callerId || ''),
+      address: String(row.address || ''),
+      uptime: String(row.uptime || ''),
+      encoding: String(row.encoding || ''),
+      bytesIn: parseBytes(row['bytes-in'] ?? row.bytesIn),
+      bytesOut: parseBytes(row['bytes-out'] ?? row.bytesOut),
+    }))
+    .filter(session => session.name);
+}
+
+async function removePppoeSessions(router: RouterConnection, name: string): Promise<number> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ppp/active', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ppp active').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const sessions = rows.filter(row => String(row.name || '').trim() === name.trim());
+  for (const session of sessions) {
+    const id = String(session['.id'] || session.id || '');
+    if (!id) throw new Error(`Router tidak mengembalikan ID untuk sesi PPPoE "${name}"`);
+    if (router.apiType === 'rest') {
+      await restRequest(router, `/ppp/active/${encodeURIComponent(id)}`, 'DELETE');
+    } else {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        await api.menu('/ppp active').where('id', id).delete();
+      } finally {
+        await client.close();
+      }
+    }
+  }
+  return sessions.length;
+}
+
+export async function disconnectPppoeSessions(router: RouterConnection, name: string): Promise<number> {
+  const disconnected = await removePppoeSessions(router, name);
+  if (!disconnected) throw new Error(`Sesi PPPoE aktif untuk "${name}" tidak ditemukan pada router`);
+  return disconnected;
 }
 
 function toRouterConfig(
@@ -673,6 +759,88 @@ export async function getHotspotServerProfiles(router: RouterConnection): Promis
   })).filter(profile => profile.name);
 }
 
+async function getRouterFileEntries(router: RouterConnection): Promise<RouterFileEntry[]> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/file', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/file').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  return rows.map(row => {
+    const name = String(row.name || '');
+    const type = String(row.type || '');
+    return {
+      id: String(row['.id'] || row.id || ''),
+      name,
+      type,
+      size: String(row.size || ''),
+      isDirectory: type.toLowerCase() === 'directory' || name.endsWith('/'),
+    };
+  }).filter(file => file.id && file.name);
+}
+
+function normalizeRouterDirectory(directory: string): string {
+  const normalized = directory.trim().replace(/^\/+|\/+$/g, '');
+  if (!normalized || normalized.split('/').some(part => !part || part === '.' || part === '..') || normalized.includes('\\')) {
+    throw new Error('Direktori Hotspot tidak valid');
+  }
+  return normalized;
+}
+
+function normalizeRouterEntryName(name: string): string {
+  return name.replace(/^\/+|\/+$/g, '');
+}
+
+export async function getHotspotFileListing(
+  router: RouterConnection,
+  directory?: string
+): Promise<{ directories: string[]; files: RouterFileEntry[] }> {
+  const entries = await getRouterFileEntries(router);
+  const directories = entries
+    .filter(file => file.isDirectory)
+    .map(file => normalizeRouterEntryName(file.name))
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
+  if (!directory) return { directories, files: [] };
+  const normalizedDirectory = normalizeRouterDirectory(directory);
+  const prefix = `${normalizedDirectory}/`;
+  const files = entries
+    .filter(file => !file.isDirectory && normalizeRouterEntryName(file.name).startsWith(prefix))
+    .map(file => ({ ...file, name: normalizeRouterEntryName(file.name) }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  return { directories, files };
+}
+
+export async function deleteHotspotFile(
+  router: RouterConnection,
+  directory: string,
+  name: string
+): Promise<void> {
+  const normalizedDirectory = normalizeRouterDirectory(directory);
+  const entries = await getRouterFileEntries(router);
+  const normalizedName = normalizeRouterEntryName(name);
+  const file = entries.find(entry => normalizeRouterEntryName(entry.name) === normalizedName && !entry.isDirectory);
+  if (!file || !normalizeRouterEntryName(file.name).startsWith(`${normalizedDirectory}/`)) {
+    throw new Error('File tidak ditemukan di direktori Hotspot yang dipilih');
+  }
+  if (router.apiType === 'rest') {
+    await restRequest(router, `/file/${encodeURIComponent(file.id)}`, 'DELETE');
+    return;
+  }
+  const client = apiClient(router);
+  try {
+    const api = await client.connect();
+    await api.menu('/file').where('.id', file.id).delete();
+  } finally {
+    await client.close();
+  }
+}
+
 export async function addHotspotServerProfile(
   router: RouterConnection,
   profile: { name: string; hotspotAddress?: string; dnsName?: string; htmlDirectory?: string; loginBy?: string; useRadius?: boolean }
@@ -691,6 +859,79 @@ export async function addHotspotServerProfile(
   try {
     const api = await client.connect();
     await api.menu('/ip hotspot profile').add(fields);
+  } finally {
+    await client.close();
+  }
+}
+
+export async function updateHotspotServerProfile(
+  router: RouterConnection,
+  existingName: string,
+  profile: { name: string; hotspotAddress: string; dnsName: string; htmlDirectory: string; loginBy: string; useRadius: boolean }
+): Promise<void> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ip/hotspot/profile', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ip hotspot profile').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const existing = rows.find(row => row.name === existingName);
+  if (!existing) throw new Error(`Hotspot server profile "${existingName}" was not found on the router`);
+  if (profile.name !== existingName && rows.some(row => row.name === profile.name)) {
+    throw new Error(`Hotspot server profile "${profile.name}" already exists on the router`);
+  }
+  const id = String(existing['.id'] || existing.id || '');
+  if (!id) throw new Error(`Router did not return an ID for Hotspot server profile "${existingName}"`);
+  const fields: Record<string, string> = {
+    name: profile.name,
+    'hotspot-address': profile.hotspotAddress,
+    'dns-name': profile.dnsName,
+    'html-directory': profile.htmlDirectory,
+    'login-by': profile.loginBy,
+    'use-radius': profile.useRadius ? 'yes' : 'no',
+  };
+  if (router.apiType === 'rest') {
+    await restRequest(router, `/ip/hotspot/profile/${encodeURIComponent(id)}`, 'PUT', fields);
+    return;
+  }
+  const client = apiClient(router);
+  try {
+    const api = await client.connect();
+    await api.menu('/ip hotspot profile').where('.id', id).update(fields);
+  } finally {
+    await client.close();
+  }
+}
+
+export async function deleteHotspotServerProfile(router: RouterConnection, name: string): Promise<void> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ip/hotspot/profile', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ip hotspot profile').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const existing = rows.find(row => row.name === name);
+  if (!existing) throw new Error(`Hotspot server profile "${name}" was not found on the router`);
+  const id = String(existing['.id'] || existing.id || '');
+  if (!id) throw new Error(`Router did not return an ID for Hotspot server profile "${name}"`);
+  if (router.apiType === 'rest') {
+    await restRequest(router, `/ip/hotspot/profile/${encodeURIComponent(id)}`, 'DELETE');
+    return;
+  }
+  const client = apiClient(router);
+  try {
+    const api = await client.connect();
+    await api.menu('/ip hotspot profile').where('.id', id).delete();
   } finally {
     await client.close();
   }
@@ -870,6 +1111,56 @@ export async function addHotspotUser(
   try {
     const api = await client.connect();
     await api.menu('/ip hotspot user').add(fields);
+  } finally {
+    await client.close();
+  }
+}
+
+export async function updateHotspotUser(
+  router: RouterConnection,
+  name: string,
+  update: {
+    password?: string;
+    profile?: string;
+    limitUptime?: string;
+    limitBytesTotal?: number;
+    comment?: string;
+    disabled?: boolean;
+  }
+): Promise<void> {
+  const rows = router.apiType === 'rest'
+    ? await restRequest<RouterRow[]>(router, '/ip/hotspot/user', 'GET')
+    : await (async () => {
+      const client = apiClient(router);
+      try {
+        const api = await client.connect();
+        return await api.menu('/ip hotspot user').get() as RouterRow[];
+      } finally {
+        await client.close();
+      }
+    })();
+  const existing = rows.find(row => String(row.name || '') === name);
+  if (!existing) throw new Error(`Hotspot user "${name}" was not found on the router`);
+  const id = String(existing['.id'] || existing.id || '');
+  if (!id) throw new Error(`Router did not return an ID for Hotspot user "${name}"`);
+
+  const fields: Record<string, string> = {};
+  if (update.password !== undefined) fields.password = update.password;
+  if (update.profile !== undefined) fields.profile = update.profile;
+  if (update.limitUptime !== undefined) fields['limit-uptime'] = update.limitUptime || '0s';
+  if (update.limitBytesTotal !== undefined) fields['limit-bytes-total'] = String(update.limitBytesTotal);
+  if (update.comment !== undefined) fields.comment = update.comment;
+  if (update.disabled !== undefined) fields.disabled = update.disabled ? 'yes' : 'no';
+  if (!Object.keys(fields).length) throw new Error('No Hotspot user fields were provided for update');
+
+  if (router.apiType === 'rest') {
+    await restRequest(router, `/ip/hotspot/user/${encodeURIComponent(id)}`, 'PUT', fields);
+    return;
+  }
+  const client = apiClient(router);
+  try {
+    const api = await client.connect();
+    await api.menu('/ip hotspot user').where('.id', id).update(fields);
   } finally {
     await client.close();
   }
@@ -1056,6 +1347,10 @@ export interface PppoeSecretRecord {
   profile: string;
   disabled: boolean;
   remoteAddress: string;
+  localAddress: string;
+  callerId: string;
+  service: string;
+  comment: string;
 }
 
 function missingPppoeSecret(name: string, router: RouterConnection, secrets: RouterRow[]): Error {
@@ -1076,9 +1371,9 @@ function getPppoeSecretId(secret: RouterRow, router: RouterConnection): string |
 
 function preservePppoeSecretProfile(
   secret: RouterRow,
-  update: { password?: string; profile?: string; disabled?: boolean }
-): { password?: string; profile?: string; disabled?: boolean } {
-  const definedUpdate: { password?: string; profile?: string; disabled?: boolean } = {};
+  update: { password?: string; profile?: string; disabled?: boolean; comment?: string }
+): { password?: string; profile?: string; disabled?: boolean; comment?: string } {
+  const definedUpdate: { password?: string; profile?: string; disabled?: boolean; comment?: string } = {};
   if (update.password !== undefined) {
     if (!update.password.trim() || update.password.trim().toLowerCase() === 'undefined') {
       throw new Error('PPPoE password must be a defined, non-empty string');
@@ -1087,6 +1382,7 @@ function preservePppoeSecretProfile(
   }
   if (update.profile !== undefined) definedUpdate.profile = update.profile;
   if (update.disabled !== undefined) definedUpdate.disabled = update.disabled;
+  if (update.comment !== undefined) definedUpdate.comment = update.comment;
 
   if (definedUpdate.profile !== undefined || definedUpdate.disabled === undefined) return definedUpdate;
   const profile = String(secret.profile || '').trim();
@@ -1111,13 +1407,17 @@ export async function getPppoeSecrets(router: RouterConnection): Promise<PppoeSe
     profile: String(row.profile || ''),
     disabled: row.disabled === true || row.disabled === 'true' || row.disabled === 'yes',
     remoteAddress: String(row['remote-address'] || row.remoteAddress || ''),
+    localAddress: String(row['local-address'] || row.localAddress || ''),
+    callerId: String(row['caller-id'] || row.callerId || ''),
+    service: String(row.service || ''),
+    comment: String(row.comment || ''),
   })).filter(secret => secret.name);
 }
 
 export async function updatePppoeSecret(
   router: RouterConnection,
   name: string,
-  update: { password?: string; profile?: string; disabled?: boolean }
+  update: { password?: string; profile?: string; disabled?: boolean; comment?: string }
 ): Promise<void> {
   if (router.apiType === 'rest') {
     const secrets = await restRequest<RouterRow[]>(router, '/ppp/secret', 'GET');
@@ -1150,6 +1450,7 @@ export async function deletePppoeSecret(router: RouterConnection, name: string):
     const secrets = await restRequest<RouterRow[]>(router, '/ppp/secret', 'GET');
     const secret = findPppoeSecret(secrets, name);
     if (!secret) throw missingPppoeSecret(name, router, secrets);
+    await removePppoeSessions(router, name);
     await restRequest(router, `/ppp/secret/${encodeURIComponent(String(secret['.id']))}`, 'DELETE');
     return;
   }
@@ -1160,6 +1461,7 @@ export async function deletePppoeSecret(router: RouterConnection, name: string):
     const secret = findPppoeSecret(secrets, name);
     const id = secret && getPppoeSecretId(secret, router);
     if (!id) throw missingPppoeSecret(name, router, secrets);
+    await removePppoeSessions(router, name);
     await api.menu('/ppp secret').where('id', id).delete();
   } finally {
     await client.close();

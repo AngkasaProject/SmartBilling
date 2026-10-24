@@ -99,6 +99,10 @@ export const InvoicePrintModal: React.FC<Props> = ({ invoice, customer, settings
                   <span className="bg-emerald-100 text-emerald-800 flex items-center gap-1 px-3 py-1 rounded-full">
                     <CheckCircle2 className="w-3.5 h-3.5" /> LUNAS DICATAT OPERATOR
                   </span>
+                ) : invoice.status === 'canceled' ? (
+                  <span className="bg-slate-200 text-slate-700 flex items-center gap-1 px-3 py-1 rounded-full">
+                    <AlertTriangle className="w-3.5 h-3.5" /> TAGIHAN DIBATALKAN
+                  </span>
                 ) : invoice.status === 'expired' ? (
                   <span className="bg-rose-100 text-rose-800 flex items-center gap-1 px-3 py-1 rounded-full">
                     <AlertTriangle className="w-3.5 h-3.5" /> LEWAT JATUH TEMPO

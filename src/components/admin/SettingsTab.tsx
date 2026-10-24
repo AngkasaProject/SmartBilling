@@ -462,14 +462,14 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
           {section === 'reminders' && (
             <>
               <header className="border-b border-border pb-4">
-                <h2 className="text-lg font-bold">Pengingat jatuh tempo otomatis</h2>
-                <p className="mt-1 text-sm text-muted-foreground">Aktifkan pengiriman pengingat invoice WhatsApp satu hari sebelum tanggal jatuh tempo.</p>
+                <h2 className="text-lg font-bold">Notifikasi tagihan otomatis</h2>
+                <p className="mt-1 text-sm text-muted-foreground">Atur pengingat jatuh tempo serta pemberitahuan invoice dibatalkan setelah masa tenggang.</p>
               </header>
               <label className="flex items-start gap-3 rounded-xl border border-border bg-background p-4">
                 <input type="checkbox" checked={formData.autoSendReminderH1} onChange={event => updateSetting('autoSendReminderH1', event.target.checked)} className="mt-0.5 h-4 w-4 accent-indigo-600" />
                 <span>
-                  <span className="block text-sm font-semibold">Kirim pengingat otomatis H-1</span>
-                  <span className="mt-1 block text-xs text-muted-foreground">Sistem memeriksa invoice yang belum lunas dan mengirim tautan pembayaran satu hari sebelum jatuh tempo.</span>
+                  <span className="block text-sm font-semibold">Aktifkan notifikasi invoice otomatis</span>
+                  <span className="mt-1 block text-xs text-muted-foreground">Kirim pengingat H-1 dan pemberitahuan WhatsApp saat invoice dibatalkan setelah 7 hari masa tenggang. Secret PPPoE tetap tidak diubah otomatis.</span>
                 </span>
               </label>
               <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-foreground">

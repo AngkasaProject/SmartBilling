@@ -6,11 +6,9 @@ import {
   LayoutDashboard,
   LogOut,
   MessageSquare,
-  Receipt,
   Server,
   Settings,
   Ticket,
-  TrendingUp,
   Sun,
   Users,
   Wifi,
@@ -62,8 +60,7 @@ export const Navbar: React.FC<Props> = ({
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'customers', label: 'Pelanggan PPPoE', icon: Users },
     { id: 'vouchers', label: 'Voucher Hotspot', icon: Ticket },
-    { id: 'invoices', label: 'Tagihan', icon: Receipt },
-    { id: 'revenue', label: 'Pendapatan', icon: TrendingUp },
+    { id: 'finance', label: 'Keuangan', icon: CreditCard },
     { id: 'settings', label: 'Pengaturan', icon: Settings },
   ];
   const settingsTabs = [
