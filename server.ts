@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 import { AppDataSnapshot, Customer, HotspotProfile, HotspotServiceProfile, HotspotValidityPreset, Invoice, ManualPaymentMethod, PaymentTransaction, RouterConfig, Voucher } from './src/types/index.js';
 import {
   getRouterCredentialDb,
+  deleteRouterCredentialDb,
   countAdminUsersDb,
   createInitialAdminUserDb,
   createAdminSessionDb,
@@ -4282,6 +4283,16 @@ async function startServer() {
   });
 
   app.post('/api/mikrotik/test', requireAdminSession, async (req, res) => {
+    if (isRecord(req.body) && typeof req.body.routerId === 'string') {
+      try {
+        const connection = await resolveRouterConnection(req.body.routerId);
+        if (!connection) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
+        const router = await testRouterConnection(connection);
+        return res.json({ status: 'connected', router });
+      } catch (error) {
+        return res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     if (!validRouterInput(req.body)) {
       return res.status(400).json({ error: 'Invalid MikroTik connection settings' });
     }
@@ -4330,6 +4341,61 @@ async function startServer() {
       res.status(201).json({ router: savedRouter });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.patch('/api/mikrotik/routers/:routerId', requireAdminSession, async (req, res) => {
+    const { routerId } = req.params;
+    if (routerId === 'env-default') {
+      return res.status(400).json({ error: 'Router utama dikelola melalui environment server' });
+    }
+    if (!validRouterInput(req.body) || !req.body.name.trim() || !req.body.host.trim() || !req.body.username.trim()) {
+      return res.status(400).json({ error: 'Router name, host, port, username, and protocol are required' });
+    }
+
+    try {
+      const appData = await getAppDataDb();
+      const routers = appData.data.routers || [];
+      const existingRouter = routers.find(router => router.id === routerId);
+      if (!existingRouter) return res.status(404).json({ error: 'Router not found' });
+      if (routers.some(router => router.id !== routerId && router.host === req.body.host && router.port === req.body.port)) {
+        return res.status(409).json({ error: 'A router with this host and port is already registered' });
+      }
+
+      const password = req.body.password || await getRouterCredentialDb(routerId);
+      if (!password) return res.status(400).json({ error: 'Router password is required' });
+      const connection: RouterConnection = {
+        ...req.body,
+        id: routerId,
+        password,
+        timeoutSec: Number(process.env.MIKROTIK_TIMEOUT_SEC) || 10,
+      };
+      const liveRouter = await testRouterConnection(connection);
+      const savedRouter: RouterConfig = { ...liveRouter, id: routerId };
+      if (req.body.password) await saveRouterCredentialDb(routerId, req.body.password);
+      await saveAppDataCollectionDb('routers', routers.map(router => router.id === routerId ? savedRouter : router));
+      res.json({ router: savedRouter });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete('/api/mikrotik/routers/:routerId', requireAdminSession, async (req, res) => {
+    const { routerId } = req.params;
+    if (routerId === 'env-default') {
+      return res.status(400).json({ error: 'Router utama dikelola melalui environment server' });
+    }
+    try {
+      const appData = await getAppDataDb();
+      const routers = appData.data.routers || [];
+      if (!routers.some(router => router.id === routerId)) {
+        return res.status(404).json({ error: 'Router not found' });
+      }
+      await saveAppDataCollectionDb('routers', routers.filter(router => router.id !== routerId));
+      await deleteRouterCredentialDb(routerId);
+      res.json({ status: 'success' });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 

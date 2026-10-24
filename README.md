@@ -229,7 +229,8 @@ Docker menggunakan port `1707` untuk aplikasi di dalam container dan sebagai por
 3. Pastikan API (`8728`), API-SSL (`8729`), atau REST RouterOS v7 (`443`) hanya dapat diakses dari host yang dipercaya. Jangan membuka layanan API RouterOS ke seluruh internet.
 4. Restart container setelah mengubah `.env`. Jika konfigurasi RouterOS berasal dari environment, tampilannya akan terkunci di panel; gunakan tab **Router MikroTik** untuk menambahkan server tambahan.
 5. Router dari `.env` akan dimuat otomatis. Gunakan **Tambah MikroTik** untuk menambahkan router lain; password router tambahan disimpan terenkripsi. Buat cadangan `data/router-secrets.key` bersama database bila `APP_ENCRYPTION_KEY` tidak diset.
-6. Pilih interface aktual dan konfigurasi pool/profile/server PPPoE dari halaman yang sama. Operasi setup bersifat aditif dan menolak nama yang sudah ada dengan konfigurasi konflik. Tinjau konfigurasi RouterOS sebelum menerapkan perubahan.
+6. Koneksi router tambahan dapat diedit atau dihapus dari kartu router. Edit menguji koneksi sebelum menyimpan; password lama tetap digunakan bila kolom password baru dikosongkan. Hapus hanya menghapus koneksi dan kredensial dari aplikasi, tidak mengubah konfigurasi perangkat, dan tidak menghapus data billing yang sudah terkait.
+7. Pilih interface aktual dan konfigurasi pool/profile/server PPPoE dari halaman yang sama. Operasi setup bersifat aditif dan menolak nama yang sudah ada dengan konfigurasi konflik. Tinjau konfigurasi RouterOS sebelum menerapkan perubahan.
 
 ---
 

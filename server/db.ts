@@ -499,6 +499,12 @@ export async function saveRouterCredentialDb(routerId: string, password: string)
   saveDbToDisk();
 }
 
+export async function deleteRouterCredentialDb(routerId: string): Promise<void> {
+  const database = await getDb();
+  database.run('DELETE FROM router_credentials WHERE router_id = ?', [routerId]);
+  saveDbToDisk();
+}
+
 export async function getRouterCredentialDb(routerId: string): Promise<string | null> {
   const database = await getDb();
   const result = database.exec('SELECT secret FROM router_credentials WHERE router_id = ?', [routerId]);

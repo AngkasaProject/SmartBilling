@@ -86,6 +86,7 @@ export const RoutersTab: React.FC<Props> = ({ onRefreshData }) => {
   const [routerError, setRouterError] = useState('');
   const [routerNotice, setRouterNotice] = useState('');
   const [isAddingRouter, setIsAddingRouter] = useState(false);
+  const [editingRouterId, setEditingRouterId] = useState<string | null>(null);
   const [isApplyingPppoe, setIsApplyingPppoe] = useState(false);
   const [routerForm, setRouterForm] = useState({ name: '', host: '', port: 8728, username: '', password: '', apiType: 'api' as RouterConfig['apiType'] });
   const [pppoeRouterId, setPppoeRouterId] = useState('');
@@ -125,7 +126,9 @@ export const RoutersTab: React.FC<Props> = ({ onRefreshData }) => {
       setLiveRouters(result.routers);
       StorageService.saveRouters(result.routers);
       onRefreshData();
-      setPppoeRouterId(current => current || result.routers[0]?.id || '');
+      setPppoeRouterId(current => result.routers.some(router => router.id === current)
+        ? current
+        : result.routers[0]?.id || '');
       if (result.errors.some(entry => entry.error)) {
         setRouterError(result.errors.filter(entry => entry.error)
           .map(entry => `${entry.router.name}: ${entry.error}`).join(' • '));
@@ -281,9 +284,7 @@ export const RoutersTab: React.FC<Props> = ({ onRefreshData }) => {
       const response = await fetch('/api/mikrotik/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(router.id === 'env-default'
-          ? { ...router, password: undefined }
-          : { ...router, password: routerForm.password }),
+        body: JSON.stringify({ routerId: router.id }),
       });
       const result = await readApiResponse<{ router: RouterConfig }>(response);
       setRouterNotice(`Terhubung ke ${result.router.name} (${result.router.rosVersion}).`);
@@ -300,21 +301,58 @@ export const RoutersTab: React.FC<Props> = ({ onRefreshData }) => {
     setIsAddingRouter(true);
     setRouterError('');
     try {
-      const response = await fetch('/api/mikrotik/routers', {
-        method: 'POST',
+      const response = await fetch(editingRouterId
+        ? `/api/mikrotik/routers/${encodeURIComponent(editingRouterId)}`
+        : '/api/mikrotik/routers', {
+        method: editingRouterId ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(routerForm),
       });
       const result = await readApiResponse<{ router: RouterConfig }>(response);
       setRouterForm(current => ({ ...current, name: '', password: '' }));
+      setEditingRouterId(null);
       setIsRouterDialogOpen(false);
-      setRouterNotice(`Router ${result.router.name} berhasil diuji dan ditambahkan.`);
+      setRouterNotice(editingRouterId
+        ? `Router ${result.router.name} berhasil diuji dan diperbarui.`
+        : `Router ${result.router.name} berhasil diuji dan ditambahkan.`);
       await loadLiveRouters();
       onRefreshData();
     } catch (error) {
       setRouterError(error instanceof Error ? error.message : String(error));
     } finally {
       setIsAddingRouter(false);
+    }
+  };
+
+  const openRouterEditor = (router: RouterConfig) => {
+    setEditingRouterId(router.id);
+    setRouterForm({
+      name: router.name,
+      host: router.host,
+      port: router.port,
+      username: router.username,
+      password: '',
+      apiType: router.apiType,
+    });
+    setRouterError('');
+    setIsRouterDialogOpen(true);
+  };
+
+  const handleDeleteRouter = async (router: RouterConfig) => {
+    if (!await confirmAction(
+      `Hapus koneksi ${router.name}?`,
+      'Koneksi tersimpan dan kredensialnya akan dihapus dari aplikasi. Konfigurasi pada perangkat MikroTik serta data billing yang sudah terkait tidak dihapus.',
+      true
+    )) return;
+    setRouterError('');
+    try {
+      const response = await fetch(`/api/mikrotik/routers/${encodeURIComponent(router.id)}`, { method: 'DELETE' });
+      await readApiResponse(response);
+      setRouterNotice(`Koneksi ${router.name} dihapus dari aplikasi.`);
+      await loadLiveRouters();
+      onRefreshData();
+    } catch (error) {
+      setRouterError(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -439,22 +477,27 @@ export const RoutersTab: React.FC<Props> = ({ onRefreshData }) => {
       </div>
 
       <div className="flex justify-end">
-        <button type="button" onClick={() => setIsRouterDialogOpen(true)} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white"><Plus className="h-4 w-4" /> Tambah MikroTik</button>
+        <button type="button" onClick={() => {
+          setEditingRouterId(null);
+          setRouterForm({ name: '', host: '', port: 8728, username: '', password: '', apiType: 'api' });
+          setRouterError('');
+          setIsRouterDialogOpen(true);
+        }} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white"><Plus className="h-4 w-4" /> Tambah MikroTik</button>
       </div>
       {isRouterDialogOpen && <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4">
         <div className="w-full max-w-3xl rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
-        <div className="mb-4 flex items-center justify-between"><h2 className="font-bold text-white">Tambah Server MikroTik</h2><button type="button" onClick={() => setIsRouterDialogOpen(false)} className="rounded-lg px-3 py-2 text-xs text-slate-300 hover:bg-slate-800">Tutup</button></div>
+        <div className="mb-4 flex items-center justify-between"><h2 className="font-bold text-white">{editingRouterId ? 'Edit Server MikroTik' : 'Tambah Server MikroTik'}</h2><button type="button" onClick={() => { setIsRouterDialogOpen(false); setEditingRouterId(null); }} className="rounded-lg px-3 py-2 text-xs text-slate-300 hover:bg-slate-800">Tutup</button></div>
         <form onSubmit={handleAddRouter} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-4 text-xs">
           <input required placeholder="Nama router" value={routerForm.name} onChange={event => setRouterForm({ ...routerForm, name: event.target.value })} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-white" />
           <input required placeholder="Host / IP" value={routerForm.host} onChange={event => setRouterForm({ ...routerForm, host: event.target.value })} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono" />
           <input required type="number" min="1" max="65535" placeholder="Port" value={routerForm.port} onChange={event => setRouterForm({ ...routerForm, port: Number(event.target.value) })} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono" />
           <input required placeholder="User API" value={routerForm.username} onChange={event => setRouterForm({ ...routerForm, username: event.target.value })} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono" />
-          <input required type="password" placeholder="Password API" value={routerForm.password} onChange={event => setRouterForm({ ...routerForm, password: event.target.value })} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono" />
+          <input required={!editingRouterId} type="password" placeholder={editingRouterId ? 'Password API baru (kosongkan jika tetap)' : 'Password API'} value={routerForm.password} onChange={event => setRouterForm({ ...routerForm, password: event.target.value })} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-white font-mono" />
           <select value={routerForm.apiType} onChange={event => setRouterForm({ ...routerForm, apiType: event.target.value as RouterConfig['apiType'], port: event.target.value === 'api-ssl' ? 8729 : event.target.value === 'rest' ? 443 : 8728 })} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-white">
             <option value="api">RouterOS API</option><option value="api-ssl">RouterOS API-SSL</option><option value="rest">RouterOS REST (v7)</option>
           </select>
           <button type="submit" disabled={isAddingRouter} className="sm:col-span-2 lg:col-span-3 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg disabled:opacity-50">
-            {isAddingRouter ? 'Menguji koneksi...' : 'Uji koneksi lalu tambahkan'}
+            {isAddingRouter ? 'Menguji koneksi...' : editingRouterId ? 'Uji koneksi lalu simpan perubahan' : 'Uji koneksi lalu tambahkan'}
           </button>
         </form>
         <p className="text-[11px] text-slate-500 mt-3">Kredensial tambahan dienkripsi di SQLite. API user MikroTik sebaiknya hanya diberi hak yang diperlukan.</p>
@@ -521,6 +564,16 @@ export const RoutersTab: React.FC<Props> = ({ onRefreshData }) => {
                   <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? 'animate-spin text-indigo-400' : ''}`} />
                   <span>{isTesting ? 'Menguji API...' : 'Uji ulang koneksi'}</span>
                 </button>
+                {rtr.id !== 'env-default' && (
+                  <>
+                    <button type="button" onClick={() => openRouterEditor(rtr)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700">
+                      <Pencil className="h-3.5 w-3.5" /> Edit
+                    </button>
+                    <button type="button" onClick={() => void handleDeleteRouter(rtr)} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-950/60 px-3 py-1.5 text-xs font-semibold text-rose-200 hover:bg-rose-900/70">
+                      <Trash2 className="h-3.5 w-3.5" /> Hapus
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           );
