@@ -52,8 +52,6 @@ export const DEFAULT_WHATSAPP_TEMPLATES: WhatsAppTemplates = {
     'Catatan pembayaran:',
     '{{notes}}',
     '',
-    'Batas pembayaran: {{expires_at}}',
-    '',
     'Setelah membayar, silakan konfirmasi kepada operator:',
     '{{operator_url}}',
     '',
@@ -75,7 +73,6 @@ export const DEFAULT_WHATSAPP_TEMPLATES: WhatsAppTemplates = {
     'Catatan pembayaran:',
     '{{notes}}',
     '',
-    'Batas pembayaran: {{expires_at}}',
     'Voucher akan aktif setelah pembayaran diverifikasi.',
     '',
     'Konfirmasi pembayaran kepada operator:',
@@ -102,8 +99,8 @@ export const WHATSAPP_TEMPLATE_TOKENS: Record<WhatsAppTemplateKey, string[]> = {
   reminder: ['customer_name', 'business_name', 'invoice_number', 'package_name', 'period', 'amount', 'due_date', 'payment_url', 'payment_options'],
   isolir: ['customer_name', 'business_name', 'payment_url'],
   paymentSuccess: ['customer_name', 'business_name', 'invoice_number', 'amount', 'service_until'],
-  manualInvoice: ['customer_name', 'business_name', 'invoice_number', 'payment_code', 'amount', 'method', 'account_holder', 'account_number', 'notes', 'expires_at', 'operator_url'],
-  manualVoucher: ['customer_name', 'business_name', 'package_name', 'payment_code', 'amount', 'method', 'account_holder', 'account_number', 'notes', 'expires_at', 'operator_url'],
+  manualInvoice: ['customer_name', 'business_name', 'invoice_number', 'payment_code', 'amount', 'method', 'account_holder', 'account_number', 'notes', 'operator_url'],
+  manualVoucher: ['customer_name', 'business_name', 'package_name', 'payment_code', 'amount', 'method', 'account_holder', 'account_number', 'notes', 'operator_url'],
   voucherDelivery: ['customer_name', 'business_name', 'package_name', 'voucher_code', 'voucher_password', 'validity'],
 };
 

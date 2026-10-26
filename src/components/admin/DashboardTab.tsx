@@ -534,43 +534,6 @@ export const DashboardTab: React.FC<Props> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top Welcome / Status Hero Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-indigo-950/60 to-slate-900 border border-slate-800 rounded-2xl p-6 relative overflow-hidden shadow-xl">
-        <div className="absolute right-0 top-0 bottom-0 w-96 bg-indigo-500/10 blur-3xl pointer-events-none" />
-
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
-          <div>
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs font-semibold mb-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              {mainRouter ? `RouterOS terhubung • ${mainRouter.rosVersion}` : 'Tidak ada router MikroTik terhubung'}
-            </div>
-            <h1 className="text-2xl font-black text-white tracking-tight">
-              Network Operations & Billing Center
-            </h1>
-            <p className="text-slate-400 text-xs sm:text-sm mt-1 max-w-2xl">
-              Data yang ditampilkan berasal dari pelanggan, invoice, voucher, serta router yang tersimpan dan berhasil dimuat.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5">
-            <button
-              onClick={() => onNavigateTab('customers')}
-              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl shadow-lg shadow-indigo-600/30 transition flex items-center gap-1.5"
-            >
-              <Users className="w-3.5 h-3.5" />
-              <span>Kelola Pelanggan</span>
-            </button>
-            <button
-              onClick={() => onNavigateTab('vouchers')}
-              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs rounded-xl transition flex items-center gap-1.5"
-            >
-              <Ticket className="w-3.5 h-3.5" />
-              <span>Cetak Voucher</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Total Omset */}

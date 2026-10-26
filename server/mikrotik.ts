@@ -1174,6 +1174,7 @@ export interface HotspotUserRecord {
   comment: string;
   disabled: boolean;
   limitUptime: string;
+  uptime: string;
   limitBytesTotal: number;
   bytesIn: number;
   bytesOut: number;
@@ -1229,6 +1230,7 @@ export async function getHotspotUsers(router: RouterConnection): Promise<Hotspot
         comment: String(row.comment || ''),
         disabled: row.disabled === true || row.disabled === 'true' || row.disabled === 'yes',
         limitUptime: String(row['limit-uptime'] || row.limitUptime || ''),
+        uptime: String(row.uptime || ''),
         limitBytesTotal: readNumber(row['limit-bytes-total'] || row.limitBytesTotal),
         bytesIn: readNumber(row['bytes-in'] || row.bytesIn),
         bytesOut: readNumber(row['bytes-out'] || row.bytesOut),

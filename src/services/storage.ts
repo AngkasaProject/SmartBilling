@@ -78,6 +78,7 @@ export const INITIAL_PAYMENT_CONFIG: PaymentGatewayConfig = {
   merchantCode: '',
   webhookSecret: '',
   autoVerify: false,
+  uniqueAmountEnabled: false,
 };
 
 export const INITIAL_WA_CONFIG: WhatsAppGatewayConfig = {
@@ -97,6 +98,8 @@ export const INITIAL_WA_CONFIG: WhatsAppGatewayConfig = {
 export const INITIAL_SETTINGS: AppSettings = {
   appName: 'SmartBilling',
   brandName: 'SmartBilling',
+  brandMainLogoDataUrl: '',
+  brandIconDataUrl: '',
   companyName: '',
   tagline: '',
   officeAddress: '',

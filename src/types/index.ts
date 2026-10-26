@@ -109,6 +109,7 @@ export interface Voucher {
   createdAt: string;
   activatedAt?: string;
   expiredAt?: string;
+  firstUseExpiryEnabled?: boolean;
   customerPhone?: string;
   paymentMethod?: string;
   paymentRef?: string;
@@ -163,7 +164,7 @@ export interface PaymentGatewayConfig {
   webhookSecret: string;
   autoVerify: boolean;
   manualPaymentMethods?: ManualPaymentMethod[];
-  manualTimeoutMinutes?: number;
+  uniqueAmountEnabled?: boolean;
 }
 
 export interface ManualPaymentMethod {
@@ -211,7 +212,7 @@ export interface PaymentTransaction {
   qrCodeUrl?: string;
   paymentUrl?: string;
   vaNumber?: string;
-  expiryMinutes: number;
+  expiryMinutes?: number;
   createdAt: string;
   paidAt?: string;
   voucherCode?: string;
@@ -238,6 +239,10 @@ export interface AppSettings {
   // 1. General & Branding
   appName: string;
   brandName: string;
+  brandMainLogoDataUrl?: string;
+  brandIconDataUrl?: string;
+  /** Legacy logo setting; used as the main logo when no replacement has been uploaded. */
+  brandLogoDataUrl?: string;
   companyName: string;
   tagline: string;
   officeAddress: string;

@@ -95,10 +95,14 @@ export const VoucherPrintModal: React.FC<Props> = ({ vouchers, settings, onClose
                   <div className="flex items-start justify-between border-b border-slate-200 pb-2 mb-2.5">
                     <div className="flex items-center gap-1.5">
                       <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-xs">
-                        {(settings.brandName || settings.appName || 'S').charAt(0)}
+                        {settings.brandIconDataUrl
+                          ? <img src={settings.brandIconDataUrl} alt="" className="h-full w-full rounded-lg bg-white object-contain p-0.5" />
+                          : (settings.brandName || settings.appName || 'S').charAt(0)}
                       </div>
                       <div>
-                        <h4 className="font-extrabold text-xs text-slate-900 tracking-tight">{settings.brandName || settings.appName}</h4>
+                        {settings.brandMainLogoDataUrl || settings.brandLogoDataUrl
+                          ? <img src={settings.brandMainLogoDataUrl || settings.brandLogoDataUrl} alt={settings.brandName || settings.appName} className="h-6 w-32 object-contain object-left" />
+                          : <h4 className="font-extrabold text-xs text-slate-900 tracking-tight">{settings.brandName || settings.appName}</h4>}
                         <p className="text-[9px] text-slate-500 font-mono flex items-center gap-1">
                           <Wifi className="w-2.5 h-2.5" /> {ssidName}
                         </p>
@@ -152,7 +156,9 @@ export const VoucherPrintModal: React.FC<Props> = ({ vouchers, settings, onClose
                   key={v.id}
                   className="bg-white text-slate-900 w-72 p-4 font-mono text-center border border-dashed border-slate-300 shadow-md rounded"
                 >
-                  <p className="font-extrabold text-sm uppercase tracking-wide">*** {settings.brandName || settings.appName} ***</p>
+                  {settings.brandMainLogoDataUrl || settings.brandLogoDataUrl
+                    ? <img src={settings.brandMainLogoDataUrl || settings.brandLogoDataUrl} alt={settings.brandName || settings.appName} className="mx-auto h-10 w-40 object-contain" />
+                    : <p className="font-extrabold text-sm uppercase tracking-wide">*** {settings.brandName || settings.appName} ***</p>}
                   <p className="text-[11px] text-slate-600">SSID: {ssidName}</p>
                   <p className="text-[10px] text-slate-400">--------------------------------</p>
 

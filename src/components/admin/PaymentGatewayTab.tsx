@@ -70,7 +70,7 @@ export const PaymentGatewayTab: React.FC = () => {
   const [error, setError] = useState('');
   const [savingGateway, setSavingGateway] = useState(false);
   const [methods, setMethods] = useState<ManualMethod[]>([]);
-  const [timeoutMinutes, setTimeoutMinutes] = useState(60);
+  const [uniqueAmountEnabled, setUniqueAmountEnabled] = useState(false);
   const [savingManual, setSavingManual] = useState(false);
   const [manualError, setManualError] = useState('');
   const [methodDialogOpen, setMethodDialogOpen] = useState(false);
@@ -98,7 +98,7 @@ export const PaymentGatewayTab: React.FC = () => {
             accountHolder: method.accountHolder || method.serviceName || '',
           })));
         }
-        setTimeoutMinutes(manual.manualTimeoutMinutes || 60);
+        setUniqueAmountEnabled(Boolean(manual.uniqueAmountEnabled));
       })
       .catch(fetchError => {
         const message = fetchError instanceof Error ? fetchError.message : String(fetchError);
@@ -172,12 +172,15 @@ export const PaymentGatewayTab: React.FC = () => {
       const response = await fetch('/api/payment/manual-options', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ manualPaymentMethods: methods, manualTimeoutMinutes: timeoutMinutes }),
+        body: JSON.stringify({
+          manualPaymentMethods: methods,
+          uniqueAmountEnabled,
+        }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       setMethods(result.manualPaymentMethods);
-      setTimeoutMinutes(result.manualTimeoutMinutes);
+      setUniqueAmountEnabled(Boolean(result.uniqueAmountEnabled));
       const disabledCount = Array.isArray(result.disabledIncompleteMethodIds)
         ? result.disabledIncompleteMethodIds.length
         : 0;
@@ -204,12 +207,15 @@ export const PaymentGatewayTab: React.FC = () => {
       const response = await fetch('/api/payment/manual-options', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ manualPaymentMethods: nextMethods, manualTimeoutMinutes: timeoutMinutes }),
+        body: JSON.stringify({
+          manualPaymentMethods: nextMethods,
+          uniqueAmountEnabled,
+        }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       setMethods(result.manualPaymentMethods);
-      setTimeoutMinutes(result.manualTimeoutMinutes);
+      setUniqueAmountEnabled(Boolean(result.uniqueAmountEnabled));
       const disabledCount = Array.isArray(result.disabledIncompleteMethodIds)
         ? result.disabledIncompleteMethodIds.length
         : 0;
@@ -544,13 +550,26 @@ export const PaymentGatewayTab: React.FC = () => {
             </div>
           )}
 
-          <form onSubmit={saveManualOptions} className="flex flex-wrap items-end gap-3 border-t border-slate-800 pt-4">
-            <label className="block w-full max-w-xs text-xs text-slate-300">Batas waktu pembayaran manual (menit)
-              <input required type="number" min={1} max={1440} value={timeoutMinutes} onChange={event => setTimeoutMinutes(Number(event.target.value))} className={inputClass} />
+          <form onSubmit={saveManualOptions} className="space-y-4 border-t border-slate-800 pt-4">
+            <label className="flex items-start gap-2 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={uniqueAmountEnabled}
+                onChange={event => setUniqueAmountEnabled(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                <b>Tambahkan kode unik ke nominal tagihan</b>
+                <span className="mt-1 block text-slate-400">
+                  Jika aktif, invoice baru mendapat tambahan acak Rp10–Rp899 untuk membantu pencocokan transfer. Invoice yang sudah dibuat tidak berubah.
+                </span>
+              </span>
             </label>
-            <button type="submit" disabled={savingManual} className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-xs font-bold text-white hover:bg-slate-700 disabled:opacity-50">
-              {savingManual ? 'Menyimpan...' : 'Simpan pengaturan'}
-            </button>
+            <div className="flex flex-wrap items-end gap-3">
+              <button type="submit" disabled={savingManual} className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-xs font-bold text-white hover:bg-slate-700 disabled:opacity-50">
+                {savingManual ? 'Menyimpan...' : 'Simpan pengaturan'}
+              </button>
+            </div>
           </form>
           {manualError && <p role="alert" className="rounded-xl border border-rose-500/30 bg-rose-950/40 p-3 text-xs text-rose-200">{manualError}</p>}
         </div>

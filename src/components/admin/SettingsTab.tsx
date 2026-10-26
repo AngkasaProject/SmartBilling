@@ -9,6 +9,7 @@ import {
   Copy,
   Database,
   Download,
+  Image,
   KeyRound,
   Mail,
   MapPin,
@@ -17,6 +18,7 @@ import {
   ShieldCheck,
   Sliders,
   Trash2,
+  Upload,
   Users,
   Zap,
 } from 'lucide-react';
@@ -61,10 +63,15 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
   const { toast, confirm } = useToast();
   const [section, setSection] = useState<SettingsSection>('business');
   const [formData, setFormData] = useState<AppSettings>(settings);
+  const [logoError, setLogoError] = useState('');
   const [saving, setSaving] = useState(false);
   const [databaseInfo, setDatabaseInfo] = useState<DatabaseInfo | null>(null);
   const [loadingDatabase, setLoadingDatabase] = useState(false);
   const [optimizingDatabase, setOptimizingDatabase] = useState(false);
+  const [restoringDatabase, setRestoringDatabase] = useState(false);
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const [resetConfirmation, setResetConfirmation] = useState('');
+  const [resettingDatabase, setResettingDatabase] = useState(false);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [loadingSecurity, setLoadingSecurity] = useState(false);
   const [envLoginConfigured, setEnvLoginConfigured] = useState(false);
@@ -126,6 +133,32 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
   const updateSetting = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setFormData(current => ({ ...current, [key]: value }));
   };
+
+  const handleBrandImageChange = (field: 'brandMainLogoDataUrl' | 'brandIconDataUrl') =>
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      setLogoError('');
+      if (!file) return;
+      if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+        setLogoError('Pilih file PNG, JPG, atau WebP.');
+        return;
+      }
+      if (file.size > 1024 * 1024) {
+        setLogoError('Ukuran setiap gambar maksimal 1 MB.');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result !== 'string') {
+          setLogoError('File gambar tidak dapat dibaca.');
+          return;
+        }
+        updateSetting(field, reader.result);
+      };
+      reader.onerror = () => setLogoError('Gagal membaca file gambar.');
+      reader.readAsDataURL(file);
+    };
 
   const hasChanges = JSON.stringify({ ...formData, updatedAt: settings.updatedAt }) !== JSON.stringify(settings);
 
@@ -212,6 +245,67 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
       toast('Gagal mengoptimalkan database', 'error', error instanceof Error ? error.message : String(error));
     } finally {
       setOptimizingDatabase(false);
+    }
+  };
+
+  const restoreDatabase = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!/\.(sqlite|db)$/i.test(file.name)) {
+      toast('Format file backup tidak didukung', 'error', 'Pilih file .sqlite atau .db.');
+      return;
+    }
+    if (file.size > 100 * 1024 * 1024) {
+      toast('File backup terlalu besar', 'error', 'Ukuran maksimal file adalah 100 MB.');
+      return;
+    }
+    if (!await confirm(
+      'Pulihkan database dari backup?',
+      `Data aktif akan diganti dengan isi "${file.name}". SmartBilling akan membuat salinan database saat ini sebelum pemulihan. Kredensial terenkripsi hanya dapat digunakan jika kunci enkripsi yang sesuai tersedia. Anda mungkin perlu masuk kembali.`,
+      true,
+    )) return;
+
+    setRestoringDatabase(true);
+    try {
+      const response = await fetch('/api/db/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file,
+      });
+      const result = await readJson<{ message: string; safetyBackup: string }>(response);
+      toast(
+        'Database berhasil dipulihkan',
+        'success',
+        `Salinan database sebelumnya: ${result.safetyBackup}. Halaman akan dimuat ulang.`,
+      );
+      window.setTimeout(() => window.location.reload(), 1200);
+    } catch (error) {
+      toast('Gagal memulihkan database', 'error', error instanceof Error ? error.message : String(error));
+      setRestoringDatabase(false);
+    }
+  };
+
+  const resetAllData = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (resetConfirmation !== 'RESET ALL') return;
+    setResettingDatabase(true);
+    try {
+      const response = await fetch('/api/db/reset-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmation: resetConfirmation }),
+      });
+      const result = await readJson<{ message: string; safetyBackup: string }>(response);
+      toast(
+        'Reset data berhasil',
+        'success',
+        `Salinan database sebelum reset: ${result.safetyBackup}. Halaman akan dimuat ulang; silakan login kembali.`,
+      );
+      window.setTimeout(() => window.location.reload(), 1500);
+    } catch (error) {
+      toast('Gagal mereset data', 'error', error instanceof Error ? error.message : String(error));
+      setResettingDatabase(false);
     }
   };
 
@@ -349,6 +443,55 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
                 <label className="text-xs font-semibold">Tagline
                   <input maxLength={120} value={formData.tagline} onChange={event => updateSetting('tagline', event.target.value)} className={inputClass} />
                 </label>
+                <div className="space-y-3 sm:col-span-2">
+                  <div>
+                    <label className="block text-xs font-semibold">Identitas visual brand</label>
+                    <p className="mt-1 text-[11px] font-normal text-muted-foreground">Logo utama menggantikan tulisan nama brand. Icon dipakai untuk favicon browser.</p>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {([
+                      {
+                        field: 'brandMainLogoDataUrl',
+                        label: 'Logo utama',
+                        description: 'Gunakan logo horizontal atau wordmark.',
+                        previewClass: 'h-20 w-full max-w-64',
+                      },
+                      {
+                        field: 'brandIconDataUrl',
+                        label: 'Icon / favicon',
+                        description: 'Gunakan icon persegi untuk tab browser.',
+                        previewClass: 'h-20 w-20',
+                      },
+                    ] as const).map(({ field, label, description, previewClass }) => (
+                      <div key={field} className="space-y-3 rounded-xl border border-border bg-background/60 p-4">
+                        <div>
+                          <h3 className="text-xs font-semibold">{label}</h3>
+                          <p className="mt-1 text-[11px] font-normal text-muted-foreground">{description}</p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-4">
+                          <div className={`grid shrink-0 place-items-center overflow-hidden rounded-xl border border-border bg-card p-2 ${previewClass}`}>
+                            {formData[field]
+                              ? <img src={formData[field]} alt={`Pratinjau ${label.toLowerCase()}`} className="max-h-full max-w-full object-contain" />
+                              : <Image className="h-7 w-7 text-muted-foreground" />}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <label className="inline-flex min-h-9 cursor-pointer items-center gap-2 rounded-lg border border-input bg-background px-3 text-xs font-semibold transition hover:bg-muted">
+                              <Image className="h-4 w-4" /> Pilih {label.toLowerCase()}
+                              <input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleBrandImageChange(field)} className="sr-only" />
+                            </label>
+                            {formData[field] && (
+                              <button type="button" onClick={() => updateSetting(field, '')} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-rose-500/30 px-3 text-xs font-semibold text-rose-500 transition hover:bg-rose-500/10">
+                                <Trash2 className="h-3.5 w-3.5" /> Hapus
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[11px] font-normal text-muted-foreground">Format PNG, JPG, atau WebP · maksimal 1 MB per gambar. Perubahan berlaku setelah pengaturan disimpan.</p>
+                  {logoError && <p role="alert" className="text-xs font-medium text-rose-500">{logoError}</p>}
+                </div>
                 <label className="text-xs font-semibold">Simbol mata uang
                   <input required maxLength={5} value={formData.currencySymbol} onChange={event => updateSetting('currencySymbol', event.target.value)} className={inputClass} />
                 </label>
@@ -359,7 +502,7 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
                     <option value="Asia/Jayapura">WIT — Asia/Jayapura</option>
                     <option value="UTC">UTC</option>
                   </select>
-                  <span className="mt-1 block font-normal text-muted-foreground">Dipakai untuk menampilkan waktu batas pembayaran pada notifikasi.</span>
+                  <span className="mt-1 block font-normal text-muted-foreground">Dipakai untuk menampilkan tanggal dan waktu pada notifikasi.</span>
                 </label>
                 <label className="text-xs font-semibold">Format jam
                   <select value={formData.timeFormat} onChange={event => updateSetting('timeFormat', event.target.value as AppSettings['timeFormat'])} className={inputClass}>
@@ -483,7 +626,7 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
               <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-4">
                 <div>
                   <h2 className="text-lg font-bold">Database & backup</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">Pantau ukuran SQLite, simpan backup, atau optimalkan ruang database.</p>
+                  <p className="mt-1 text-sm text-muted-foreground">Pantau ukuran SQLite, simpan atau pulihkan backup, dan optimalkan ruang database.</p>
                 </div>
                 <button type="button" onClick={() => void loadDatabaseInfo()} disabled={loadingDatabase} className="rounded-lg border border-border bg-secondary px-3 py-2 text-xs font-semibold hover:bg-muted disabled:opacity-50">
                   {loadingDatabase ? 'Memuat...' : 'Muat ulang'}
@@ -520,13 +663,76 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
                 <a href="/api/db/backup" download className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-xs font-bold text-primary-foreground hover:opacity-90">
                   <Download className="h-4 w-4" /> Unduh backup SQLite
                 </a>
+                <label className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border bg-secondary px-4 py-2.5 text-xs font-bold hover:bg-muted ${restoringDatabase || optimizingDatabase ? 'pointer-events-none opacity-50' : ''}`}>
+                  <Upload className={`h-4 w-4 ${restoringDatabase ? 'animate-pulse' : ''}`} />
+                  {restoringDatabase ? 'Memulihkan database...' : 'Pulihkan dari backup'}
+                  <input
+                    type="file"
+                    accept=".sqlite,.db,application/octet-stream"
+                    onChange={event => void restoreDatabase(event)}
+                    disabled={restoringDatabase || optimizingDatabase}
+                    className="sr-only"
+                  />
+                </label>
                 <button type="button" onClick={() => void optimizeDatabase()} disabled={optimizingDatabase} className="inline-flex items-center gap-2 rounded-xl border border-border bg-secondary px-4 py-2.5 text-xs font-bold hover:bg-muted disabled:opacity-50">
                   <Zap className={`h-4 w-4 ${optimizingDatabase ? 'animate-spin' : ''}`} />
                   {optimizingDatabase ? 'Mengoptimalkan...' : 'Optimalkan database'}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResetConfirmation('');
+                    setResetDialogOpen(true);
+                  }}
+                  disabled={restoringDatabase || optimizingDatabase || resettingDatabase}
+                  className="inline-flex items-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-xs font-bold text-destructive hover:bg-destructive/15 disabled:opacity-50"
+                >
+                  <Trash2 className="h-4 w-4" /> Reset All
+                </button>
               </div>
-              <p className="text-xs text-muted-foreground">Simpan backup file database dan kunci enkripsi di lokasi aman yang terpisah dari server.</p>
+              <p className="text-xs text-muted-foreground">Pemulihan mengganti seluruh data dan membuat backup otomatis dari database aktif. Simpan file backup serta kunci enkripsi yang cocok di lokasi aman. Pastikan file berasal dari SmartBilling.</p>
             </>
+          )}
+
+          {resetDialogOpen && (
+            <div
+              className="fixed inset-0 z-[120] grid place-items-center bg-black/70 p-4 backdrop-blur-sm"
+              onMouseDown={event => {
+                if (event.target === event.currentTarget && !resettingDatabase) setResetDialogOpen(false);
+              }}
+            >
+              <section role="alertdialog" aria-modal="true" aria-labelledby="reset-database-title" className="w-full max-w-lg rounded-2xl border border-destructive/40 bg-card p-6 text-card-foreground shadow-2xl">
+                <h2 id="reset-database-title" className="text-lg font-black text-destructive">Reset seluruh data operasional?</h2>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Tindakan ini menghapus pelanggan, invoice, pembayaran, voucher, router dan pengaturan koneksi, metode pembayaran, konfigurasi gateway, serta log WhatsApp. Pengaturan brand dan bisnis, akun admin, serta kunci enkripsi dipertahankan. Router MikroTik fisik tidak diubah. Konfigurasi yang ditentukan melalui environment server (.env) tidak dihapus dan mungkin tetap berlaku.
+                </p>
+                <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                  Database aktif akan dicadangkan otomatis sebelum reset. Semua sesi admin akan dicabut sehingga Anda harus login kembali.
+                </p>
+                <form onSubmit={event => void resetAllData(event)} className="mt-5 space-y-4">
+                  <label htmlFor="reset-all-confirmation" className="block text-xs font-semibold">
+                    Ketik <code className="rounded bg-muted px-1.5 py-0.5 font-mono">RESET ALL</code> untuk mengaktifkan tombol reset.
+                  </label>
+                  <input
+                    id="reset-all-confirmation"
+                    autoComplete="off"
+                    autoFocus
+                    value={resetConfirmation}
+                    onChange={event => setResetConfirmation(event.target.value)}
+                    disabled={resettingDatabase}
+                    className={`${inputClass} font-mono`}
+                  />
+                  <div className="flex justify-end gap-2 border-t border-border pt-4">
+                    <button type="button" onClick={() => setResetDialogOpen(false)} disabled={resettingDatabase} className="rounded-xl border border-border px-4 py-2.5 text-xs font-semibold hover:bg-muted disabled:opacity-50">
+                      Batal
+                    </button>
+                    <button type="submit" disabled={resetConfirmation !== 'RESET ALL' || resettingDatabase} className="rounded-xl bg-destructive px-4 py-2.5 text-xs font-bold text-destructive-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
+                      {resettingDatabase ? 'Mereset data...' : 'Reset permanen'}
+                    </button>
+                  </div>
+                </form>
+              </section>
+            </div>
           )}
 
           {section === 'security' && (

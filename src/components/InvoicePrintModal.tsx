@@ -55,10 +55,14 @@ export const InvoicePrintModal: React.FC<Props> = ({ invoice, customer, settings
             <div>
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center text-white font-bold text-lg shadow-md">
-                  {(settings.brandName || settings.appName || 'S').charAt(0)}
+                  {settings.brandIconDataUrl
+                    ? <img src={settings.brandIconDataUrl} alt="" className="h-full w-full rounded-xl bg-white object-contain p-0.5" />
+                    : (settings.brandName || settings.appName || 'S').charAt(0)}
                 </div>
                 <div>
-                  <h1 className="text-xl font-extrabold tracking-tight text-slate-900">{settings.brandName || settings.appName}</h1>
+                  {settings.brandMainLogoDataUrl || settings.brandLogoDataUrl
+                    ? <img src={settings.brandMainLogoDataUrl || settings.brandLogoDataUrl} alt={settings.brandName || settings.appName} className="h-9 w-48 object-contain object-left" />
+                    : <h1 className="text-xl font-extrabold tracking-tight text-slate-900">{settings.brandName || settings.appName}</h1>}
                   {settings.companyName && <p className="text-[11px] text-slate-500">{settings.companyName}</p>}
                 </div>
               </div>

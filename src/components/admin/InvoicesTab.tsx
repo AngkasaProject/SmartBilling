@@ -24,7 +24,7 @@ import {
 interface Props {
   invoices: Invoice[];
   customers: Customer[];
-  onRefreshData: () => void;
+  onRefreshData: (persist?: boolean) => void;
   onViewInvoice: (invoice: Invoice, customer?: Customer) => void;
   onSendWa: (customer: Customer, type: 'reminder' | 'isolir') => void;
 }
@@ -63,51 +63,40 @@ export const InvoicesTab: React.FC<Props> = ({
   // Batch Billing Generation (Run billing for next month)
   const handleGenerateMonthlyInvoices = async () => {
     const activeCustomers = customers.filter(c => c.status !== 'disabled');
-    const billingMonth = new Date();
-    billingMonth.setDate(1);
-    billingMonth.setMonth(billingMonth.getMonth() + 1);
-    const billingYear = billingMonth.getFullYear();
-    const billingMonthIndex = billingMonth.getMonth();
-    const periodMonth = new Intl.DateTimeFormat('id-ID', { month: 'long', year: 'numeric' }).format(billingMonth);
-    const invoicePeriod = `${billingYear}${String(billingMonthIndex + 1).padStart(2, '0')}`;
     if (!await confirmAction(
       'Jalankan Billing Run?',
-      `Invoice periode ${periodMonth} akan dibuat untuk ${activeCustomers.length} pelanggan.`
+      `Invoice periode berikutnya akan dibuat untuk maksimal ${activeCustomers.length} pelanggan aktif.`
     )) return;
 
-    const currentInvs = StorageService.getInvoices();
-    let createdCount = 0;
-
-    activeCustomers.forEach((cust, idx) => {
-      // Check if invoice for this month already exists
-      const exists = currentInvs.some(
-        i => i.customerId === cust.id && i.periodMonth === periodMonth
-      );
-      if (!exists) {
-        const uniqueCode = Math.floor(10 + Math.random() * 890);
-        const lastDay = new Date(billingYear, billingMonthIndex + 1, 0).getDate();
-        const dueDate = `${billingYear}-${String(billingMonthIndex + 1).padStart(2, '0')}-${String(Math.min(cust.billingDate, lastDay)).padStart(2, '0')}`;
-        const newInv: Invoice = {
-          id: 'inv-' + Date.now() + '-' + idx,
-          invoiceNumber: `INV-${invoicePeriod}-${String(currentInvs.length + createdCount + 1).padStart(3, '0')}`,
-          customerId: cust.id,
-          customerName: cust.name,
-          customerPhone: cust.phone,
-          profileName: cust.servicePackageName || cust.profileName,
-          periodMonth,
-          amount: cust.monthlyFee,
-          uniqueCode: uniqueCode,
-          totalAmount: cust.monthlyFee + uniqueCode,
-          status: 'unpaid',
-          dueDate,
-        };
-        StorageService.saveInvoice(newInv);
-        createdCount++;
+    let serverConfirmed = false;
+    try {
+      const response = await fetch('/api/admin/invoices/generate-monthly', { method: 'POST' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (
+        typeof result.periodMonth !== 'string' ||
+        !Array.isArray(result.invoices) ||
+        result.invoices.some((invoice: unknown) =>
+          !invoice || typeof invoice !== 'object' || !('id' in invoice) || !('invoiceNumber' in invoice)
+        )
+      ) {
+        throw new Error('Server mengembalikan hasil billing run yang tidak valid');
       }
-    });
-
-    toast(`${createdCount} invoice baru dibuat untuk periode ${periodMonth}.`, 'success');
-    onRefreshData();
+      serverConfirmed = true;
+      await StorageService.syncDataFromSqlite();
+      onRefreshData(false);
+      toast(`${result.invoices.length} invoice baru dibuat untuk periode ${result.periodMonth}.`, 'success');
+    } catch (error) {
+      toast(
+        serverConfirmed
+          ? 'Invoice tersimpan, tetapi daftar belum dapat diperbarui'
+          : 'Billing run belum dapat dikonfirmasi',
+        'error',
+        serverConfirmed
+          ? `Muat ulang halaman untuk melihat hasilnya. ${error instanceof Error ? error.message : String(error)}`
+          : error instanceof Error ? error.message : String(error),
+      );
+    }
   };
 
   const handleCreateManualInvoice = async () => {

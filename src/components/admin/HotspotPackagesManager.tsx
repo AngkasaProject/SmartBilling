@@ -308,7 +308,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/90 p-5">
         <div>
           <h2 className="text-lg font-bold text-white">Pengaturan Voucher Hotspot</h2>
-          <p className="mt-1 text-xs text-slate-400">Kelola profil layanan MikroTik dan produk yang dijual melalui portal.</p>
+          <p className="mt-1 text-xs text-slate-400">Kelola profil layanan MikroTik dan produk portal. Masa berlaku voucher baru dimulai saat pertama dipakai.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button type="button" onClick={onManageRouters} className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-bold text-slate-100">

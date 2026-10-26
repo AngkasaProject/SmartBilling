@@ -21,6 +21,8 @@ let previousEncryptionKeys: Buffer[] = [];
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   appName: 'SmartBilling',
   brandName: 'SmartBilling',
+  brandMainLogoDataUrl: '',
+  brandIconDataUrl: '',
   companyName: '',
   tagline: '',
   officeAddress: '',
@@ -104,6 +106,170 @@ export function saveDbToDisk(): void {
     console.error(`❌ Failed to write SQLite to disk:`, err);
     throw err;
   }
+}
+
+export async function restoreDbFromBackup(backup: Buffer): Promise<string> {
+  const database = await getDb();
+  if (!SQL) throw new Error('SQLite belum siap');
+  if (backup.length < 100 || backup.length > 100 * 1024 * 1024) {
+    throw new Error('Ukuran file backup tidak valid (maksimal 100 MB)');
+  }
+
+  let restored: Database | undefined;
+  try {
+    restored = new SQL.Database(new Uint8Array(backup));
+    const integrity = restored.exec('PRAGMA integrity_check');
+    if (integrity[0]?.values[0]?.[0] !== 'ok') {
+      throw new Error('Pemeriksaan integritas SQLite gagal');
+    }
+
+    const tables = new Set(
+      restored.exec("SELECT name FROM sqlite_master WHERE type = 'table'")[0]?.values
+        .map(row => String(row[0])) || []
+    );
+    for (const table of ['app_settings', 'app_data', 'admin_users', 'router_credentials']) {
+      if (!tables.has(table)) throw new Error(`Backup bukan database SmartBilling yang valid (tabel ${table} tidak ditemukan)`);
+    }
+
+    const appData = restored.exec('SELECT collection, value FROM app_data');
+    for (const [collection, value] of appData[0]?.values || []) {
+      if (typeof collection !== 'string' || typeof value !== 'string') {
+        throw new Error('Data aplikasi di dalam backup tidak valid');
+      }
+      JSON.parse(value);
+    }
+    const appSettings = restored.exec("SELECT value FROM app_settings WHERE key = 'app_config'");
+    if (appSettings[0]?.values[0]?.[0]) {
+      JSON.parse(String(appSettings[0].values[0][0]));
+    }
+  } catch (error) {
+    restored?.close();
+    if (error instanceof Error) throw new Error(`Backup tidak dapat dipulihkan: ${error.message}`);
+    throw new Error('Backup tidak dapat dipulihkan');
+  }
+  if (!restored) throw new Error('Backup tidak dapat dipulihkan');
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(DATA_DIR, `billing-before-restore-${timestamp}.sqlite`);
+  const temporaryPath = path.join(DATA_DIR, `billing-restore-${randomBytes(8).toString('hex')}.tmp`);
+  let currentMoved = false;
+  try {
+    fs.renameSync(DB_FILE, backupPath);
+    currentMoved = true;
+    fs.writeFileSync(temporaryPath, backup);
+    fs.renameSync(temporaryPath, DB_FILE);
+    db = restored;
+    database.close();
+    return path.basename(backupPath);
+  } catch (error) {
+    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    if (currentMoved && !fs.existsSync(DB_FILE)) fs.renameSync(backupPath, DB_FILE);
+    restored.close();
+    throw error;
+  }
+}
+
+export async function resetAllBusinessDataDb(): Promise<string> {
+  const database = await getDb();
+  const currentSettings = await getAppSettingsDb();
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(
+    DATA_DIR,
+    `billing-before-reset-${timestamp}-${randomBytes(4).toString('hex')}.sqlite`
+  );
+  const resetSettings: AppSettings = {
+    ...currentSettings,
+    mikrotikHost: DEFAULT_APP_SETTINGS.mikrotikHost,
+    mikrotikPort: DEFAULT_APP_SETTINGS.mikrotikPort,
+    mikrotikUser: DEFAULT_APP_SETTINGS.mikrotikUser,
+    mikrotikPass: DEFAULT_APP_SETTINGS.mikrotikPass,
+    mikrotikApiType: DEFAULT_APP_SETTINGS.mikrotikApiType,
+    mikrotikTimeoutSec: DEFAULT_APP_SETTINGS.mikrotikTimeoutSec,
+    waProvider: DEFAULT_APP_SETTINGS.waProvider,
+    openwaUrl: DEFAULT_APP_SETTINGS.openwaUrl,
+    openwaApiKey: DEFAULT_APP_SETTINGS.openwaApiKey,
+    openwaSessionId: DEFAULT_APP_SETTINGS.openwaSessionId,
+    openwaSenderNumber: DEFAULT_APP_SETTINGS.openwaSenderNumber,
+    autoSendReminderH3: DEFAULT_APP_SETTINGS.autoSendReminderH3,
+    autoSendReminderH1: DEFAULT_APP_SETTINGS.autoSendReminderH1,
+    autoSendIsolir: DEFAULT_APP_SETTINGS.autoSendIsolir,
+    autoSendReceipt: DEFAULT_APP_SETTINGS.autoSendReceipt,
+    paymentProvider: DEFAULT_APP_SETTINGS.paymentProvider,
+    paymentIsProduction: DEFAULT_APP_SETTINGS.paymentIsProduction,
+    paymentServerKey: DEFAULT_APP_SETTINGS.paymentServerKey,
+    paymentClientKey: DEFAULT_APP_SETTINGS.paymentClientKey,
+    paymentMerchantCode: DEFAULT_APP_SETTINGS.paymentMerchantCode,
+    paymentWebhookSecret: DEFAULT_APP_SETTINGS.paymentWebhookSecret,
+    paymentAutoVerify: DEFAULT_APP_SETTINGS.paymentAutoVerify,
+    updatedAt: new Date().toISOString(),
+  };
+  const emptySnapshot: AppDataSnapshot = {
+    customers: [],
+    invoices: [],
+    pppoePackages: [],
+    hotspotProfiles: [],
+    hotspotServiceProfiles: [],
+    vouchers: [],
+    routers: [],
+    whatsappLogs: [],
+    paymentConfig: {
+      provider: 'none',
+      isProduction: false,
+      serverKey: '',
+      clientKey: '',
+      webhookSecret: '',
+      autoVerify: false,
+      manualPaymentMethods: [],
+      uniqueAmountEnabled: false,
+    },
+    whatsappConfig: {
+      provider: 'openwa',
+      openwaUrl: 'http://localhost:2785',
+      apiKey: '',
+      sessionId: 'billing-isp',
+      sessionStatus: 'disconnected',
+      senderNumber: '',
+      autoSendReminderH3: false,
+      autoSendReminderH1: false,
+      autoSendIsolir: true,
+      autoSendReceipt: false,
+      endpointUrl: '',
+    },
+    transactions: [],
+  };
+
+  saveDbToDisk();
+  fs.copyFileSync(DB_FILE, backupPath);
+  database.run('BEGIN TRANSACTION');
+  try {
+    database.run('DELETE FROM app_data');
+    for (const [collection, value] of Object.entries(emptySnapshot)) {
+      database.run(
+        'INSERT INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
+        [collection, JSON.stringify(value), new Date().toISOString()]
+      );
+    }
+    for (const table of ['customers', 'invoices', 'hotspot_profiles', 'vouchers', 'whatsapp_logs', 'payment_transactions']) {
+      database.run(`DELETE FROM ${table}`);
+    }
+    for (const table of ['router_credentials', 'payment_gateway_credentials', 'admin_sessions', 'portal_otp_challenges']) {
+      database.run(`DELETE FROM ${table}`);
+    }
+    database.run(
+      `INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('app_config', ?, ?)`,
+      [JSON.stringify(resetSettings), resetSettings.updatedAt]
+    );
+    database.run(
+      'DELETE FROM app_settings WHERE key IN (?, ?, ?, ?)',
+      ['payment_public_urls', 'portal_payment_link_secret', 'portal_session_secret', 'pppoe_usage']
+    );
+    database.run('COMMIT');
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+  saveDbToDisk();
+  return path.basename(backupPath);
 }
 
 function initSchema(database: Database): void {

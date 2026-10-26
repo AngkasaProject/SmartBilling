@@ -33,6 +33,8 @@ import {
   getDbStats,
   getDb,
   saveDbToDisk,
+  restoreDbFromBackup,
+  resetAllBusinessDataDb,
   getEncryptionKeyInfo,
   rotateEncryptionKeyDb,
   getOrCreatePortalLinkSecretDb,
@@ -1187,11 +1189,14 @@ async function startServer() {
   }
 
   const invoiceGenerationInProgress = new Map<string, Promise<Invoice | null>>();
+  const manualInvoiceCreationInProgress = new Set<string>();
+  let monthlyBillingRunInProgress = false;
   async function ensureDueInvoice(
     customerId: string,
     includeDueTomorrow = false,
     createForUpcomingPeriod = false
   ): Promise<Invoice | null> {
+    if (monthlyBillingRunInProgress) return null;
     const running = invoiceGenerationInProgress.get(customerId);
     if (running) return running;
 
@@ -1246,7 +1251,9 @@ async function startServer() {
         const match = invoice.invoiceNumber.match(numberPattern);
         return match ? Number(match[1]) : 0;
       })) + 1;
-      const uniqueCode = randomInt(10, 900);
+      const uniqueCode = stored.data.paymentConfig?.uniqueAmountEnabled
+        ? randomInt(10, 900)
+        : 0;
       const scheduledPackage = (stored.data.pppoePackages || []).find(item =>
         item.id === customer.pendingPppoePackageId &&
         item.enabled &&
@@ -1351,9 +1358,6 @@ async function startServer() {
     if (!transaction || !transaction.voucherCode) throw new Error('Pesanan voucher tidak ditemukan');
     if (transaction.status === 'settlement') return;
     if (transaction.status !== 'pending') throw new Error('Pesanan voucher tidak lagi menunggu pembayaran');
-    if (transaction.expiresAt && new Date(transaction.expiresAt).getTime() <= Date.now()) {
-      throw new Error('Batas waktu pembayaran pesanan sudah berakhir');
-    }
     const vouchers = stored.data.vouchers || [];
     const voucher = vouchers.find(item => item.orderId === orderId && item.code === transaction.voucherCode);
     if (!voucher) throw new Error('Data voucher pesanan tidak ditemukan');
@@ -1371,7 +1375,7 @@ async function startServer() {
       name: voucher.code,
       password: voucher.password || voucher.code,
       profile: profile.routerProfileName,
-      limitUptime: `${profile.validityHours}h`,
+      limitUptime: '0s',
       limitBytesTotal: profile.dataLimitMb ? profile.dataLimitMb * 1024 * 1024 : undefined,
       comment: `SmartBilling ${orderId}`.slice(0, 100),
     });
@@ -1418,9 +1422,6 @@ async function startServer() {
     if (!transaction?.invoiceId) throw new Error('Permintaan pembayaran invoice tidak ditemukan');
     if (transaction.status === 'settlement') return;
     if (transaction.status !== 'pending') throw new Error('Permintaan pembayaran tidak lagi menunggu persetujuan');
-    if (transaction.expiresAt && new Date(transaction.expiresAt).getTime() <= Date.now()) {
-      throw new Error('Batas waktu pembayaran invoice sudah berakhir');
-    }
 
     const invoices = stored.data.invoices || [];
     const invoice = invoices.find(item => item.id === transaction.invoiceId);
@@ -1574,8 +1575,10 @@ async function startServer() {
         connected: true,
         appName: settings.appName,
         brandName: settings.brandName,
+        brandMainLogoDataUrl: settings.brandMainLogoDataUrl || settings.brandLogoDataUrl || '',
         companyName: settings.companyName,
         tagline: settings.tagline,
+        officeAddress: settings.officeAddress,
         phoneContact: settings.phoneContact,
         operatorWhatsapp,
       });
@@ -2087,7 +2090,6 @@ async function startServer() {
         automaticAvailable: await paymentGatewayReady(gateway),
         provider: gateway.provider,
         manualMethods: (config?.manualPaymentMethods || []).filter(isManualPaymentMethodReady),
-        timeoutMinutes: config?.manualTimeoutMinutes ?? 60,
         operatorWhatsapp: operatorPhone
           ? (operatorPhone.startsWith('0') ? `62${operatorPhone.slice(1)}` : operatorPhone)
           : '',
@@ -2151,8 +2153,9 @@ async function startServer() {
       const now = new Date();
       const createdAt = now.toISOString();
       const orderId = `SBV-${randomUUID()}`;
-      const expiresMinutes = Math.max(1, Math.min(1440, Number(paymentConfig?.manualTimeoutMinutes) || 60));
-      const expiresAt = new Date(now.getTime() + (paymentMode === 'manual' ? expiresMinutes : 1440) * 60_000).toISOString();
+      const expiresAt = paymentMode === 'automatic'
+        ? new Date(now.getTime() + 1440 * 60_000).toISOString()
+        : undefined;
       const vouchers = stored.data.vouchers || [];
       const voucherPrefix = /^[A-Z0-9-]{0,12}$/.test(appSettings.defaultVoucherPrefix)
         ? appSettings.defaultVoucherPrefix
@@ -2177,6 +2180,7 @@ async function startServer() {
         validityDuration: profile.validityDuration,
         speedLimit: profile.speedLimit,
         status: 'pending',
+        firstUseExpiryEnabled: true,
         batchCode: orderId,
         createdAt,
         customerPhone: phone.trim(),
@@ -2198,9 +2202,9 @@ async function startServer() {
           ? manualMethod!.id
           : gateway.provider === 'midtrans' ? 'snap' : 'checkout',
         status: 'pending',
-        expiryMinutes: paymentMode === 'manual' ? expiresMinutes : 1440,
+        ...(paymentMode === 'automatic' ? { expiryMinutes: 1440 } : {}),
         createdAt,
-        expiresAt,
+        ...(expiresAt ? { expiresAt } : {}),
         voucherCode: code,
       };
 
@@ -2224,8 +2228,6 @@ async function startServer() {
           status: 'pending',
           method: manualMethod,
           amount: profile.price,
-          expiresAt,
-          expiresAtFormatted: formatDateTime(expiresAt, appSettings.timezone, appSettings.timeFormat),
           operatorUrl,
           message: 'Pesanan dibuat. Ikuti instruksi transfer, lalu konfirmasikan pembayaran kepada Customer Service melalui WhatsApp.',
         });
@@ -2287,12 +2289,12 @@ async function startServer() {
   });
 
   app.put('/api/payment/manual-options', requireAdminSession, async (req, res) => {
-    const { manualPaymentMethods, manualTimeoutMinutes } = req.body || {};
+    const { manualPaymentMethods, uniqueAmountEnabled } = req.body || {};
     if (!Array.isArray(manualPaymentMethods) || manualPaymentMethods.length > 8) {
       return res.status(400).json({ error: 'Maksimal 8 metode pembayaran manual dapat disimpan' });
     }
-    if (!Number.isInteger(manualTimeoutMinutes) || manualTimeoutMinutes < 1 || manualTimeoutMinutes > 1440) {
-      return res.status(400).json({ error: 'Batas waktu pembayaran harus berupa bilangan bulat antara 1 dan 1440 menit' });
+    if (uniqueAmountEnabled !== undefined && typeof uniqueAmountEnabled !== 'boolean') {
+      return res.status(400).json({ error: 'Status kode unik nominal pembayaran tidak valid' });
     }
     if (manualPaymentMethods.some((method: unknown) =>
       !isRecord(method) ||
@@ -2331,12 +2333,12 @@ async function startServer() {
       const paymentConfig = {
         ...stored.data.paymentConfig,
         manualPaymentMethods: normalizedMethods,
-        manualTimeoutMinutes,
+        uniqueAmountEnabled: uniqueAmountEnabled ?? stored.data.paymentConfig?.uniqueAmountEnabled ?? false,
       };
       await saveAppDataCollectionDb('paymentConfig', paymentConfig as AppDataSnapshot['paymentConfig']);
       res.json({
         manualPaymentMethods: paymentConfig.manualPaymentMethods,
-        manualTimeoutMinutes,
+        uniqueAmountEnabled: paymentConfig.uniqueAmountEnabled,
         disabledIncompleteMethodIds,
       });
     } catch (error) {
@@ -2498,7 +2500,7 @@ async function startServer() {
           name: code,
           password: code,
           profile: profile.routerProfileName,
-          limitUptime: `${profile.validityHours}h`,
+          limitUptime: '0s',
           limitBytesTotal: profile.dataLimitMb ? profile.dataLimitMb * 1024 * 1024 : undefined,
           comment: `SmartBilling ${batchCode}`.slice(0, 100),
         });
@@ -2513,6 +2515,7 @@ async function startServer() {
           validityDuration: profile.validityDuration,
           speedLimit: profile.speedLimit,
           status: 'unused',
+          firstUseExpiryEnabled: true,
           batchCode,
           createdAt: new Date().toISOString(),
           routerId: profile.routerId,
@@ -2780,6 +2783,11 @@ async function startServer() {
           profile.routerId === routerId && profile.routerProfileName === user.profile
         );
         const routerProfile = profilesByName.get(user.profile);
+        const firstUseExpired = Boolean(
+          billingVoucher?.firstUseExpiryEnabled &&
+          billingVoucher.expiredAt &&
+          Date.parse(billingVoucher.expiredAt) <= Date.now()
+        );
         return {
           ...(billingVoucher || {}),
           id: `${routerId}:${user.id}`,
@@ -2791,7 +2799,9 @@ async function startServer() {
           validityHours: billingVoucher?.validityHours || billingProfile?.validityHours || 0,
           validityDuration: user.limitUptime || billingVoucher?.validityDuration || 'Tanpa batas',
           speedLimit: routerProfile?.rateLimit || billingVoucher?.speedLimit || billingProfile?.speedLimit || '',
-          status: user.disabled ? 'expired' : user.active ? 'active' : 'unused',
+          status: user.disabled || firstUseExpired
+            ? 'expired'
+            : user.active || billingVoucher?.activatedAt ? 'active' : 'unused',
           batchCode: user.comment || 'MikroTik',
           createdAt: billingVoucher?.createdAt || 'Data langsung dari MikroTik',
           routerId,
@@ -3044,16 +3054,12 @@ async function startServer() {
       const customers = stored.data.customers || [];
       const searchValue = lookupValue.trim();
       const normalizedPhone = searchValue.replace(/[^0-9]/g, '');
-      const canonicalPhone = (value: string) => {
-        const digits = value.replace(/[^0-9]/g, '');
-        return (digits.startsWith('62') ? digits.slice(2) : digits).replace(/^0+/, '');
-      };
       let customer = customers.find(item =>
         item.customerId.toLowerCase() === searchValue.toLowerCase()
       );
       if (!customer && normalizedPhone.length >= 8) {
         const matchingCustomers = customers.filter(item =>
-          canonicalPhone(item.phone) === canonicalPhone(normalizedPhone)
+          canonicalPortalPhone(item.phone) === canonicalPortalPhone(normalizedPhone)
         );
         if (matchingCustomers.length > 1) {
           return res.status(409).json({ error: 'Nomor WhatsApp terhubung ke lebih dari satu akun. Gunakan ID pelanggan untuk cek tagihan.' });
@@ -3065,11 +3071,8 @@ async function startServer() {
       const latest = await getAppDataDb();
       const invoices = (latest.data.invoices || [])
         .filter(invoice => invoice.customerId === customer.id)
-        .map(invoice => {
-          const payment = (latest.data.transactions || [])
-            .filter(item => item.orderType === 'invoice' && item.invoiceId === invoice.id)
-            .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
-          return {
+        .filter(invoice => invoice.status === 'unpaid')
+        .map(invoice => ({
             id: invoice.id,
             invoiceNumber: invoice.invoiceNumber,
             profileName: invoice.profileName,
@@ -3079,32 +3082,9 @@ async function startServer() {
             totalAmount: invoice.totalAmount,
             status: invoice.status,
             dueDate: invoice.dueDate,
-            paidAt: invoice.paidAt,
-            paymentMethod: invoice.paymentMethod,
-            latestPaymentStatus: payment?.status,
-            latestPaymentMethod: payment?.paymentMethod,
-            latestPaymentChannel: payment?.paymentChannel,
-          };
-        });
-      const today = new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit',
-      }).format(new Date());
-      const publicStatus = customer.status === 'active' && customer.expiredDate <= today ? 'expiring' : customer.status;
+          }));
       res.setHeader('Cache-Control', 'no-store');
-      res.json({
-        customer: {
-          id: customer.id,
-          customerId: customer.customerId,
-          name: customer.name,
-          profileName: customer.servicePackageName || customer.profileName,
-          bandwidthLimit: customer.bandwidthLimit,
-          monthlyFee: customer.monthlyFee,
-          expiredDate: customer.expiredDate,
-          status: publicStatus,
-        },
-        invoices,
-        paymentAvailable: await paymentGatewayReady(await paymentGatewayCredentials()),
-      });
+      res.json({ invoices });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -3206,11 +3186,98 @@ async function startServer() {
     }
   });
 
-  const manualInvoiceCreationInProgress = new Set<string>();
+  app.post('/api/admin/invoices/generate-monthly', requireAdminSession, async (_req, res) => {
+    if (
+      monthlyBillingRunInProgress ||
+      invoiceGenerationInProgress.size > 0 ||
+      manualInvoiceCreationInProgress.size > 0
+    ) {
+      return res.status(409).json({ error: 'Billing run sedang berlangsung. Silakan coba lagi.' });
+    }
+    monthlyBillingRunInProgress = true;
+    try {
+      const stored = await getAppDataDb();
+      const invoices = stored.data.invoices || [];
+      const customers = (stored.data.customers || []).filter(customer =>
+        customer.status !== 'disabled' &&
+        !customer.cancelAtExpiry &&
+        Number.isSafeInteger(customer.monthlyFee) &&
+        customer.monthlyFee > 0
+      );
+      const parts = new Intl.DateTimeFormat('en', {
+        timeZone: 'Asia/Jakarta',
+        year: 'numeric',
+        month: '2-digit',
+      }).formatToParts(new Date());
+      const yearPart = Number(parts.find(part => part.type === 'year')?.value);
+      const monthPart = Number(parts.find(part => part.type === 'month')?.value);
+      if (!Number.isInteger(yearPart) || !Number.isInteger(monthPart)) {
+        throw new Error('Tidak dapat menentukan periode billing Jakarta');
+      }
+      const nextBillingMonth = new Date(Date.UTC(yearPart, monthPart, 1));
+      const billingYear = nextBillingMonth.getUTCFullYear();
+      const billingMonth = nextBillingMonth.getUTCMonth() + 1;
+      const invoicePeriod = `${billingYear}${String(billingMonth).padStart(2, '0')}`;
+      const billingMonthDate = new Date(Date.UTC(billingYear, billingMonth - 1, 15));
+      const periodMonth = new Intl.DateTimeFormat('id-ID', {
+        month: 'long',
+        year: 'numeric',
+        timeZone: 'Asia/Jakarta',
+      }).format(billingMonthDate);
+      const periodInvoices = invoices.filter(invoice =>
+        invoice.invoiceNumber.startsWith(`INV-${invoicePeriod}-`)
+      );
+      let nextNumber = Math.max(0, ...periodInvoices.map(invoice => {
+        const match = invoice.invoiceNumber.match(new RegExp(`^INV-${invoicePeriod}-(\\d+)$`));
+        return match ? Number(match[1]) : 0;
+      })) + 1;
+      const lastDay = new Date(Date.UTC(billingYear, billingMonth, 0)).getUTCDate();
+      const createdInvoices: Invoice[] = [];
+      for (const customer of customers) {
+        if (invoices.some(invoice =>
+          invoice.customerId === customer.id && invoice.periodMonth === periodMonth
+        )) continue;
+        const billingDay = Number.isInteger(customer.billingDate)
+          ? Math.max(1, Math.min(31, customer.billingDate))
+          : 1;
+        const dueDate = `${billingYear}-${String(billingMonth).padStart(2, '0')}-${String(Math.min(billingDay, lastDay)).padStart(2, '0')}`;
+        const uniqueCode = stored.data.paymentConfig?.uniqueAmountEnabled
+          ? randomInt(10, 900)
+          : 0;
+        createdInvoices.push({
+          id: randomUUID(),
+          invoiceNumber: `INV-${invoicePeriod}-${String(nextNumber++).padStart(3, '0')}`,
+          customerId: customer.id,
+          customerName: customer.name,
+          customerPhone: customer.phone,
+          profileName: customer.servicePackageName || customer.profileName,
+          periodMonth,
+          amount: customer.monthlyFee,
+          uniqueCode,
+          totalAmount: customer.monthlyFee + uniqueCode,
+          status: 'unpaid',
+          dueDate,
+        });
+      }
+      if (createdInvoices.length) {
+        await saveAppDataCollectionDb('invoices', [...createdInvoices, ...invoices]);
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ periodMonth, invoices: createdInvoices });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      monthlyBillingRunInProgress = false;
+    }
+  });
+
   app.post('/api/admin/invoices', requireAdminSession, async (req, res) => {
     const { customerId } = req.body || {};
     if (typeof customerId !== 'string' || !customerId.trim()) {
       return res.status(400).json({ error: 'Pilih pelanggan yang akan ditagih' });
+    }
+    if (monthlyBillingRunInProgress) {
+      return res.status(409).json({ error: 'Billing run sedang berlangsung. Silakan coba lagi.' });
     }
     if (manualInvoiceCreationInProgress.has(customerId)) {
       return res.status(409).json({ error: 'Pembuatan invoice untuk pelanggan ini sedang diproses' });
@@ -3256,7 +3323,9 @@ async function startServer() {
         const match = invoice.invoiceNumber.match(numberPattern);
         return match ? Number(match[1]) : 0;
       })) + 1;
-      const uniqueCode = randomInt(10, 900);
+      const uniqueCode = stored.data.paymentConfig?.uniqueAmountEnabled
+        ? randomInt(10, 900)
+        : 0;
       const invoice: Invoice = {
         id: randomUUID(),
         invoiceNumber: `INV-${periodCode}-${String(nextNumber).padStart(3, '0')}`,
@@ -3443,7 +3512,9 @@ async function startServer() {
         customer = customers.find(item =>
           item.customerId.toLowerCase() === searchValue.toLowerCase()
         ) || (normalizedPhone.length >= 8
-          ? customers.find(item => item.phone.replace(/[^0-9]/g, '') === normalizedPhone)
+          ? customers.find(item =>
+            canonicalPortalPhone(item.phone) === canonicalPortalPhone(normalizedPhone)
+          )
           : undefined);
       }
       if (!customer) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
@@ -3469,12 +3540,10 @@ async function startServer() {
         if (existingManualRequest) {
           return res.status(409).json({ error: `Pembayaran manual sudah menunggu persetujuan (${existingManualRequest.paymentCode || 'kode tersimpan'})` });
         }
-        const timeoutMinutes = Math.max(1, Math.min(1440, Number(paymentConfig?.manualTimeoutMinutes) || 60));
         const createdAt = new Date();
         const transactions = stored.data.transactions || [];
         const orderId = `SBM-${randomUUID()}`;
         const paymentCode = createPaymentCode(transactions, 'SBM');
-        const expiresAt = new Date(createdAt.getTime() + timeoutMinutes * 60_000).toISOString();
         const transaction: PaymentTransaction = {
           id: randomUUID(),
           orderId,
@@ -3487,9 +3556,7 @@ async function startServer() {
           paymentMethod: 'manual',
           paymentChannel: method.id,
           status: 'pending',
-          expiryMinutes: timeoutMinutes,
           createdAt: createdAt.toISOString(),
-          expiresAt,
           invoiceId: invoice.id,
         };
         await saveAppDataCollectionDb('transactions', [transaction, ...transactions]);
@@ -3518,7 +3585,7 @@ async function startServer() {
               account_holder: method.accountHolder || method.serviceName || '-',
               account_number: method.accountNumber || '-',
               notes: method.instructions,
-              expires_at: formatDateTime(expiresAt, appSettings.timezone, appSettings.timeFormat),
+              expires_at: 'Tidak ada batas waktu',
               operator_url: operatorUrl || 'Hubungi nomor WhatsApp operator yang tersedia.',
             })
           );
@@ -3529,8 +3596,6 @@ async function startServer() {
           status: 'pending',
           orderId: transaction.orderId,
           paymentCode,
-          expiresAt: transaction.expiresAt,
-          expiresAtFormatted: formatDateTime(expiresAt, appSettings.timezone, appSettings.timeFormat),
           operatorUrl,
           message: 'Kode bayar dibuat. Hubungi operator melalui WhatsApp setelah menyelesaikan transfer.',
         });
@@ -3786,7 +3851,7 @@ async function startServer() {
       const stored = await getAppDataDb();
       res.json({
         manualPaymentMethods: stored.data.paymentConfig?.manualPaymentMethods || [],
-        manualTimeoutMinutes: stored.data.paymentConfig?.manualTimeoutMinutes ?? 60,
+        uniqueAmountEnabled: stored.data.paymentConfig?.uniqueAmountEnabled ?? false,
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3798,14 +3863,10 @@ async function startServer() {
       const stored = await getAppDataDb();
       const vouchers = stored.data.vouchers || [];
       const invoices = stored.data.invoices || [];
-      const settings = await getAppSettingsDb();
       const requests = (stored.data.transactions || [])
         .filter(transaction => transaction.paymentMethod === 'manual' && transaction.status === 'pending')
         .map(transaction => ({
           ...transaction,
-          expiresAtFormatted: transaction.expiresAt
-            ? formatDateTime(transaction.expiresAt, settings.timezone, settings.timeFormat)
-            : undefined,
           voucher: vouchers.find(voucher => voucher.orderId === transaction.orderId) || null,
           invoice: transaction.invoiceId
             ? invoices.find(invoice => invoice.id === transaction.invoiceId) || null
@@ -3833,22 +3894,6 @@ async function startServer() {
         item.orderId === orderId && item.paymentMethod === 'manual' && item.status === 'pending'
       );
       if (!transaction) return res.status(404).json({ error: 'Permintaan pembayaran tidak ditemukan atau sudah diproses' });
-      if (transaction.expiresAt && new Date(transaction.expiresAt).getTime() <= Date.now()) {
-        const expiredTransactions = (stored.data.transactions || []).map(item =>
-          item.orderId === orderId ? { ...item, status: 'expired' as const } : item
-        );
-        const expiredVouchers = (stored.data.vouchers || []).map(item =>
-          item.orderId === orderId ? { ...item, status: 'expired' as const } : item
-        );
-        await savePublicPaymentUpdateDb(
-          stored.data.customers || [],
-          stored.data.invoices || [],
-          expiredTransactions,
-          expiredVouchers
-        );
-        return res.status(409).json({ error: 'Batas waktu pembayaran sudah berakhir' });
-      }
-
       if (action === 'approve') {
         if (transaction.orderType === 'voucher') {
           await activateAndSettleVoucher(orderId, 'manual-admin-approved');
@@ -3916,6 +3961,32 @@ async function startServer() {
   app.post('/api/settings', requireAdminSession, async (req, res) => {
     try {
       const settingsInput = isRecord(req.body) ? { ...req.body } : {};
+      const logoFields = ['brandMainLogoDataUrl', 'brandIconDataUrl', 'brandLogoDataUrl'] as const;
+      for (const field of logoFields) {
+        const logoDataUrl = settingsInput[field];
+        if (logoDataUrl === undefined) continue;
+        if (typeof logoDataUrl !== 'string') {
+          return res.status(400).json({ error: 'Format gambar brand tidak valid' });
+        }
+        if (!logoDataUrl) continue;
+        const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]*={0,2})$/.exec(logoDataUrl);
+        if (!match) {
+          return res.status(400).json({ error: 'Logo utama dan icon harus berupa PNG, JPG, atau WebP yang valid' });
+        }
+        const image = Buffer.from(match[2], 'base64');
+        if (!image.length || image.length > 1024 * 1024) {
+          return res.status(400).json({ error: 'Ukuran setiap logo maksimal 1 MB' });
+        }
+        const isPng = match[1] === 'image/png' &&
+          image.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+        const isJpeg = match[1] === 'image/jpeg' &&
+          image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff;
+        const isWebp = match[1] === 'image/webp' &&
+          image.toString('ascii', 0, 4) === 'RIFF' && image.toString('ascii', 8, 12) === 'WEBP';
+        if (!isPng && !isJpeg && !isWebp) {
+          return res.status(400).json({ error: 'Isi file tidak cocok dengan format gambar brand' });
+        }
+      }
       if (
         (settingsInput.defaultVoucherPrefix !== undefined &&
           (typeof settingsInput.defaultVoucherPrefix !== 'string' ||
@@ -4602,12 +4673,61 @@ async function startServer() {
     try {
       const dbPath = path.resolve(__dirname, 'data/billing.sqlite');
       if (fs.existsSync(dbPath)) {
+        saveDbToDisk();
         res.download(dbPath, `backup-billing-${new Date().toISOString().substring(0, 10)}.sqlite`);
       } else {
         res.status(404).json({ error: 'Database file not found on disk' });
       }
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post(
+    '/api/db/restore',
+    requireAdminSession,
+    express.raw({ type: 'application/octet-stream', limit: '100mb' }),
+    async (req: express.Request, res: express.Response) => {
+      if (!Buffer.isBuffer(req.body)) {
+        return res.status(400).json({ error: 'Pilih file backup SQLite untuk dipulihkan' });
+      }
+      try {
+        const safetyBackup = await restoreDbFromBackup(req.body);
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json({
+          status: 'success',
+          message: 'Database berhasil dipulihkan',
+          safetyBackup,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const invalidBackup = message.startsWith('Backup tidak dapat dipulihkan') ||
+          message.includes('Ukuran file backup tidak valid');
+        return res.status(invalidBackup ? 400 : 500).json({ error: message });
+      }
+    },
+    (error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+      if (isRecord(error) && error.type === 'entity.too.large') {
+        return res.status(413).json({ error: 'Ukuran file backup melebihi batas 100 MB' });
+      }
+      return next(error);
+    }
+  );
+
+  app.post('/api/db/reset-all', requireAdminSession, async (req, res) => {
+    if (req.body?.confirmation !== 'RESET ALL') {
+      return res.status(400).json({ error: 'Konfirmasi reset tidak cocok. Ketik RESET ALL untuk melanjutkan.' });
+    }
+    try {
+      const safetyBackup = await resetAllBusinessDataDb();
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        status: 'success',
+        message: 'Data operasional berhasil direset. Akun admin dan kunci enkripsi dipertahankan.',
+        safetyBackup,
+      });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 
@@ -5005,6 +5125,100 @@ async function startServer() {
   });
 
   let backgroundTasksRunning = false;
+  let hotspotVoucherExpiryTaskRunning = false;
+  async function runHotspotVoucherExpiryTasks(): Promise<void> {
+    if (hotspotVoucherExpiryTaskRunning) return;
+    hotspotVoucherExpiryTaskRunning = true;
+    try {
+      const stored = await getAppDataDb();
+      const trackedVouchers = (stored.data.vouchers || []).filter(voucher =>
+        voucher.firstUseExpiryEnabled === true &&
+        voucher.routerId &&
+        voucher.status !== 'pending' &&
+        Number.isFinite(voucher.validityHours) &&
+        voucher.validityHours > 0
+      );
+      const routerIds = [...new Set(trackedVouchers.map(voucher => voucher.routerId!))];
+      if (!routerIds.length) return;
+
+      const updates = new Map<string, Partial<Voucher>>();
+      const now = Date.now();
+      const parseRouterUptimeMs = (uptime: string) => {
+        const normalized = uptime.trim().toLowerCase();
+        const clock = normalized.match(/^(?:(\d+)d)?\s*(\d+):(\d{2}):(\d{2})$/);
+        if (clock) {
+          return ((Number(clock[1] || 0) * 24 + Number(clock[2])) * 60 * 60 +
+            Number(clock[3]) * 60 + Number(clock[4])) * 1000;
+        }
+        const units: Record<string, number> = { w: 7 * 24 * 60 * 60_000, d: 24 * 60 * 60_000, h: 60 * 60_000, m: 60_000, s: 1000 };
+        const tokens = [...normalized.matchAll(/(\d+)\s*([wdhms])/g)];
+        return tokens.reduce((total, token) => total + Number(token[1]) * units[token[2]], 0);
+      };
+
+      for (const routerId of routerIds) {
+        const routerVouchers = trackedVouchers.filter(voucher => voucher.routerId === routerId);
+        try {
+          const router = await resolveRouterConnection(routerId);
+          if (!router) throw new Error('Kredensial router tidak tersedia');
+          const users = await getHotspotUsers(router);
+          const vouchersByCode = new Map(routerVouchers.map(voucher => [voucher.code, voucher]));
+          for (const user of users) {
+            const voucher = vouchersByCode.get(user.name);
+            if (!voucher) continue;
+
+            let activatedAt = voucher.activatedAt;
+            let expiredAt = voucher.expiredAt;
+            let status = voucher.status;
+            if (!activatedAt && !user.disabled && (user.active || parseRouterUptimeMs(user.uptime) > 0)) {
+              const firstObservedSessionMs = user.active ? parseRouterUptimeMs(user.sessionUptime) : 0;
+              activatedAt = new Date(now - firstObservedSessionMs).toISOString();
+              expiredAt = new Date(now + voucher.validityHours * 60 * 60 * 1000).toISOString();
+            }
+            if (!activatedAt || !expiredAt) continue;
+
+            if (Date.parse(expiredAt) <= now) {
+              if (!user.disabled) {
+                await updateHotspotUser(router, user.name, { disabled: true });
+                if (user.active) await disconnectHotspotUser(router, user.name);
+              }
+              status = 'expired';
+            } else {
+              status = 'active';
+            }
+            if (
+              activatedAt !== voucher.activatedAt ||
+              expiredAt !== voucher.expiredAt ||
+              status !== voucher.status
+            ) {
+              updates.set(voucher.id, { activatedAt, expiredAt, status });
+            }
+          }
+        } catch (error) {
+          console.error(`[Hotspot voucher expiry] Router ${routerId} check failed:`, error);
+        }
+      }
+
+      if (updates.size) {
+        const latest = await getAppDataDb();
+        const vouchers = (latest.data.vouchers || []).map(voucher => {
+          const update = updates.get(voucher.id);
+          return update && voucher.firstUseExpiryEnabled
+            ? { ...voucher, ...update }
+            : voucher;
+        });
+        await saveAppDataCollectionDb('vouchers', vouchers);
+      }
+    } catch (error) {
+      console.error('[Hotspot voucher expiry] Background task failed:', error);
+    } finally {
+      hotspotVoucherExpiryTaskRunning = false;
+    }
+  }
+
+  const hotspotVoucherExpiryTimer = setInterval(() => void runHotspotVoucherExpiryTasks(), 60 * 1000);
+  hotspotVoucherExpiryTimer.unref();
+  void runHotspotVoucherExpiryTasks();
+
   async function runBillingBackgroundTasks(): Promise<void> {
     if (backgroundTasksRunning) return;
     backgroundTasksRunning = true;
@@ -5070,27 +5284,6 @@ async function startServer() {
         if (usageChanged) await savePppoeUsageDb(usage);
       }
 
-      const transactions = stored.data.transactions || [];
-      const expiredOrderIds = new Set(transactions
-        .filter(item => item.paymentMethod === 'manual' && item.status === 'pending' && item.expiresAt && new Date(item.expiresAt).getTime() <= Date.now())
-        .map(item => item.orderId));
-      if (expiredOrderIds.size) {
-        const updatedTransactions = transactions.map(item => expiredOrderIds.has(item.orderId)
-          ? { ...item, status: 'expired' as const }
-          : item);
-        const updatedVouchers = (stored.data.vouchers || []).map(item =>
-          item.orderId && expiredOrderIds.has(item.orderId)
-            ? { ...item, status: 'expired' as const }
-            : item
-        );
-        await savePublicPaymentUpdateDb(
-          stored.data.customers || [],
-          stored.data.invoices || [],
-          updatedTransactions,
-          updatedVouchers
-        );
-      }
-
       const settings = await getAppSettingsDb();
       const jakartaDate = (date: Date) => {
         const parts = new Intl.DateTimeFormat('en', {
@@ -5153,6 +5346,15 @@ async function startServer() {
       });
       if (invoicesPastGracePeriod.length) {
         const expiredInvoiceIds = new Set(invoicesPastGracePeriod.map(invoice => invoice.id));
+        const updatedTransactions = (stored.data.transactions || []).map(transaction =>
+          transaction.orderType === 'invoice' &&
+          transaction.paymentMethod === 'manual' &&
+          transaction.status === 'pending' &&
+          transaction.invoiceId &&
+          expiredInvoiceIds.has(transaction.invoiceId)
+            ? { ...transaction, status: 'canceled' as const }
+            : transaction
+        );
         await savePublicPaymentUpdateDb(
           stored.data.customers || [],
           (stored.data.invoices || []).map(invoice =>
@@ -5165,7 +5367,7 @@ async function startServer() {
               }
               : invoice
           ),
-          stored.data.transactions || []
+          updatedTransactions
         );
         stored = await getAppDataDb();
       }

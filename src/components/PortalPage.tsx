@@ -9,14 +9,18 @@ import {
   ShieldCheck,
   ChevronRight,
   Loader2,
+  MapPin,
+  ArrowUpRight,
 } from "lucide-react";
 
 interface PortalStatus {
   connected: boolean;
   appName?: string;
   brandName?: string;
+  brandMainLogoDataUrl?: string;
   companyName?: string;
   tagline?: string;
+  officeAddress?: string;
   operatorWhatsapp?: string;
 }
 
@@ -50,7 +54,6 @@ interface PaymentOptions {
   automaticAvailable: boolean;
   provider: string;
   manualMethods: PaymentMethod[];
-  timeoutMinutes: number;
   operatorWhatsapp: string;
 }
 
@@ -83,6 +86,34 @@ interface VoucherOrderStatus {
 interface BillingLink {
   customer: { name: string; customerId: string; profileName: string };
   invoices: PortalInvoice[];
+}
+
+interface PublicBillingCheck {
+  invoices: PortalInvoice[];
+}
+
+interface CustomerDashboard {
+  customer: {
+    id: string;
+    customerId: string;
+    name: string;
+    phone: string;
+    email?: string;
+    address?: string;
+    pppoeUsername: string;
+    profileName: string;
+    bandwidthLimit: string;
+    monthlyFee: number;
+    billingDate: number;
+    expiredDate: string;
+    status: string;
+    dataLimitMb?: number;
+    dataUsedBytes?: number;
+    dataRemainingBytes?: number;
+    pendingPackageName?: string;
+  };
+  invoices: PortalInvoice[];
+  paymentAvailable: boolean;
 }
 
 interface PaymentResult {
@@ -281,11 +312,6 @@ function PortalPaymentDialog({
                 {result.method.instructions}
               </p>
             )}
-            {result.expiresAtFormatted && (
-              <p className="mt-4 text-xs text-zinc-500">
-                Batas konfirmasi: {result.expiresAtFormatted}
-              </p>
-            )}
             {result.message && (
               <p className="mt-2 text-xs text-zinc-500">{result.message}</p>
             )}
@@ -396,7 +422,7 @@ function PortalPaymentDialog({
 
 function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
   const [lookupValue, setLookupValue] = useState("");
-  const [result, setResult] = useState<BillingLink | null>(null);
+  const [result, setResult] = useState<PublicBillingCheck | null>(null);
   const [selectedInvoice, setSelectedInvoice] =
     useState<PaymentSelection | null>(null);
   const [busy, setBusy] = useState(false);
@@ -407,7 +433,7 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
     setBusy(true);
     setError("");
     try {
-      const billing = await apiRequest<BillingLink>("/api/portal/billing", {
+      const billing = await apiRequest<PublicBillingCheck>("/api/portal/billing", {
         method: "POST",
         body: jsonBody({ lookupValue: value }),
       });
@@ -436,20 +462,20 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
   };
 
   return (
-    <section className="mx-auto max-w-3xl space-y-6">
+    <section className="mx-auto max-w-3xl space-y-5 sm:space-y-6">
       <form
-        className="rounded-2xl border border-zinc-200 bg-white p-6 sm:p-8 shadow-sm"
+        className="portal-enter rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-28px_rgba(24,24,27,0.35)] transition-shadow duration-300 hover:shadow-[0_18px_48px_-28px_rgba(24,24,27,0.4)] sm:rounded-3xl sm:p-8"
         onSubmit={submit}
       >
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 rounded-xl bg-zinc-100 flex items-center justify-center text-zinc-600">
+        <div className="mb-5 flex items-center gap-3 sm:mb-6">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-zinc-900 text-white shadow-lg shadow-zinc-900/10 transition-transform duration-300 hover:rotate-3">
             <ShieldCheck className="w-5 h-5" />
           </div>
           <div>
             <h2 className="text-lg font-bold text-zinc-900">
               Cek Tagihan Anda
             </h2>
-            <p className="text-xs text-zinc-500">
+            <p className="mt-0.5 text-xs leading-relaxed text-zinc-500">
               Masukkan ID Pelanggan atau Nomor WhatsApp terdaftar.
             </p>
           </div>
@@ -457,12 +483,13 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
 
         <label className="block">
           <input
-            className={`${inputClass} text-center font-mono text-lg tracking-wider`}
+            className={`${inputClass} h-12 text-center font-mono text-base tracking-wide transition-shadow focus:shadow-[0_0_0_4px_rgba(24,24,27,0.06)] sm:text-lg`}
             value={lookupValue}
             onChange={(event) => setLookupValue(event.target.value)}
             placeholder="ID Pelanggan / No. WhatsApp"
             autoComplete="off"
             maxLength={128}
+            aria-label="ID pelanggan atau nomor WhatsApp"
             required
           />
         </label>
@@ -472,7 +499,7 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
           </p>
         )}
         <button
-          className={`${buttonClass} mt-4 w-full`}
+          className={`${buttonClass} mt-4 min-h-12 w-full transition duration-200 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0`}
           disabled={busy || !lookupValue.trim()}
         >
           {busy ? (
@@ -482,28 +509,23 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
           )}
           {busy ? "Memeriksa Data..." : "Cek Tagihan Sekarang"}
         </button>
+        <p className="mt-3 flex items-center justify-center gap-1.5 text-center text-[11px] text-zinc-400">
+          <ShieldCheck className="h-3.5 w-3.5" /> Tidak perlu memasukkan password internet Anda.
+        </p>
       </form>
 
       {result && (
-        <div className="rounded-2xl border border-zinc-200 bg-white p-6 sm:p-8 shadow-sm animate-[fadeInUp_0.3s_ease-out]">
-          <div className="flex flex-wrap items-start justify-between gap-3 pb-5 border-b border-zinc-100">
+        <div className="portal-enter rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-28px_rgba(24,24,27,0.35)] sm:rounded-3xl sm:p-8">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-100 pb-5">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-1">
-                Data Ditemukan
-              </p>
-              <h2 className="text-xl font-bold text-zinc-900">
-                {result.customer.name}
+              <h2 className="text-xl font-bold tracking-tight text-zinc-900">
+                Tagihan aktif
               </h2>
-              <p className="text-sm text-zinc-500 mt-0.5">
-                ID:{" "}
-                <span className="font-mono text-zinc-700">
-                  {result.customer.customerId}
-                </span>
-              </p>
+              <p className="mt-1 text-sm text-zinc-500">Rincian tagihan yang masih perlu dibayar.</p>
             </div>
             <button
               type="button"
-              className={`${secondaryButtonClass} !px-3 !py-1.5 !text-xs`}
+              className={`${secondaryButtonClass} min-h-9 !px-3 !py-1.5 !text-xs transition duration-200 hover:-translate-y-0.5 active:translate-y-0`}
               disabled={busy}
               onClick={() => void lookup(lookupValue)}
             >
@@ -519,19 +541,19 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
               result.invoices.map((invoice) => (
                 <div
                   key={invoice.id}
-                  className="group flex flex-col gap-4 rounded-xl border border-zinc-100 bg-zinc-50/50 p-5 transition hover:border-zinc-200 sm:flex-row sm:items-center sm:justify-between"
+                  className="group flex flex-col gap-4 rounded-2xl border border-zinc-200/80 bg-gradient-to-br from-white to-zinc-50 p-4 transition duration-200 hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-md sm:flex-row sm:items-center sm:justify-between sm:p-5"
                 >
                   <div>
-                    <div className="flex items-center gap-3 mb-1">
-                      <p className="font-mono font-bold text-zinc-900 text-base">
+                    <div className="mb-1 flex flex-wrap items-center gap-2">
+                      <p className="font-mono text-sm font-bold text-zinc-900 sm:text-base">
                         #{invoice.invoiceNumber}
                       </p>
                       <InvoiceStatusBadge invoice={invoice} />
                     </div>
-                    <p className="text-xs text-zinc-500">
+                    <p className="text-xs leading-relaxed text-zinc-500">
                       {invoice.periodMonth} · Jatuh tempo {invoice.dueDate}
                     </p>
-                    <p className="mt-2 text-xl font-bold text-zinc-900">
+                    <p className="mt-2 text-2xl font-bold tracking-tight text-zinc-900">
                       {rupiah(invoice.totalAmount)}
                     </p>
                     {invoice.latestPaymentMethod && (
@@ -543,7 +565,7 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
                   {invoice.status === "unpaid" && (
                     <button
                       type="button"
-                      className={`${buttonClass} w-full sm:w-auto shadow-none`}
+                      className={`${buttonClass} min-h-11 w-full shadow-none transition duration-200 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0 sm:w-auto`}
                       onClick={() =>
                         setSelectedInvoice({ invoice, lookupValue })
                       }
@@ -554,9 +576,7 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
                 </div>
               ))
             ) : (
-              <p className="text-sm text-zinc-500 text-center py-6">
-                Belum ada riwayat tagihan.
-              </p>
+              <p className="text-sm text-zinc-500 text-center py-6">Tidak ada tagihan yang belum dibayar.</p>
             )}
           </div>
         </div>
@@ -618,6 +638,15 @@ export function PortalPage() {
   const [linkToken, setLinkToken] = useState("");
   const pathname = window.location.pathname;
   const isBillingLink = pathname === "/portal/billing";
+  const isCustomerDashboard = pathname === "/portal/dashboard";
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [dashboardBusy, setDashboardBusy] = useState(false);
+  const [dashboardError, setDashboardError] = useState("");
+  const [dashboardPhone, setDashboardPhone] = useState("");
+  const [dashboardCode, setDashboardCode] = useState("");
+  const [dashboardVerificationToken, setDashboardVerificationToken] = useState("");
+  const [dashboardAuthenticated, setDashboardAuthenticated] = useState(false);
+  const [dashboardCustomer, setDashboardCustomer] = useState<CustomerDashboard | null>(null);
   const query = new URLSearchParams(window.location.search);
   const paymentReturn = query.get("payment");
   const returnInvoiceId = query.get("invoiceId");
@@ -849,6 +878,102 @@ export function PortalPage() {
     setSelectedInvoice({ invoice, portalToken: token, lookupValue: lookup });
   };
 
+  const loadCustomerDashboard = useCallback(async () => {
+    const result = await apiRequest<CustomerDashboard>("/api/internal/portal/customer", {
+      method: "POST",
+      body: jsonBody({}),
+    });
+    setDashboardCustomer(result);
+  }, []);
+
+  useEffect(() => {
+    if (!isCustomerDashboard) return;
+    let active = true;
+    void (async () => {
+      setDashboardLoading(true);
+      setDashboardError("");
+      try {
+        const session = await apiRequest<{
+          authenticated: boolean;
+          customer?: { phone: string };
+        }>("/api/portal/auth/session");
+        if (!active) return;
+        setDashboardAuthenticated(session.authenticated);
+        if (session.authenticated) {
+          if (session.customer?.phone) setDashboardPhone(session.customer.phone);
+          await loadCustomerDashboard();
+        }
+      } catch (loadError) {
+        if (active) {
+          setDashboardError(loadError instanceof Error ? loadError.message : "Dashboard pelanggan belum dapat dimuat.");
+        }
+      } finally {
+        if (active) setDashboardLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [isCustomerDashboard, loadCustomerDashboard]);
+
+  const requestDashboardCode = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setDashboardBusy(true);
+    setDashboardError("");
+    try {
+      const result = await apiRequest<{ verificationToken: string }>("/api/portal/auth/send-otp", {
+        method: "POST",
+        body: jsonBody({ phone: dashboardPhone }),
+      });
+      setDashboardVerificationToken(result.verificationToken);
+      setNotice("Kode verifikasi sudah dikirim ke WhatsApp terdaftar dan berlaku selama 5 menit.");
+    } catch (requestError) {
+      setDashboardError(requestError instanceof Error ? requestError.message : "Kode verifikasi belum dapat dikirim.");
+    } finally {
+      setDashboardBusy(false);
+    }
+  };
+
+  const verifyDashboardCode = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setDashboardBusy(true);
+    setDashboardError("");
+    try {
+      await apiRequest<{ ok: boolean }>("/api/portal/auth/verify-otp", {
+        method: "POST",
+        body: jsonBody({
+          phone: dashboardPhone,
+          code: dashboardCode,
+          verificationToken: dashboardVerificationToken,
+        }),
+      });
+      setDashboardAuthenticated(true);
+      setDashboardCode("");
+      setNotice("");
+      await loadCustomerDashboard();
+    } catch (requestError) {
+      setDashboardError(requestError instanceof Error ? requestError.message : "Kode verifikasi tidak dapat diperiksa.");
+    } finally {
+      setDashboardBusy(false);
+    }
+  };
+
+  const logoutCustomerDashboard = async () => {
+    setDashboardBusy(true);
+    setDashboardError("");
+    try {
+      await apiRequest<{ ok: boolean }>("/api/portal/auth/logout", { method: "POST" });
+      setDashboardAuthenticated(false);
+      setDashboardCustomer(null);
+      setDashboardVerificationToken("");
+      setDashboardCode("");
+    } catch (requestError) {
+      setDashboardError(requestError instanceof Error ? requestError.message : "Gagal keluar dari dashboard.");
+    } finally {
+      setDashboardBusy(false);
+    }
+  };
+
   if (loading) {
     return (
       <main className="grid min-h-screen place-items-center bg-zinc-50 text-zinc-500">
@@ -861,52 +986,65 @@ export function PortalPage() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900 flex flex-col font-sans selection:bg-zinc-200">
-      <header className="border-b border-zinc-200 bg-white sticky top-0 z-40">
-        <nav className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-4">
-          <a href="/" className="flex items-center gap-3 group">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-zinc-900 text-white shadow-sm group-hover:scale-105 transition">
-              <Wifi className="h-4 w-4" />
-            </span>
-            <span>
-              <b className="block text-[15px] tracking-tight text-zinc-900">
-                {brandName}
-              </b>
-              <span className="text-[11px] font-medium text-zinc-500">
-                Portal Pelanggan
+    <div className="relative flex min-h-screen flex-col overflow-clip bg-gradient-to-b from-white via-zinc-50 to-zinc-100 font-sans text-zinc-900 selection:bg-zinc-200">
+      <header className="sticky top-0 z-40 border-b border-zinc-200/80 bg-white/90 shadow-[0_4px_20px_-18px_rgba(24,24,27,0.35)] backdrop-blur-xl">
+        <nav className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5 sm:py-4">
+          <a href="/" className="group inline-flex min-w-0 items-center gap-3">
+            {portalStatus.brandMainLogoDataUrl ? (
+              <img src={portalStatus.brandMainLogoDataUrl} alt={brandName} className="h-12 w-48 max-w-[55vw] object-contain transition duration-300 group-hover:scale-[1.02]" />
+            ) : (
+              <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-2xl bg-zinc-900 text-white shadow-md shadow-zinc-900/15 transition duration-300 group-hover:-rotate-3 group-hover:scale-105">
+                <Wifi className="h-4 w-4" />
               </span>
-            </span>
+            )}
+            {!portalStatus.brandMainLogoDataUrl && (
+              <b className="min-w-0 truncate text-[15px] tracking-tight text-zinc-900">{brandName}</b>
+            )}
           </a>
-          <div className="flex items-center gap-2">
-            {!isBillingLink && (
-              <div className="flex bg-zinc-100 rounded-lg p-1 border border-zinc-200">
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            {isCustomerDashboard ? (
+              <>
+                <a href="/" className={`${secondaryButtonClass} min-h-10 flex-1 !px-3 !py-2 text-xs sm:flex-none`}>
+                  <ChevronRight className="h-3.5 w-3.5 rotate-180" /> Portal utama
+                </a>
+                {dashboardAuthenticated && (
+                  <button
+                    type="button"
+                    className={`${secondaryButtonClass} min-h-10 flex-1 !px-3 !py-2 text-xs sm:flex-none`}
+                    onClick={() => void logoutCustomerDashboard()}
+                    disabled={dashboardBusy}
+                  >
+                    Keluar
+                  </button>
+                )}
+              </>
+            ) : !isBillingLink && (
+              <div className="grid w-full grid-cols-2 rounded-xl border border-zinc-200 bg-zinc-100 p-1 sm:w-auto">
                 <button
                   type="button"
-                  className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${activeTab === "customer" ? "bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200" : "text-zinc-500 hover:text-zinc-900"}`}
+                  className={`flex min-h-10 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-all duration-200 active:scale-[0.98] sm:min-h-9 sm:px-4 ${activeTab === "customer" ? "bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200" : "text-zinc-500 hover:text-zinc-900"}`}
                   onClick={() => setActiveTab("customer")}
+                  aria-pressed={activeTab === "customer"}
                 >
+                  <CreditCard className="h-3.5 w-3.5" />
                   Cek Tagihan
                 </button>
                 <button
                   type="button"
-                  className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${activeTab === "voucher" ? "bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200" : "text-zinc-500 hover:text-zinc-900"}`}
+                  className={`flex min-h-10 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-all duration-200 active:scale-[0.98] sm:min-h-9 sm:px-4 ${activeTab === "voucher" ? "bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200" : "text-zinc-500 hover:text-zinc-900"}`}
                   onClick={() => setActiveTab("voucher")}
+                  aria-pressed={activeTab === "voucher"}
                 >
+                  <Wifi className="h-3.5 w-3.5" />
                   Beli Voucher
                 </button>
               </div>
             )}
-            <a
-              href="/admin"
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-50 hover:text-zinc-900"
-            >
-              Login Admin
-            </a>
           </div>
         </nav>
       </header>
 
-      <main className="flex-1 mx-auto w-full max-w-6xl px-5 py-8 sm:py-12">
+      <main className="relative z-10 mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-5 sm:py-10">
         {!portalStatus.connected && (
           <div
             role="alert"
@@ -933,20 +1071,211 @@ export function PortalPage() {
           </div>
         )}
 
-        {!isBillingLink && activeTab === "customer" && (
-          <div className="mb-8 text-center max-w-2xl mx-auto">
-            <h1 className="text-3xl font-bold tracking-tight text-zinc-900 sm:text-4xl">
-              Cek & Bayar Tagihan
+        {!isBillingLink && !isCustomerDashboard && activeTab === "customer" && (
+          <div className="portal-enter mx-auto mb-5 max-w-3xl sm:mb-7">
+            <h1 className="text-2xl font-bold tracking-tight text-zinc-900 sm:text-3xl">
+              Tagihan internet lebih terpantau
             </h1>
-            <p className="mt-3 text-sm text-zinc-500 leading-relaxed">
-              Masukkan ID pelanggan atau nomor WhatsApp terdaftar untuk melihat
-              tagihan dan masa aktif layanan Anda.
-            </p>
           </div>
         )}
 
-        {isBillingLink ? (
-          <section className="mx-auto max-w-2xl rounded-2xl border border-zinc-200 bg-white p-6 sm:p-8 shadow-sm animate-[fadeInUp_0.3s_ease-out]">
+        {isCustomerDashboard ? (
+          <section className="portal-enter mx-auto max-w-5xl">
+            {dashboardLoading ? (
+              <div className="grid min-h-64 place-items-center">
+                <div className="flex items-center gap-3 text-sm text-zinc-500">
+                  <Loader2 className="h-5 w-5 animate-spin" /> Memuat dashboard pelanggan...
+                </div>
+              </div>
+            ) : dashboardAuthenticated && dashboardCustomer ? (
+              <>
+                <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Dashboard pelanggan</p>
+                    <h1 className="mt-1 text-2xl font-bold tracking-tight text-zinc-900 sm:text-3xl">
+                      Halo, {dashboardCustomer.customer.name}
+                    </h1>
+                    <p className="mt-1 text-sm text-zinc-500">
+                      ID pelanggan <span className="font-mono font-semibold text-zinc-700">{dashboardCustomer.customer.customerId}</span>
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className={`${secondaryButtonClass} min-h-10 !px-3 !py-2 text-xs`}
+                    onClick={() => {
+                      setDashboardBusy(true);
+                      setDashboardError("");
+                      void loadCustomerDashboard()
+                        .catch((refreshError) => setDashboardError(refreshError instanceof Error ? refreshError.message : "Data belum dapat diperbarui."))
+                        .finally(() => setDashboardBusy(false));
+                    }}
+                    disabled={dashboardBusy}
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${dashboardBusy ? "animate-spin" : ""}`} /> Perbarui
+                  </button>
+                </div>
+
+                {dashboardError && (
+                  <p role="alert" className="mb-5 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{dashboardError}</p>
+                )}
+
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <article className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+                    <p className="text-xs font-semibold text-zinc-500">Status layanan</p>
+                    <div className="mt-3 flex items-center gap-2">
+                      <span className={`h-2.5 w-2.5 rounded-full ${dashboardCustomer.customer.status === "active" ? "bg-emerald-500" : "bg-amber-500"}`} />
+                      <p className="text-lg font-bold text-zinc-900">
+                        {dashboardCustomer.customer.status === "active" ? "Aktif" : dashboardCustomer.customer.status === "isolated" ? "Terisolir" : dashboardCustomer.customer.status === "expiring" ? "Segera jatuh tempo" : "Dinonaktifkan"}
+                      </p>
+                    </div>
+                    <p className="mt-2 text-xs text-zinc-500">Masa layanan sampai {dashboardCustomer.customer.expiredDate || "—"}</p>
+                  </article>
+                  <article className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+                    <p className="text-xs font-semibold text-zinc-500">Paket internet</p>
+                    <p className="mt-3 text-lg font-bold text-zinc-900">{dashboardCustomer.customer.profileName}</p>
+                    <p className="mt-1 text-xs text-zinc-500">{dashboardCustomer.customer.bandwidthLimit || "Kecepatan tidak tersedia"}</p>
+                    {dashboardCustomer.customer.pendingPackageName && (
+                      <p className="mt-2 text-xs text-indigo-700">Perubahan paket berikutnya: {dashboardCustomer.customer.pendingPackageName}</p>
+                    )}
+                  </article>
+                  <article className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+                    <p className="text-xs font-semibold text-zinc-500">Biaya bulanan</p>
+                    <p className="mt-3 text-lg font-bold text-zinc-900">{rupiah(dashboardCustomer.customer.monthlyFee)}</p>
+                    <p className="mt-1 text-xs text-zinc-500">Jatuh tempo setiap tanggal {dashboardCustomer.customer.billingDate}</p>
+                  </article>
+                </div>
+
+                <section className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm sm:p-6">
+                  <div className="mb-4 flex items-center justify-between gap-3 border-b border-zinc-100 pb-4">
+                    <div>
+                      <h2 className="text-lg font-bold text-zinc-900">Tagihan & riwayat pembayaran</h2>
+                      <p className="mt-1 text-xs text-zinc-500">Tagihan terbaru dan status pembayarannya.</p>
+                    </div>
+                    <CreditCard className="h-5 w-5 text-zinc-400" />
+                  </div>
+                  <div className="space-y-3">
+                    {dashboardCustomer.invoices.length ? dashboardCustomer.invoices.map((invoice) => (
+                      <article key={invoice.id} className="flex flex-col gap-3 rounded-xl border border-zinc-200 bg-zinc-50/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-mono text-sm font-bold text-zinc-900">{invoice.invoiceNumber}</p>
+                            <InvoiceStatusBadge invoice={invoice} />
+                          </div>
+                          <p className="mt-1 text-xs text-zinc-500">{invoice.periodMonth} · Jatuh tempo {invoice.dueDate}</p>
+                          {invoice.latestPaymentMethod && <p className="mt-1 text-[11px] text-zinc-500">Pembayaran: {invoice.latestPaymentMethod}</p>}
+                          <p className="mt-2 text-lg font-bold text-zinc-900">{rupiah(invoice.totalAmount)}</p>
+                        </div>
+                        {invoice.status === "unpaid" && (
+                          <button
+                            type="button"
+                            className={`${buttonClass} min-h-10 w-full sm:w-auto`}
+                            onClick={() => openPayment(invoice, undefined, dashboardCustomer.customer.customerId)}
+                          >
+                            <CreditCard className="h-4 w-4" /> Bayar sekarang
+                          </button>
+                        )}
+                      </article>
+                    )) : (
+                      <p className="py-8 text-center text-sm text-zinc-500">Belum ada riwayat tagihan.</p>
+                    )}
+                  </div>
+                </section>
+
+                <section className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm sm:p-6">
+                  <h2 className="text-sm font-bold text-zinc-900">Bantuan</h2>
+                  <p className="mt-1 text-xs text-zinc-500">Hubungi Customer Service jika layanan atau pembayaran Anda memerlukan bantuan.</p>
+                  {portalStatus.operatorWhatsapp && (
+                    <a className="mt-4 inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-emerald-700" href={`https://wa.me/${portalStatus.operatorWhatsapp}`} target="_blank" rel="noreferrer">
+                      Hubungi via WhatsApp <ArrowUpRight className="h-3.5 w-3.5" />
+                    </a>
+                  )}
+                </section>
+              </>
+            ) : dashboardAuthenticated ? (
+              <div className="mx-auto max-w-md rounded-2xl border border-zinc-200 bg-white p-6 text-center shadow-sm">
+                <AlertCircle className="mx-auto h-8 w-8 text-rose-500" />
+                <p className="mt-3 font-semibold text-zinc-900">Dashboard belum dapat dimuat</p>
+                <p role="alert" className="mt-2 text-sm text-rose-700">{dashboardError || "Silakan coba perbarui kembali."}</p>
+                <button
+                  type="button"
+                  className={`${buttonClass} mt-4`}
+                  onClick={() => {
+                    setDashboardBusy(true);
+                    void loadCustomerDashboard()
+                      .catch((refreshError) => setDashboardError(refreshError instanceof Error ? refreshError.message : "Data belum dapat diperbarui."))
+                      .finally(() => setDashboardBusy(false));
+                  }}
+                  disabled={dashboardBusy}
+                >
+                  <RefreshCw className={`h-4 w-4 ${dashboardBusy ? "animate-spin" : ""}`} /> Coba lagi
+                </button>
+              </div>
+            ) : (
+              <div className="mx-auto max-w-md rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-28px_rgba(24,24,27,0.35)] sm:p-8">
+                <div className="mb-5">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Akses aman dengan WhatsApp</p>
+                  <h1 className="mt-1 text-2xl font-bold tracking-tight text-zinc-900">Dashboard pelanggan</h1>
+                  <p className="mt-2 text-sm leading-relaxed text-zinc-500">Masuk menggunakan nomor WhatsApp yang terdaftar. Kami akan mengirim kode verifikasi sekali pakai.</p>
+                </div>
+                {!dashboardVerificationToken ? (
+                  <form onSubmit={(event) => void requestDashboardCode(event)} className="space-y-4">
+                    <label className="block text-xs font-semibold text-zinc-700">
+                      Nomor WhatsApp terdaftar
+                      <input
+                        type="tel"
+                        autoComplete="tel"
+                        maxLength={32}
+                        required
+                        value={dashboardPhone}
+                        onChange={(event) => setDashboardPhone(event.target.value)}
+                        className={`${inputClass} mt-1`}
+                        placeholder="08xxxxxxxxxx"
+                      />
+                    </label>
+                    <button type="submit" className={`${buttonClass} min-h-11 w-full`} disabled={dashboardBusy || !dashboardPhone.trim()}>
+                      {dashboardBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                      Kirim kode WhatsApp
+                    </button>
+                  </form>
+                ) : (
+                  <form onSubmit={(event) => void verifyDashboardCode(event)} className="space-y-4">
+                    <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+                      Kode dikirim ke WhatsApp {dashboardPhone}. Kode berlaku 5 menit.
+                    </p>
+                    <label className="block text-xs font-semibold text-zinc-700">
+                      Kode verifikasi 6 digit
+                      <input
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        pattern="[0-9]{6}"
+                        maxLength={6}
+                        required
+                        value={dashboardCode}
+                        onChange={(event) => setDashboardCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                        className={`${inputClass} mt-1 text-center font-mono text-xl tracking-[0.35em]`}
+                        placeholder="000000"
+                      />
+                    </label>
+                    <button type="submit" className={`${buttonClass} min-h-11 w-full`} disabled={dashboardBusy || dashboardCode.length !== 6}>
+                      {dashboardBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                      Verifikasi & masuk
+                    </button>
+                    <button type="button" className="w-full py-2 text-xs font-semibold text-zinc-500 hover:text-zinc-900" onClick={() => {
+                      setDashboardVerificationToken("");
+                      setDashboardCode("");
+                      setDashboardError("");
+                    }}>
+                      Gunakan nomor lain
+                    </button>
+                  </form>
+                )}
+                {dashboardError && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{dashboardError}</p>}
+                <p className="mt-5 text-center text-[11px] leading-relaxed text-zinc-400">Jangan bagikan kode verifikasi kepada siapa pun.</p>
+              </div>
+            )}
+          </section>
+        ) : isBillingLink ? (
+          <section className="portal-enter mx-auto max-w-2xl rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_18px_60px_-40px_rgba(24,24,27,0.32)] sm:rounded-3xl sm:p-8">
             <div className="text-center pb-6 border-b border-zinc-100">
               <div className="w-12 h-12 bg-zinc-50 border border-zinc-200 text-zinc-600 rounded-xl mx-auto flex items-center justify-center mb-4">
                 <CreditCard className="w-6 h-6" />
@@ -1021,42 +1350,47 @@ export function PortalPage() {
         ) : activeTab === "customer" ? (
           <PublicBillingLookup options={paymentOptions} />
         ) : (
-          <section className="animate-[fadeInUp_0.3s_ease-out]">
-            <div className="mx-auto max-w-2xl text-center mb-8">
-              <h1 className="text-3xl font-bold tracking-tight text-zinc-900 sm:text-4xl">
+          <section className="portal-enter">
+            <div className="mx-auto mb-5 max-w-5xl sm:mb-7">
+              <h1 className="text-2xl font-bold tracking-tight text-zinc-900 sm:text-3xl">
                 Beli Voucher Hotspot
               </h1>
-              <p className="mt-3 text-sm text-zinc-500 leading-relaxed">
-                Pilih paket hotspot dan selesaikan pembayaran untuk menerima
-                kode akses internet.
-              </p>
             </div>
-            <div className="mx-auto max-w-5xl grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-              <div className="rounded-2xl border border-zinc-200 bg-white p-6 sm:p-8 shadow-sm">
-                <h2 className="text-lg font-bold text-zinc-900 mb-5">
-                  1. Pilih Paket
-                </h2>
+            <div className="mx-auto grid max-w-5xl gap-4 sm:gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+              <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-28px_rgba(24,24,27,0.35)] sm:rounded-3xl sm:p-8">
+                <div className="mb-5 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Langkah 1</p>
+                    <h2 className="mt-1 text-lg font-bold text-zinc-900">Pilih Paket</h2>
+                  </div>
+                  <span className="grid h-9 w-9 place-items-center rounded-xl bg-zinc-100 text-zinc-600"><Wifi className="h-4 w-4" /></span>
+                </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   {hotspotProfiles.map((profile) => (
                     <button
                       type="button"
                       key={profile.id}
                       onClick={() => setVoucherProfileId(profile.id)}
-                      className={`rounded-xl border p-5 text-left transition-all ${voucherProfileId === profile.id ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-900" : "border-zinc-200 bg-white hover:bg-zinc-50"}`}
+                      aria-pressed={voucherProfileId === profile.id}
+                      className={`group relative rounded-2xl border p-4 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2 hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 sm:p-5 ${voucherProfileId === profile.id ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-900 shadow-sm" : "border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"}`}
                     >
-                      <b className="block text-base text-zinc-900">
-                        {profile.name}
-                      </b>
-                      <span className="mt-1.5 block text-xs font-medium text-zinc-500">
-                        {profile.speedLimit} · {profile.validityDuration}
-                      </span>
-                      {profile.dataLimitMb && (
-                        <span className="mt-1 block text-[11px] text-zinc-400">
-                          Kuota: {profile.dataLimitMb} MB
+                      <span className="flex items-start justify-between gap-3">
+                        <span className="min-w-0">
+                          <b className="block truncate text-base text-zinc-900">{profile.name}</b>
+                          <span className="mt-2 flex flex-wrap gap-1.5">
+                            <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-600">{profile.speedLimit}</span>
+                            <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-600">{profile.validityDuration}</span>
+                          </span>
                         </span>
-                      )}
-                      <span className="mt-4 block text-xl font-bold text-zinc-900">
-                        {rupiah(profile.price)}
+                        <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full transition ${voucherProfileId === profile.id ? "bg-zinc-900 text-white" : "border border-zinc-200 text-transparent group-hover:border-zinc-400"}`}>
+                          <CheckCircle2 className="h-4 w-4" />
+                        </span>
+                      </span>
+                      {profile.dataLimitMb && <span className="mt-3 block text-[11px] text-zinc-400">Kuota {profile.dataLimitMb} MB</span>}
+                      <span className="mt-2 block text-[10px] text-zinc-500">Masa berlaku dimulai saat voucher pertama kali digunakan.</span>
+                      <span className="mt-4 flex items-end justify-between border-t border-zinc-100 pt-3">
+                        <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400">Harga</span>
+                        <span className="text-xl font-bold tracking-tight text-zinc-900">{rupiah(profile.price)}</span>
                       </span>
                     </button>
                   ))}
@@ -1069,12 +1403,16 @@ export function PortalPage() {
               </div>
 
               <form
-                className="rounded-2xl border border-zinc-200 bg-white p-6 sm:p-8 shadow-sm"
+                className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-28px_rgba(24,24,27,0.35)] sm:sticky sm:top-36 sm:rounded-3xl sm:p-8"
                 onSubmit={(event) => void createVoucherOrder(event)}
               >
-                <h2 className="text-lg font-bold text-zinc-900 mb-5">
-                  2. Data & Pembayaran
-                </h2>
+                <div className="mb-5 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Langkah 2</p>
+                    <h2 className="mt-1 text-lg font-bold text-zinc-900">Data & Pembayaran</h2>
+                  </div>
+                  <span className="grid h-9 w-9 place-items-center rounded-xl bg-zinc-100 text-zinc-600"><CreditCard className="h-4 w-4" /></span>
+                </div>
                 <div className="space-y-3">
                   <input
                     className={inputClass}
@@ -1141,7 +1479,7 @@ export function PortalPage() {
                   ))}
                 </div>
                 <button
-                  className={`${buttonClass} mt-6 w-full`}
+                  className={`${buttonClass} mt-6 min-h-12 w-full transition duration-200 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0`}
                   disabled={
                     busy ||
                     !voucherProfileId ||
@@ -1214,26 +1552,93 @@ export function PortalPage() {
         )}
       </main>
 
-      <footer className="mt-auto border-t border-zinc-200 px-5 py-8 text-center text-xs text-zinc-500">
-        <p>{brandName} · Portal Pelanggan</p>
-        {portalStatus.operatorWhatsapp && (
-          <p className="mt-2">
-            <a
-              className="text-zinc-900 hover:text-zinc-600 font-medium transition underline"
-              href={`https://wa.me/${portalStatus.operatorWhatsapp}`}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Hubungi Customer Service
-            </a>
-          </p>
-        )}
+      <footer className="mt-auto border-t border-zinc-200 bg-zinc-100 px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-8 text-zinc-700">
+        <div className="mx-auto max-w-6xl">
+          <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_1fr]">
+            <div>
+              <a href="/" className="inline-flex items-center gap-3">
+                {portalStatus.brandMainLogoDataUrl ? (
+                  <img src={portalStatus.brandMainLogoDataUrl} alt={brandName} className="h-14 w-56 max-w-[65vw] object-contain" />
+                ) : (
+                  <span className="grid h-10 w-10 place-items-center overflow-hidden rounded-xl bg-white text-zinc-700 ring-1 ring-zinc-200">
+                    <Wifi className="h-5 w-5" />
+                  </span>
+                )}
+                <span>
+                  {!portalStatus.brandMainLogoDataUrl && (
+                    <b className="block text-base font-bold tracking-tight text-zinc-900">{brandName}</b>
+                  )}
+                </span>
+              </a>
+              <p className="mt-3 max-w-sm text-sm leading-relaxed text-zinc-600">
+                {portalStatus.tagline || "Kelola tagihan internet dan beli voucher hotspot dengan mudah."}
+              </p>
+              <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white/70 px-3 py-1.5 text-[11px]">
+                <span className={`h-2 w-2 rounded-full ${portalStatus.connected ? "bg-emerald-500" : "bg-rose-500"}`} />
+                <span className="text-zinc-600">{portalStatus.connected ? "Layanan portal aktif" : "Layanan sedang terganggu"}</span>
+              </div>
+            </div>
+
+            <div>
+              <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-900">Butuh bantuan?</h2>
+              <p className="mt-3 text-sm leading-relaxed text-zinc-600">
+                Hubungi tim layanan pelanggan jika membutuhkan bantuan terkait koneksi atau pembayaran.
+              </p>
+              {portalStatus.operatorWhatsapp ? (
+                <a
+                  className="mt-4 inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-emerald-700"
+                  href={`https://wa.me/${portalStatus.operatorWhatsapp}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Hubungi Customer Service <ArrowUpRight className="h-3.5 w-3.5" />
+                </a>
+              ) : (
+                <p className="mt-3 text-xs text-zinc-500">Kontak Customer Service belum tersedia.</p>
+              )}
+              {portalStatus.officeAddress && (
+                <p className="mt-4 flex items-start gap-2 text-xs leading-relaxed text-zinc-600">
+                  <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-500" />
+                  <span>{portalStatus.officeAddress}</span>
+                </p>
+              )}
+            </div>
+
+            <div>
+              <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-900">Portal & pembayaran</h2>
+              <p className="mt-3 flex items-start gap-2 text-sm leading-relaxed text-zinc-600">
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-indigo-500" />
+                <span>Periksa tagihan atau pilih menu Beli Voucher untuk membeli paket hotspot.</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-8 flex flex-col gap-4 border-t border-zinc-200 pt-5 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-[11px] text-zinc-500">© {new Date().getFullYear()} {brandName}. Hak cipta dilindungi.</p>
+            <div className="flex flex-wrap gap-2">
+              {!isCustomerDashboard && (
+                <a href="/portal/dashboard" className="inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-lg border border-zinc-300 bg-white px-4 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-50 sm:self-auto">
+                  Dashboard Pelanggan <ArrowUpRight className="h-3.5 w-3.5" />
+                </a>
+              )}
+              <a
+                href="/admin"
+                className="inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-lg border border-zinc-300 bg-white px-4 py-2 text-xs font-semibold text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-50 sm:self-auto"
+              >
+                Login Admin <ArrowUpRight className="h-3.5 w-3.5" />
+              </a>
+            </div>
+          </div>
+        </div>
       </footer>
       {selectedInvoice && (
         <PortalPaymentDialog
           {...selectedInvoice}
           options={paymentOptions}
-          onClose={() => setSelectedInvoice(null)}
+          onClose={() => {
+            setSelectedInvoice(null);
+            if (isCustomerDashboard && dashboardAuthenticated) void loadCustomerDashboard();
+          }}
         />
       )}
     </div>

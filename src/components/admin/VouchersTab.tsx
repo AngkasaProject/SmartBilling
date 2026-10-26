@@ -641,7 +641,13 @@ export const VouchersTab: React.FC<Props> = ({
                     </td>
 
                     <td className="py-3.5 px-4 text-slate-400 text-[11px]">
-                      <div>{activeSection === 'sessions' ? `Online ${v.sessionUptime || '—'}` : v.limitUptime && v.limitUptime !== '0s' ? v.limitUptime : 'Tanpa batas waktu'}</div>
+                      <div>
+                        {v.activatedAt && v.expiredAt
+                          ? `Berlaku sampai ${new Date(v.expiredAt).toLocaleString('id-ID')}`
+                          : activeSection === 'sessions'
+                            ? `Online ${v.sessionUptime || '—'}`
+                            : v.limitUptime && v.limitUptime !== '0s' ? v.limitUptime : 'Tanpa batas waktu'}
+                      </div>
                       <div>{((v.bytesIn + v.bytesOut) / (1024 * 1024)).toFixed(2)} MB / {v.limitBytesTotal ? `${(v.limitBytesTotal / (1024 * 1024)).toFixed(0)} MB` : 'tanpa batas kuota'}</div>
                     </td>
 
@@ -658,7 +664,7 @@ export const VouchersTab: React.FC<Props> = ({
                       )}
                       {v.status === 'active' && (
                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-indigo-500/15 text-indigo-400 border border-indigo-500/30">
-                          <Wifi className="w-3 h-3" /> SEDANG ONLINE
+                          <Wifi className="w-3 h-3" /> {v.active ? 'SEDANG ONLINE' : 'SUDAH DIPAKAI'}
                         </span>
                       )}
                       {v.status === 'expired' && (

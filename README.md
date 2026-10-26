@@ -36,7 +36,7 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
   - Dashboard menampilkan log server MikroTik dan menyediakan tab pemilih saat lebih dari satu router dikonfigurasi. Koneksi API digunakan ulang per router, ditutup setelah satu jam tanpa aktivitas, serta dibersihkan saat server berhenti.
 
 - **💳 Keuangan (Tagihan & Pendapatan)**:
-  - Menu Keuangan menyatukan pengelolaan invoice, persetujuan pembayaran, generate tagihan, pembayaran manual, dan riwayat pendapatan dalam tab terpisah.
+  - Menu Keuangan menyatukan pengelolaan invoice, persetujuan pembayaran, generate tagihan, pembayaran manual, dan riwayat pendapatan dalam tab terpisah. Billing run massal dibuat dan disimpan server-side memakai periode Jakarta serta mencegah duplikasi periode.
   - Invoice yang belum dibayar otomatis dibatalkan 7 hari setelah jatuh tempo dan dipindahkan ke riwayat; operator juga dapat membatalkan invoice aktif secara manual. Invoice periode baru tetap dapat dibuat pada siklus bulan berikutnya. PPPoE secret tidak dinonaktifkan otomatis ketika invoice dibatalkan. Pembayaran yang masuk setelah pembatalan memerlukan rekonsiliasi manual dan tidak mengaktifkan layanan otomatis. Jika notifikasi otomatis aktif, WhatsApp mengirim pengingat H-1 dan pemberitahuan saat invoice dibatalkan. Menu Tagihan memisahkan invoice aktif dari riwayat invoice lunas, jatuh tempo, dan dibatalkan. Riwayat dapat difilter berdasarkan status atau bulan jatuh tempo (termasuk bulan lalu), dihapus satu per satu, atau dibersihkan sekaligus setelah konfirmasi; pembayaran yang masih diproses mencegah penghapusan. Menghapus invoice lunas mengeluarkannya dari laporan pendapatan, sedangkan catatan transaksi pembayaran tetap disimpan.
   - Riwayat invoice lunas dan voucher terbayar dapat dicari, difilter, dan diekspor ke CSV yang kompatibel dengan Excel.
   - Statistik dapat direset terpisah dari riwayat; reset laporan tidak menghapus data transaksi operasional.
@@ -47,7 +47,9 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
   - Pengingat PPPoE H-1 dapat diaktifkan di Pengaturan. Pesan pengingat dan isolir manual memuat tautan bertanda tangan ke detail pelanggan/tagihan di Portal pada `/portal/billing`; atur `APP_URL` ke origin publik Portal (HTTPS) dan pastikan provider WhatsApp aktif. Kegagalan pengiriman dicatat dan dicoba ulang secara terbatas.
 
 - **🛒 Portal publik paket dan pelanggan**:
-  - Halaman utama `/` pada Portal eksternal adalah halaman publik pelanggan. Pelanggan dapat cek tagihan memakai ID pelanggan atau nomor WhatsApp terdaftar tanpa login pelanggan.
+  - Halaman utama `/` pada Portal adalah halaman publik pelanggan. Cek cepat tagihan memakai ID pelanggan atau nomor WhatsApp terdaftar tanpa login hanya menampilkan tagihan yang belum lunas tanpa nama/riwayat transaksi; riwayat lengkap tersedia setelah login OTP di dashboard.
+  - Instalasi SmartBilling mandiri menyediakan dashboard pelanggan lokal di `/portal/dashboard`. Pelanggan masuk dengan OTP WhatsApp ke nomor terdaftar untuk melihat status layanan, paket, tagihan, riwayat pembayaran, dan kontak bantuan; buat secret sesi Portal satu kali di **Pengaturan > Admin & keamanan** sebelum mengaktifkan login. Portal eksternal tetap tidak berubah.
+  - Logo utama dan icon brand dapat diunggah terpisah melalui **Pengaturan > Profil bisnis** (PNG, JPG, atau WebP, maksimal 1 MB per gambar). Logo utama menggantikan nama brand pada Portal dan navbar admin; icon digunakan sebagai favicon.
   - Portal menampilkan status tagihan, katalog paket hotspot dan PPPoE bulanan; pembelian hotspot tersedia daring dan pendaftaran PPPoE diarahkan ke Customer Service.
   - Upgrade PPPoE mandiri dijadwalkan untuk periode tagihan berikutnya dan baru diterapkan setelah invoice dibayar. Pembatalan mempertahankan akses sampai akhir masa layanan yang sudah dibayar.
   - Pembayaran manual yang dikonfigurasi operator selalu tersedia. Sebagai addon, aktifkan maksimal satu gateway otomatis: Midtrans Snap, DOKU Checkout, Xendit, atau Tripay.
@@ -63,6 +65,7 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
   - User/profile/server dibaca langsung dari RouterOS, sedangkan harga, kuota billing, dan persetujuan pembayaran tetap merupakan data aplikasi.
   - User Profile pada menu Voucher dibaca langsung dari router terpilih dan dapat ditambah, diedit, serta dihapus. Pengaturan billing profil disimpan bersama sinkronisasi RouterOS; menghapus profil juga menghapus konfigurasi layanan dan paket jual yang terkait.
   - Buat paket jual dengan memilih User Profile live dari MikroTik, lalu tetapkan masa berlaku, batas kuota, dan harga. Paket dan generator voucher tersedia sebagai dialog agar halaman administrasi tetap ringkas.
+  - Untuk voucher baru, masa kalender mulai dihitung saat pemakaian pertama terdeteksi dan user RouterOS dinonaktifkan setelah durasinya habis. Batas `limit-uptime` tidak lagi dipakai sebagai masa berlaku; pemantauan berjalan di server billing setiap menit, sehingga server harus tetap aktif agar penonaktifan tepat waktu. Voucher lama tidak diubah.
   - Daftar voucher, status online, batas, dan pemakaian dibaca langsung dari `/ip hotspot user` dan sesi aktif router. Hapus voucher menghapus user RouterOS dan data operasional billing terkait; tindakan hapus memakai dialog konfirmasi aplikasi.
   - Pelanggan memilih pembayaran manual atau gateway otomatis yang aktif. Pesanan manual menghasilkan kode dan tautan WhatsApp operator; voucher diprovisikan setelah admin mengonfirmasi pembayaran.
   - Voucher dibuat pada MikroTik hanya setelah pembayaran otomatis terverifikasi atau operator mengonfirmasi transaksi manual. Status pesanan dan kode voucher ditampilkan di portal pelanggan.
@@ -120,6 +123,8 @@ Backend menyediakan `GET /api/data` untuk memuat snapshot data dan `PUT /api/dat
 - Tautan invoice bertanda tangan untuk pelanggan/admin tetap tersedia di `/portal/billing`. Token tautan baru memakai format ringkas, dan token lama tetap diterima sampai kedaluwarsa.
 - Login captive hotspot tetap disediakan sebagai file di folder `hotspot/` untuk dipasang ke MikroTik. Ganti `https://BILLING_DOMAIN/?tab=voucher` pada `hotspot/login.html` dengan URL publik Billing Anda.
 - `APP_ENCRYPTION_KEY` bersifat opsional. Tanpa nilai tersebut, aplikasi membuat kunci acak di `data/router-secrets.key`; file itu harus ikut dicadangkan bersama database. Kunci yang dibuat dapat dilihat/disalin melalui Pengaturan → Admin & Keamanan. Simpan di tempat aman. Jika kunci dikelola environment, rotasi melalui panel terkunci.
+- Database dapat diunduh dan dipulihkan dari **Pengaturan → Database & backup**. Restore menerima backup SQLite SmartBilling yang valid, membuat salinan database aktif sebelum menggantinya, dan memuat ulang aplikasi. Jika database backup memakai kredensial terenkripsi, kunci enkripsi yang cocok (`APP_ENCRYPTION_KEY` atau `data/router-secrets.key`) tetap diperlukan.
+- **Reset All** di bagian yang sama menghapus data operasional dan konfigurasi router, WhatsApp, serta pembayaran yang tersimpan di database, tetapi mempertahankan identitas bisnis, akun admin, dan kunci enkripsi. Dialog meminta teks `RESET ALL`; database aktif dicadangkan otomatis, sesi admin dicabut, dan konfigurasi dari environment server tidak diubah. Reset tidak mengubah konfigurasi atau akun pada router MikroTik fisik.
 
 ### Menjalankan mode development
 
@@ -291,7 +296,8 @@ Status isolir billing tidak otomatis mengubah akses MikroTik. Saat mengubah stat
 
 Menu **Pembayaran** mengatur metode manual dan addon gateway otomatis secara terpisah:
 
-- **Pembayaran manual** selalu berdiri sendiri. Konfigurasikan satu atau lebih metode (misalnya transfer bank, dompet digital, atau QRIS statis), instruksi, dan batas waktu. Admin tetap harus memverifikasi pembayaran sebelum invoice ditandai lunas atau voucher dibuat.
+- **Pembayaran manual** selalu berdiri sendiri. Konfigurasikan satu atau lebih metode (misalnya transfer bank, dompet digital, atau QRIS statis) beserta instruksinya. Permintaan tetap menunggu verifikasi operator tanpa kedaluwarsa otomatis; layanan dan voucher baru aktif setelah pembayaran disetujui.
+- Kode unik nominal invoice dapat diaktifkan atau dinonaktifkan dari bagian Pembayaran Manual. Default-nya nonaktif; pengaturan berlaku untuk invoice baru dan tidak mengubah tagihan yang sudah dibuat.
 - **Gateway otomatis (addon)**: aktifkan maksimal satu provider, atau nonaktifkan semua gateway otomatis.
   - **Midtrans** — Server Key wajib, Client Key opsional; pilih sandbox atau production.
   - **DOKU** — Client ID dan Secret Key; pilih sandbox atau production.

@@ -4,7 +4,6 @@ import { StorageService } from '../../services/storage';
 import { useToast } from '../ui/toast';
 
 interface Request extends PaymentTransaction {
-  expiresAtFormatted?: string;
   voucher: { profileName: string; code: string } | null;
   invoice: { invoiceNumber: string } | null;
 }
@@ -76,7 +75,6 @@ export const PaymentApprovalsPanel: React.FC<Props> = ({ orderType, onRefreshDat
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 <span className="rounded-full bg-amber-500/10 px-2 py-1 font-bold text-amber-300">MENUNGGU</span>
                 <span className="font-mono text-slate-300">{request.paymentCode || request.orderId}</span>
-                <span className="text-slate-500">Berakhir: {request.expiresAtFormatted || request.expiresAt || '—'}</span>
               </div>
               <p className="text-sm font-bold text-white">{request.customerName} · {request.customerPhone}</p>
               <p className="text-xs text-slate-300">

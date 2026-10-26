@@ -73,8 +73,9 @@ function AppContent() {
     const socialImage = new URL("/og-image.svg", window.location.origin).href;
     const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]') || document.createElement("link");
     favicon.rel = "icon";
-    favicon.type = "image/svg+xml";
-    favicon.href = `data:image/svg+xml,${encodeURIComponent(icon)}`;
+    const logoMimeType = appSettings.brandIconDataUrl?.match(/^data:(image\/(?:png|jpeg|webp));base64,/)?.[1];
+    favicon.type = logoMimeType || "image/svg+xml";
+    favicon.href = appSettings.brandIconDataUrl || `data:image/svg+xml,${encodeURIComponent(icon)}`;
     if (!favicon.isConnected) document.head.appendChild(favicon);
 
     const updateMeta = (selector: string, content: string) => {
@@ -89,7 +90,7 @@ function AppContent() {
     updateMeta('meta[name="twitter:description"]', description);
     updateMeta('meta[name="twitter:image"]', socialImage);
     updateMeta('meta[name="twitter:title"]', `${name} — ISP Billing & Hotspot`);
-  }, [appSettings.appName, appSettings.brandName, appSettings.tagline]);
+  }, [appSettings.appName, appSettings.brandName, appSettings.brandIconDataUrl, appSettings.tagline]);
 
   // App Data
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -188,7 +189,7 @@ function AppContent() {
     const initialize = async () => {
       try {
         const path = window.location.pathname;
-        if (path === "/" || path === "/portal" || path === "/portal/billing") return;
+        if (path === "/" || path === "/portal" || path === "/portal/billing" || path === "/portal/dashboard") return;
         if (path !== "/admin") {
           window.location.replace("/");
           return;
@@ -486,7 +487,7 @@ function AppContent() {
   };
 
   const pathname = window.location.pathname;
-  if (pathname === "/" || pathname === "/portal" || pathname === "/portal/billing") {
+  if (pathname === "/" || pathname === "/portal" || pathname === "/portal/billing" || pathname === "/portal/dashboard") {
     return <PortalPage />;
   }
   if (pathname !== "/admin") return null;
@@ -527,7 +528,6 @@ function AppContent() {
         adminTab={adminTab}
         onSelectAdminTab={handleSelectAdminTab}
         settings={appSettings}
-        username={authStatus.username}
         onRefreshData={refreshAllData}
         onLogout={handleLogout}
       />

@@ -170,7 +170,6 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
     account_holder: 'SmartBilling',
     account_number: '081234567890',
     notes: 'Transfer sesuai nominal, lalu kirim bukti pembayaran.',
-    expires_at: '23 Oktober 2026 pukul 12.46 WIB',
     operator_url: 'https://wa.me/6281234567890',
     service_until: '25 November 2026',
     voucher_code: 'NET-12345',
