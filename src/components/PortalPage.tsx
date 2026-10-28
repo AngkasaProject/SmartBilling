@@ -11,7 +11,13 @@ import {
   Loader2,
   MapPin,
   ArrowUpRight,
+  Search,
+  Copy,
+  Check,
+  ExternalLink,
+  Ticket,
 } from "lucide-react";
+import { QrCode } from "./common/QrCode";
 
 interface PortalStatus {
   connected: boolean;
@@ -75,10 +81,13 @@ interface VoucherOrder {
   expiresAt?: string;
   operatorUrl?: string;
   message?: string;
+  qrString?: string;
+  amount?: number;
 }
 
 interface VoucherOrderStatus {
-  status: string;
+  status: "pending" | "settlement" | "canceled" | "expired";
+  amount?: number;
   expiresAt?: string;
   voucher?: { code: string; password?: string; validityDuration: string };
 }
@@ -90,6 +99,56 @@ interface BillingLink {
 
 interface PublicBillingCheck {
   invoices: PortalInvoice[];
+  lookupType?: "customer" | "paymentCode";
+}
+
+interface RecentVoucher {
+  orderId: string;
+  paymentCode: string;
+  packageName: string;
+  amount: number;
+  phone: string;
+  createdAt: string;
+}
+
+interface VoucherLookupData {
+  found: boolean;
+  orderId: string;
+  paymentCode: string;
+  orderType: string;
+  status: 'pending' | 'settlement' | 'canceled' | 'expired';
+  amount: number;
+  customerName: string;
+  customerPhone: string;
+  packageName: string;
+  validityDuration: string;
+  speedLimit: string;
+  paymentMethod: string;
+  paymentChannel?: string;
+  qrString?: string;
+  manualMethod?: {
+    id: string;
+    name: string;
+    accountHolder: string;
+    accountNumber: string;
+    instructions: string;
+  };
+  operatorUrl?: string;
+  createdAt: string;
+  paidAt?: string;
+  voucher?: {
+    code: string;
+    password?: string;
+    validityDuration: string;
+    speedLimit?: string;
+  };
+  recentMatches?: Array<{
+    orderId: string;
+    paymentCode: string;
+    status: string;
+    amount: number;
+    createdAt: string;
+  }>;
 }
 
 interface CustomerDashboard {
@@ -119,8 +178,12 @@ interface CustomerDashboard {
 interface PaymentResult {
   redirectUrl?: string;
   orderId?: string;
-  paymentCode?: string;
+  qrString?: string;
+  amount?: number;
+  status?: string;
+  reconciliationRequired?: boolean;
   expiresAt?: string;
+  paymentCode?: string;
   expiresAtFormatted?: string;
   operatorUrl?: string;
   message?: string;
@@ -233,6 +296,43 @@ function PortalPaymentDialog({
     setMethodId(options.manualMethods[0]?.id || "");
   }, [options]);
 
+  useEffect(() => {
+    if (!result?.qrString || !result.orderId || result.status !== "pending") return;
+    let active = true;
+    const checkStatus = async () => {
+      try {
+        const status = await apiRequest<{
+          status: string;
+          amount?: number;
+          expiresAt?: string;
+          reconciliationRequired?: boolean;
+        }>("/api/portal/payment/status", {
+          method: "POST",
+          body: jsonBody({
+            orderId: result.orderId,
+            invoiceId: invoice.id,
+            ...(lookupValue ? { lookupValue } : {}),
+            ...(portalToken ? { portalToken } : {}),
+          }),
+        });
+        if (!active) return;
+        setResult(current => current?.orderId === result.orderId
+          ? { ...current, ...status }
+          : current);
+      } catch (statusError) {
+        if (active) {
+          setError(statusError instanceof Error ? statusError.message : "Status QRIS belum dapat diperiksa.");
+        }
+      }
+    };
+    void checkStatus();
+    const timer = window.setInterval(() => void checkStatus(), 5000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [result?.qrString, result?.orderId, result?.status, invoice.id, lookupValue, portalToken]);
+
   const submit = async () => {
     setBusy(true);
     setError("");
@@ -290,7 +390,48 @@ function PortalPaymentDialog({
           )}
         </div>
 
-        {result?.paymentCode ? (
+        {result?.qrString ? (
+          <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-5 text-center text-sm text-zinc-700">
+            <p className="font-semibold text-zinc-900">
+              {result.reconciliationRequired
+                ? "Pembayaran diterima — perlu konfirmasi operator"
+                : result.status === "settlement"
+                  ? "Pembayaran berhasil diverifikasi"
+                  : result.status === "expired" || result.status === "canceled"
+                    ? "QRIS kedaluwarsa"
+                    : "Scan QRIS untuk membayar"}
+            </p>
+            {result.status === "pending" && (
+              <div className="my-4 flex justify-center">
+                <QrCode value={result.qrString} size={220} />
+              </div>
+            )}
+            <p className="font-semibold text-zinc-900">{rupiah(result.amount ?? invoice.totalAmount)}</p>
+            {result.paymentCode && (
+              <p className="mt-1 text-xs text-zinc-600">
+                Kode bayar: <b className="font-mono">{result.paymentCode}</b>
+              </p>
+            )}
+            {result.amount !== undefined && result.amount !== invoice.totalAmount && (
+              <p className="mt-1 text-xs text-zinc-500">
+                Nominal tagihan {rupiah(invoice.totalAmount)}; bayar sesuai nominal QRIS di atas.
+              </p>
+            )}
+            <p className="mt-1 text-xs text-zinc-500">Kode pesanan: {result.paymentCode || result.orderId}</p>
+            {result.expiresAt && (
+              <p className="mt-1 text-xs text-zinc-500">
+                Berlaku sampai {new Date(result.expiresAt).toLocaleString("id-ID")}
+              </p>
+            )}
+            {result.status === "pending" && (
+              <p className="mt-3 text-xs text-zinc-500">Status diperiksa otomatis setiap beberapa detik.</p>
+            )}
+            {result.reconciliationRequired && (
+              <p className="mt-3 text-xs text-amber-700">Hubungi operator untuk rekonsiliasi pembayaran ini sebelum layanan diperpanjang.</p>
+            )}
+            {error && <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">{error}</p>}
+          </div>
+        ) : result?.paymentCode ? (
           <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-5 text-sm text-zinc-700">
             <p className="font-semibold text-zinc-900 mb-3">
               Instruksi Pembayaran Manual
@@ -420,9 +561,348 @@ function PortalPaymentDialog({
   );
 }
 
+function PublicVoucherLookup({ onSwitchToBuy }: { onSwitchToBuy?: () => void } = {}) {
+  const [lookupCode, setLookupCode] = useState(() => {
+    return new URLSearchParams(window.location.search).get("code") || "";
+  });
+  const [result, setResult] = useState<VoucherLookupData | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [copiedKey, setCopiedKey] = useState("");
+  const [recentVouchers, setRecentVouchers] = useState<RecentVoucher[]>(() => {
+    try {
+      const stored = localStorage.getItem("smartbilling_recent_vouchers");
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const copyToClipboard = async (text: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(""), 2000);
+    } catch {}
+  };
+
+  const lookup = useCallback(async (code: string) => {
+    const cleanCode = code.trim();
+    if (!cleanCode) {
+      setError("Masukkan Kode Bayar pesanan voucher Anda.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const data = await apiRequest<VoucherLookupData>("/api/portal/voucher-lookup", {
+        method: "POST",
+        body: jsonBody({ query: cleanCode }),
+      });
+      setResult(data);
+      if (data.orderId) {
+        setRecentVouchers(curr => {
+          const filtered = curr.filter(v => v.paymentCode !== data.paymentCode && v.orderId !== data.orderId);
+          const next = [{
+            orderId: data.orderId,
+            paymentCode: data.paymentCode || data.orderId,
+            packageName: data.packageName,
+            amount: data.amount,
+            phone: data.customerPhone,
+            createdAt: data.createdAt,
+          }, ...filtered].slice(0, 8);
+          try {
+            localStorage.setItem("smartbilling_recent_vouchers", JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+      }
+    } catch (lookupError) {
+      setResult(null);
+      setError(lookupError instanceof Error ? lookupError.message : "Pesanan voucher tidak ditemukan. Periksa kembali Kode Bayar Anda.");
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  // Auto-check if code was in URL query
+  useEffect(() => {
+    const codeParam = new URLSearchParams(window.location.search).get("code");
+    if (codeParam) {
+      void lookup(codeParam);
+    }
+  }, [lookup]);
+
+  // Auto-polling if status is pending
+  useEffect(() => {
+    if (!result || result.status !== "pending") return;
+    const timer = setInterval(() => {
+      void lookup(result.paymentCode || result.orderId);
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [result, lookup]);
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    const value = lookupCode.trim();
+    if (value) {
+      void lookup(value);
+    }
+  };
+
+  return (
+    <section className="mx-auto max-w-3xl space-y-5 sm:space-y-6">
+      {/* Sub-menu Switcher */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-zinc-200 pb-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-zinc-900 sm:text-3xl">
+            Voucher Hotspot
+          </h1>
+          <p className="mt-1 text-xs text-zinc-500">
+            Periksa status pembayaran dan ambil kode voucher Anda.
+          </p>
+        </div>
+        <div className="inline-flex rounded-xl bg-zinc-100 p-1 border border-zinc-200 shrink-0 self-start sm:self-auto">
+          {onSwitchToBuy && (
+            <button
+              type="button"
+              onClick={onSwitchToBuy}
+              className="px-3.5 py-1.5 text-xs font-bold rounded-lg text-zinc-600 hover:text-zinc-900 transition"
+            >
+              Beli Voucher Baru
+            </button>
+          )}
+          <button
+            type="button"
+            className="px-3.5 py-1.5 text-xs font-bold rounded-lg bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200 flex items-center gap-1.5"
+          >
+            <Ticket className="h-3.5 w-3.5" />
+            Cek Status Pembelian
+          </button>
+        </div>
+      </div>
+
+      <form
+        className="portal-enter rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-28px_rgba(24,24,27,0.35)] transition-shadow duration-300 hover:shadow-[0_18px_48px_-28px_rgba(24,24,27,0.4)] sm:rounded-3xl sm:p-8"
+        onSubmit={submit}
+      >
+        <div className="mb-5 flex items-center gap-3 sm:mb-6">
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-zinc-900 text-white shadow-lg shadow-zinc-900/10 transition-transform duration-300 hover:rotate-3">
+            <Ticket className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-zinc-900">
+              Cek Status Pembelian Voucher
+            </h2>
+            <p className="mt-0.5 text-xs leading-relaxed text-zinc-500">
+              Masukkan Kode Bayar untuk melihat rincian pemesanan dan kode voucher Anda.
+            </p>
+          </div>
+        </div>
+
+        <label className="block">
+          <input
+            className={`${inputClass} h-12 text-center font-mono text-base tracking-wide transition-shadow focus:shadow-[0_0_0_4px_rgba(24,24,27,0.06)] sm:text-lg`}
+            value={lookupCode}
+            onChange={(event) => setLookupCode(event.target.value)}
+            placeholder="Kode Bayar (Contoh: SBV-6E82EB9AB3AC)"
+            autoComplete="off"
+            maxLength={64}
+            aria-label="Kode Bayar"
+            required
+          />
+        </label>
+        {error && (
+          <p role="alert" className="mt-3 text-sm text-rose-600 text-center">
+            {error}
+          </p>
+        )}
+        <button
+          className={`${buttonClass} mt-4 min-h-12 w-full transition duration-200 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0`}
+          disabled={busy || !lookupCode.trim()}
+        >
+          {busy ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <RefreshCw className="h-4 w-4" />
+          )}
+          {busy ? "Memeriksa Status..." : "Cek Status Sekarang"}
+        </button>
+
+        {/* Quick Recent Chips */}
+        {recentVouchers.length > 0 && (
+          <div className="mt-4 pt-3 border-t border-zinc-100">
+            <p className="text-[11px] font-semibold text-zinc-400 mb-1.5">Kode Bayar Sebelumnya di Perangkat Ini:</p>
+            <div className="flex flex-wrap gap-2">
+              {recentVouchers.map((item) => (
+                <button
+                  key={item.orderId}
+                  type="button"
+                  onClick={() => {
+                    setLookupCode(item.paymentCode);
+                    void lookup(item.paymentCode);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-xs font-mono font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-white"
+                >
+                  <span>{item.paymentCode}</span>
+                  <span className="text-[10px] font-sans text-zinc-400">({item.packageName})</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </form>
+
+      {/* Result Card: Formatted like the order notification */}
+      {result && (
+        <div className="portal-enter rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-28px_rgba(24,24,27,0.35)] sm:rounded-3xl sm:p-8 space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-100 pb-4">
+            <div>
+              <h2 className="text-xl font-bold tracking-tight text-zinc-900">
+                Detail Status Pesanan
+              </h2>
+              <p className="mt-0.5 text-xs text-zinc-500">
+                Rincian pelanggan, paket yang dipilih, dan status voucher.
+              </p>
+            </div>
+            <button
+              type="button"
+              className={`${secondaryButtonClass} min-h-9 !px-3 !py-1.5 !text-xs transition duration-200 hover:-translate-y-0.5 active:translate-y-0`}
+              disabled={busy}
+              onClick={() => void lookup(result.paymentCode || result.orderId)}
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} /> Refresh
+            </button>
+          </div>
+
+          {/* Kotak notifikasi persis seperti di gambar user */}
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900 shadow-sm">
+            <div className="flex items-center gap-2 font-semibold mb-3">
+              <Clock3 className="w-4 h-4 shrink-0 text-amber-800" />
+              <span className="font-mono text-xs sm:text-sm">Pesanan {result.orderId}</span>
+            </div>
+
+            {/* Detail Pelanggan & Paket */}
+            <div className="mb-4 grid gap-2 rounded-xl bg-white/80 p-3.5 ring-1 ring-amber-200/60 text-xs sm:grid-cols-2">
+              <div>
+                <span className="text-zinc-500">Nama Pelanggan:</span>
+                <p className="font-semibold text-zinc-900">{result.customerName || '-'}</p>
+              </div>
+              <div>
+                <span className="text-zinc-500">Nomor WhatsApp:</span>
+                <p className="font-mono font-semibold text-zinc-900">{result.customerPhone || '-'}</p>
+              </div>
+              <div>
+                <span className="text-zinc-500">Paket yang Dipilih:</span>
+                <p className="font-semibold text-zinc-900">{result.packageName}</p>
+              </div>
+              <div>
+                <span className="text-zinc-500">Total Nominal:</span>
+                <p className="font-extrabold text-zinc-900">{rupiah(result.amount)}</p>
+              </div>
+            </div>
+
+            <p className="text-sm">
+              Status:{" "}
+              <b>
+                {result.status === "settlement"
+                  ? "Lunas - terverifikasi"
+                  : result.status === "pending"
+                    ? "Menunggu pembayaran"
+                    : result.status === "canceled"
+                      ? "Dibatalkan"
+                      : "Kedaluwarsa"}
+              </b>
+            </p>
+
+            {result.status === "pending" && result.qrString && (
+              <div className="mt-4 flex flex-col items-center rounded-xl border border-amber-200 bg-white p-4">
+                <p className="mb-3 text-xs font-semibold">Scan QRIS untuk membayar</p>
+                <QrCode value={result.qrString} size={220} />
+              </div>
+            )}
+
+            {result.paymentCode && (
+              <p className="mt-2">
+                Kode bayar:{" "}
+                <b className="font-mono bg-white px-2 py-0.5 rounded border border-amber-200 text-zinc-900">
+                  {result.paymentCode}
+                </b>
+              </p>
+            )}
+
+            {/* Jika Menunggu Pembayaran */}
+            {result.status === "pending" && (
+              <>
+                <p className="mt-2 text-xs leading-relaxed text-amber-900">
+                  Pesanan dibuat. Ikuti instruksi transfer, lalu konfirmasikan pembayaran kepada Customer Service melalui WhatsApp.
+                </p>
+
+                {result.manualMethod && (
+                  <div className="mt-3 rounded-xl bg-white border border-amber-200 p-3.5 text-xs space-y-1">
+                    <p className="font-bold text-zinc-900">Instruksi Transfer ({result.manualMethod.name}):</p>
+                    <p className="font-mono text-sm font-bold text-zinc-800">
+                      {result.manualMethod.accountNumber} <span className="font-normal font-sans text-zinc-500">(a.n {result.manualMethod.accountHolder})</span>
+                    </p>
+                    {result.manualMethod.instructions && (
+                      <p className="text-zinc-600 text-[11px] pt-1 border-t border-zinc-100">{result.manualMethod.instructions}</p>
+                    )}
+                  </div>
+                )}
+
+                {result.operatorUrl && (
+                  <a
+                    className="mt-3 inline-flex items-center gap-1 font-semibold underline text-amber-900 hover:text-amber-950"
+                    href={result.operatorUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Konfirmasi ke operator <ChevronRight className="w-3 h-3" />
+                  </a>
+                )}
+              </>
+            )}
+
+            {/* Jika Lunas & Kode Voucher Tergenerate */}
+            {result.status === "settlement" && result.voucher && (
+              <div className="mt-3 rounded-xl bg-white border border-amber-200 p-3.5 text-amber-900 shadow-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600">Kode Voucher Hotspot</span>
+                    <p className="font-bold text-xl sm:text-2xl font-mono text-zinc-900 mt-0.5">
+                      {result.voucher.code}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void copyToClipboard(result.voucher!.code, 'voucher_code')}
+                    className="rounded-lg bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-200 transition"
+                  >
+                    {copiedKey === 'voucher_code' ? '✓ Disalin' : 'Salin Kode'}
+                  </button>
+                </div>
+                <p className="text-xs mt-1.5 text-zinc-600">
+                  Password: <b className="font-mono text-zinc-900">{result.voucher.password || result.voucher.code}</b>
+                </p>
+                <p className="text-xs text-zinc-600">
+                  Masa berlaku: <b className="text-zinc-900">{result.voucher.validityDuration || '-'}</b>
+                </p>
+                <div className="mt-3 pt-2 border-t border-zinc-100 text-[11px] text-zinc-500">
+                  Silakan hubungkan perangkat Anda ke jaringan WiFi Hotspot dan masukkan kode voucher di atas pada halaman login.
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
   const [lookupValue, setLookupValue] = useState("");
   const [result, setResult] = useState<PublicBillingCheck | null>(null);
+  const [voucherResult, setVoucherResult] = useState<VoucherLookupData | null>(null);
   const [selectedInvoice, setSelectedInvoice] =
     useState<PaymentSelection | null>(null);
   const [busy, setBusy] = useState(false);
@@ -432,26 +912,53 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
   const lookup = useCallback(async (value: string) => {
     setBusy(true);
     setError("");
-    try {
-      const billing = await apiRequest<PublicBillingCheck>("/api/portal/billing", {
+    const [billingLookup, voucherLookup] = await Promise.allSettled([
+      apiRequest<PublicBillingCheck>("/api/portal/billing", {
         method: "POST",
         body: jsonBody({ lookupValue: value }),
-      });
-      setResult(billing);
-    } catch (lookupError) {
-      setResult(null);
-      setError(
-        lookupError instanceof Error
-          ? lookupError.message
-          : "Tagihan belum dapat diperiksa.",
-      );
-    } finally {
-      setBusy(false);
+      }),
+      apiRequest<VoucherLookupData>("/api/portal/voucher-lookup", {
+        method: "POST",
+        body: jsonBody({ query: value }),
+      }),
+    ]);
+    setResult(billingLookup.status === "fulfilled" ? billingLookup.value : null);
+    setVoucherResult(voucherLookup.status === "fulfilled" ? voucherLookup.value : null);
+    if (billingLookup.status === "rejected" && voucherLookup.status === "rejected") {
+      const lookupError = billingLookup.reason;
+      setError(lookupError instanceof Error
+        ? lookupError.message
+        : "Data tagihan atau pesanan belum dapat diperiksa.");
     }
+    setBusy(false);
   }, []);
 
-  // Logika auto-refresh dan sessionStorage DIHAPUS sesuai permintaan.
-  // Jika user me-refresh browser, state akan kosong kembali.
+  useEffect(() => {
+    if (!voucherResult || voucherResult.status !== "pending") return;
+    const timer = window.setInterval(() => {
+      void apiRequest<VoucherOrderStatus>("/api/portal/voucher-orders/status", {
+        method: "POST",
+        body: jsonBody({
+          orderId: voucherResult.orderId,
+          phone: voucherResult.customerPhone,
+        }),
+      }).then(status => {
+        setVoucherResult(current => current?.orderId === voucherResult.orderId
+          ? { ...current, ...status }
+          : current);
+      }).catch((lookupError: unknown) => {
+        setError(lookupError instanceof Error ? lookupError.message : "Status pesanan voucher belum dapat diperiksa.");
+      });
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [voucherResult?.orderId, voucherResult?.paymentCode, voucherResult?.status]);
+
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get("code");
+    if (!code) return;
+    setLookupValue(code);
+    void lookup(code);
+  }, [lookup]);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -473,10 +980,10 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
           </div>
           <div>
             <h2 className="text-lg font-bold text-zinc-900">
-              Cek Tagihan Anda
+              Cek Tagihan & Status Pesanan
             </h2>
             <p className="mt-0.5 text-xs leading-relaxed text-zinc-500">
-              Masukkan ID Pelanggan atau Nomor WhatsApp terdaftar.
+              Masukkan ID pelanggan atau nomor WhatsApp untuk tagihan PPPoE, atau ID pesanan/kode bayar voucher.
             </p>
           </div>
         </div>
@@ -486,10 +993,10 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
             className={`${inputClass} h-12 text-center font-mono text-base tracking-wide transition-shadow focus:shadow-[0_0_0_4px_rgba(24,24,27,0.06)] sm:text-lg`}
             value={lookupValue}
             onChange={(event) => setLookupValue(event.target.value)}
-            placeholder="ID Pelanggan / No. WhatsApp"
+            placeholder="ID Pelanggan / No. WhatsApp (PPPoE) / Kode Bayar"
             autoComplete="off"
             maxLength={128}
-            aria-label="ID pelanggan atau nomor WhatsApp"
+            aria-label="ID pelanggan atau nomor WhatsApp PPPoE, ID pesanan voucher, atau kode bayar"
             required
           />
         </label>
@@ -507,7 +1014,7 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
           ) : (
             <RefreshCw className="h-4 w-4" />
           )}
-          {busy ? "Memeriksa Data..." : "Cek Tagihan Sekarang"}
+          {busy ? "Memeriksa..." : "Cek Tagihan / Status"}
         </button>
         <p className="mt-3 flex items-center justify-center gap-1.5 text-center text-[11px] text-zinc-400">
           <ShieldCheck className="h-3.5 w-3.5" /> Tidak perlu memasukkan password internet Anda.
@@ -519,9 +1026,11 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-100 pb-5">
             <div>
               <h2 className="text-xl font-bold tracking-tight text-zinc-900">
-                Tagihan aktif
+                {result.lookupType === "paymentCode" ? "Detail Tagihan" : "Tagihan aktif"}
               </h2>
-              <p className="mt-1 text-sm text-zinc-500">Rincian tagihan yang masih perlu dibayar.</p>
+              <p className="mt-1 text-sm text-zinc-500">
+                {result.lookupType === "paymentCode" ? "Tagihan yang terkait dengan kode bayar ini." : "Rincian tagihan yang masih perlu dibayar."}
+              </p>
             </div>
             <button
               type="button"
@@ -582,6 +1091,57 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
         </div>
       )}
 
+      {voucherResult && (
+        <div className="portal-enter rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-950 shadow-sm sm:rounded-3xl sm:p-8">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-amber-200 pb-4">
+            <div>
+              <h2 className="text-xl font-bold tracking-tight">Status Pesanan Voucher</h2>
+              <p className="mt-1 text-xs text-amber-800">Kode bayar {voucherResult.paymentCode}</p>
+            </div>
+            <button
+              type="button"
+              className={`${secondaryButtonClass} min-h-9 !px-3 !py-1.5 !text-xs`}
+              disabled={busy}
+              onClick={() => void lookup(lookupValue)}
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} /> Refresh
+            </button>
+          </div>
+          <div className="mt-4 grid gap-2 rounded-xl bg-white/80 p-3.5 text-xs sm:grid-cols-2">
+            <p>Pesanan: <b className="font-mono">{voucherResult.paymentCode || voucherResult.orderId}</b></p>
+            <p>Status: <b>{voucherResult.status === "settlement" ? "Lunas — terverifikasi" : voucherResult.status === "pending" ? "Menunggu pembayaran" : voucherResult.status}</b></p>
+            <p>Paket: <b>{voucherResult.packageName}</b></p>
+            <p>Nominal: <b>{rupiah(voucherResult.amount)}</b></p>
+          </div>
+          {voucherResult.status === "pending" && voucherResult.qrString && (
+            <div className="mt-4 flex flex-col items-center rounded-xl border border-amber-200 bg-white p-4">
+              <p className="mb-3 text-xs font-semibold">Scan QRIS untuk membayar</p>
+              <QrCode value={voucherResult.qrString} size={220} />
+            </div>
+          )}
+          {voucherResult.voucher && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-white p-4">
+              <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">Kode Voucher Hotspot</p>
+              <p className="mt-1 font-mono text-2xl font-bold">{voucherResult.voucher.code}</p>
+              <p className="mt-2 text-xs">Password: <b className="font-mono">{voucherResult.voucher.password || voucherResult.voucher.code}</b></p>
+              <p className="text-xs">Masa berlaku: <b>{voucherResult.voucher.validityDuration}</b></p>
+            </div>
+          )}
+          {voucherResult.manualMethod && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-white p-4 text-xs">
+              <p className="font-bold">Instruksi pembayaran: {voucherResult.manualMethod.name}</p>
+              <p>{voucherResult.manualMethod.accountNumber} a.n. {voucherResult.manualMethod.accountHolder}</p>
+              {voucherResult.manualMethod.instructions && <p className="mt-2 whitespace-pre-wrap">{voucherResult.manualMethod.instructions}</p>}
+            </div>
+          )}
+          {voucherResult.operatorUrl && voucherResult.status === "pending" && (
+            <a className="mt-4 inline-flex items-center gap-1 font-semibold underline" href={voucherResult.operatorUrl} target="_blank" rel="noreferrer">
+              Konfirmasi ke operator <ChevronRight className="h-3 w-3" />
+            </a>
+          )}
+        </div>
+      )}
+
       {selectedInvoice && (
         <PortalPaymentDialog
           {...selectedInvoice}
@@ -606,11 +1166,12 @@ export function PortalPage() {
   const [hotspotProfiles, setHotspotProfiles] = useState<VoucherProfile[]>([]);
   const [selectedInvoice, setSelectedInvoice] =
     useState<PaymentSelection | null>(null);
-  const [activeTab, setActiveTab] = useState<"customer" | "voucher">(() =>
-    new URLSearchParams(window.location.search).get("tab") === "voucher"
-      ? "voucher"
-      : "customer",
-  );
+  const [activeTab, setActiveTab] = useState<"customer" | "voucher" | "check_voucher">(() => {
+    const tabParam = new URLSearchParams(window.location.search).get("tab");
+    if (tabParam === "voucher") return "voucher";
+    if (tabParam === "check_voucher" || tabParam === "cek") return "check_voucher";
+    return "customer";
+  });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -634,6 +1195,19 @@ export function PortalPage() {
   const [voucherStatus, setVoucherStatus] = useState<VoucherOrderStatus | null>(
     null,
   );
+  const [lookupQuery, setLookupQuery] = useState("");
+  const [lookupBusy, setLookupBusy] = useState(false);
+  const [lookupError, setLookupError] = useState("");
+  const [lookupResult, setLookupResult] = useState<VoucherLookupData | null>(null);
+  const [copiedKey, setCopiedKey] = useState("");
+  const [recentVouchers, setRecentVouchers] = useState<RecentVoucher[]>(() => {
+    try {
+      const stored = localStorage.getItem("smartbilling_recent_vouchers");
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
   const [billingLink, setBillingLink] = useState<BillingLink | null>(null);
   const [linkToken, setLinkToken] = useState("");
   const pathname = window.location.pathname;
@@ -813,6 +1387,74 @@ export function PortalPage() {
     };
   }, [voucherOrder]);
 
+  const copyToClipboard = async (text: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(""), 2000);
+    } catch {
+      // fallback
+    }
+  };
+
+  const addRecentVoucher = (voucherItem: RecentVoucher) => {
+    setRecentVouchers(current => {
+      const filtered = current.filter(v => v.orderId !== voucherItem.orderId && v.paymentCode !== voucherItem.paymentCode);
+      const next = [voucherItem, ...filtered].slice(0, 8);
+      try {
+        localStorage.setItem("smartbilling_recent_vouchers", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const handleLookupVoucher = async (queryToUse?: string) => {
+    const q = (queryToUse !== undefined ? queryToUse : lookupQuery).trim();
+    if (!q) {
+      setLookupError("Silakan masukkan Kode Bayar atau nomor WhatsApp.");
+      return;
+    }
+    setLookupBusy(true);
+    setLookupError("");
+    try {
+      const result = await apiRequest<VoucherLookupData>("/api/portal/voucher-lookup", {
+        method: "POST",
+        body: jsonBody({ query: q }),
+      });
+      setLookupResult(result);
+      if (result.orderId) {
+        addRecentVoucher({
+          orderId: result.orderId,
+          paymentCode: result.paymentCode || result.orderId,
+          packageName: result.packageName,
+          amount: result.amount,
+          phone: result.customerPhone,
+          createdAt: result.createdAt,
+        });
+      }
+    } catch (err: any) {
+      setLookupResult(null);
+      setLookupError(err.message || "Pesanan voucher tidak ditemukan.");
+    } finally {
+      setLookupBusy(false);
+    }
+  };
+
+  // Auto-poll when lookupResult is pending
+  useEffect(() => {
+    if (activeTab !== "check_voucher" || !lookupResult || lookupResult.status !== "pending") return;
+    const interval = window.setInterval(async () => {
+      try {
+        const updated = await apiRequest<VoucherLookupData>("/api/portal/voucher-lookup", {
+          method: "POST",
+          body: jsonBody({ query: lookupResult.paymentCode || lookupResult.orderId }),
+        });
+        setLookupResult(updated);
+      } catch {}
+    }, 4000);
+    return () => window.clearInterval(interval);
+  }, [activeTab, lookupResult]);
+
   const createVoucherOrder = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
@@ -852,8 +1494,19 @@ export function PortalPage() {
           status: result.status,
           paymentCode: result.paymentCode,
           expiresAt: result.expiresAt,
+          qrString: result.qrString,
+          amount: result.amount,
           operatorUrl: result.operatorUrl,
           message: result.message,
+        });
+        const selectedProf = hotspotProfiles.find(p => p.id === voucherProfileId);
+        addRecentVoucher({
+          orderId: result.orderId,
+          paymentCode: result.paymentCode || result.orderId,
+          packageName: selectedProf?.name || "Voucher Hotspot",
+          amount: selectedProf?.price || 0,
+          phone: voucherPhone,
+          createdAt: new Date().toISOString(),
         });
         setNotice(
           result.message || "Pesanan dibuat. Ikuti instruksi pembayaran.",
@@ -1022,21 +1675,21 @@ export function PortalPage() {
               <div className="grid w-full grid-cols-2 rounded-xl border border-zinc-200 bg-zinc-100 p-1 sm:w-auto">
                 <button
                   type="button"
-                  className={`flex min-h-10 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-all duration-200 active:scale-[0.98] sm:min-h-9 sm:px-4 ${activeTab === "customer" ? "bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200" : "text-zinc-500 hover:text-zinc-900"}`}
+                  className={`flex min-h-10 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-semibold transition-all duration-200 active:scale-[0.98] sm:min-h-9 sm:px-3 ${activeTab === "customer" ? "bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200" : "text-zinc-500 hover:text-zinc-900"}`}
                   onClick={() => setActiveTab("customer")}
                   aria-pressed={activeTab === "customer"}
                 >
-                  <CreditCard className="h-3.5 w-3.5" />
-                  Cek Tagihan
+                  <CreditCard className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">Cek Tagihan / Status</span>
                 </button>
                 <button
                   type="button"
-                  className={`flex min-h-10 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-all duration-200 active:scale-[0.98] sm:min-h-9 sm:px-4 ${activeTab === "voucher" ? "bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200" : "text-zinc-500 hover:text-zinc-900"}`}
+                  className={`flex min-h-10 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-semibold transition-all duration-200 active:scale-[0.98] sm:min-h-9 sm:px-3 ${activeTab === "voucher" ? "bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200" : "text-zinc-500 hover:text-zinc-900"}`}
                   onClick={() => setActiveTab("voucher")}
                   aria-pressed={activeTab === "voucher"}
                 >
-                  <Wifi className="h-3.5 w-3.5" />
-                  Beli Voucher
+                  <Wifi className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">Beli Voucher</span>
                 </button>
               </div>
             )}
@@ -1068,6 +1721,32 @@ export function PortalPage() {
             className="mb-6 rounded-xl border border-zinc-200 bg-white p-4 text-sm text-zinc-700 shadow-sm"
           >
             {notice}
+          </div>
+        )}
+
+        {!isBillingLink && !isCustomerDashboard && recentVouchers.length > 0 && activeTab !== "check_voucher" && (
+          <div className="mx-auto mb-4 max-w-5xl">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-xs text-amber-900 shadow-sm">
+              <div className="flex items-center gap-2">
+                <Ticket className="h-4 w-4 shrink-0 text-amber-700" />
+                <span>
+                  Pesanan voucher terakhir: <b className="font-mono">{recentVouchers[0].paymentCode}</b> ({recentVouchers[0].packageName})
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setLookupQuery(recentVouchers[0].paymentCode);
+                  const url = new URL(window.location.href);
+                  url.searchParams.set("tab", "customer");
+                  url.searchParams.set("code", recentVouchers[0].paymentCode);
+                  window.location.assign(url.toString());
+                }}
+                className="inline-flex items-center gap-1 font-bold text-amber-800 underline hover:text-amber-950"
+              >
+                Cek Status Pesanan <ChevronRight className="h-3 w-3" />
+              </button>
+            </div>
           </div>
         )}
 
@@ -1349,12 +2028,39 @@ export function PortalPage() {
           </section>
         ) : activeTab === "customer" ? (
           <PublicBillingLookup options={paymentOptions} />
+        ) : activeTab === "check_voucher" ? (
+          <PublicBillingLookup options={paymentOptions} />
         ) : (
           <section className="portal-enter">
-            <div className="mx-auto mb-5 max-w-5xl sm:mb-7">
-              <h1 className="text-2xl font-bold tracking-tight text-zinc-900 sm:text-3xl">
-                Beli Voucher Hotspot
-              </h1>
+            {/* Header Voucher dengan Sub-menu Beli vs Cek Status */}
+            <div className="mx-auto mb-6 max-w-5xl">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-zinc-200 pb-4">
+                <div>
+                  <h1 className="text-2xl font-bold tracking-tight text-zinc-900 sm:text-3xl">
+                    Voucher Hotspot
+                  </h1>
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Beli paket voucher hotspot internet atau periksa status pesanan Anda.
+                  </p>
+                </div>
+                <div className="inline-flex rounded-xl bg-zinc-100 p-1 border border-zinc-200 shrink-0 self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("voucher")}
+                    className="px-3.5 py-1.5 text-xs font-bold rounded-lg bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200"
+                  >
+                    Beli Voucher Baru
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("customer")}
+                    className="px-3.5 py-1.5 text-xs font-bold rounded-lg text-zinc-600 hover:text-zinc-900 transition flex items-center gap-1.5"
+                  >
+                    <Ticket className="h-3.5 w-3.5 text-amber-600" />
+                    Cek Tagihan / Status
+                  </button>
+                </div>
+              </div>
             </div>
             <div className="mx-auto grid max-w-5xl gap-4 sm:gap-6 lg:grid-cols-[1.2fr_0.8fr]">
               <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-28px_rgba(24,24,27,0.35)] sm:rounded-3xl sm:p-8">
@@ -1497,7 +2203,7 @@ export function PortalPage() {
                   <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                     <div className="flex items-center gap-2 font-semibold mb-2">
                       <Clock3 className="w-4 h-4" />
-                      Pesanan {voucherOrder.orderId}
+                      Kode pesanan: {voucherOrder.paymentCode || voucherOrder.orderId}
                     </div>
                     <p>
                       Status:{" "}
@@ -1507,13 +2213,19 @@ export function PortalPage() {
                           ? "Menunggu pembayaran"
                           : voucherStatus?.status || voucherOrder.status}
                     </p>
-                    {voucherOrder.paymentCode && (
-                      <p className="mt-2">
-                        Kode bayar:{" "}
-                        <b className="font-mono bg-white px-2 py-0.5 rounded border border-amber-200">
-                          {voucherOrder.paymentCode}
-                        </b>
-                      </p>
+                    {voucherOrder.qrString && (voucherStatus?.status || voucherOrder.status) === "pending" && (
+                      <div className="mt-4 flex flex-col items-center rounded-xl border border-amber-200 bg-white p-4">
+                        <p className="mb-3 text-xs font-semibold">Scan QRIS untuk membayar</p>
+                        {voucherOrder.amount !== undefined && (
+                          <p className="mb-3 font-semibold">{rupiah(voucherOrder.amount)}</p>
+                        )}
+                        <QrCode value={voucherOrder.qrString} size={220} />
+                        {voucherOrder.expiresAt && (
+                          <p className="mt-3 text-[11px]">
+                            Berlaku sampai {new Date(voucherOrder.expiresAt).toLocaleString("id-ID")}
+                          </p>
+                        )}
+                      </div>
                     )}
                     {voucherOrder.message && (
                       <p className="mt-2 text-xs">{voucherOrder.message}</p>

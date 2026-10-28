@@ -156,7 +156,7 @@ export interface WhatsAppLog {
 }
 
 export interface PaymentGatewayConfig {
-  provider: 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay';
+  provider: 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay' | 'qrisly';
   isProduction: boolean;
   serverKey: string;
   clientKey: string;
@@ -200,6 +200,9 @@ export interface WhatsAppGatewayConfig {
 export interface PaymentTransaction {
   id: string;
   orderId: string;
+  providerTransactionId?: string;
+  qrCodeData?: string;
+  reconciliationRequired?: boolean;
   paymentCode?: string;
   orderType: 'invoice' | 'voucher';
   amount: number;
@@ -273,8 +276,8 @@ export interface AppSettings {
   autoSendIsolir: boolean;
   autoSendReceipt: boolean;
 
-  // 4. Payment Gateway (Midtrans / Xendit / Tripay)
-  paymentProvider: 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay';
+  // 4. Payment Gateway
+  paymentProvider: 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay' | 'qrisly';
   paymentIsProduction: boolean;
   paymentServerKey: string;
   paymentClientKey: string;
@@ -286,6 +289,11 @@ export interface AppSettings {
   gracePeriodDays: number;
   defaultVoucherPrefix: string;
   voucherLength: number;
+
+  // 6. Telegram Bot Integration
+  telegramEnabled?: boolean;
+  telegramBotToken?: string;
+  telegramChatId?: string;
   updatedAt: string;
 }
 

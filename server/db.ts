@@ -62,6 +62,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   gracePeriodDays: 0,
   defaultVoucherPrefix: 'NET-',
   voucherLength: 5,
+  telegramBotToken: '',
+  telegramChatId: '',
+  telegramEnabled: false,
   updatedAt: new Date().toISOString(),
 };
 
@@ -518,7 +521,7 @@ function encryptRouterSecret(password: string, material = loadEncryptionKeyMater
 }
 
 export interface PaymentGatewayCredentials {
-  provider: 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay';
+  provider: 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay' | 'qrisly';
   isProduction: boolean;
   serverKey?: string;
   clientKey?: string;
@@ -530,6 +533,8 @@ export interface PaymentGatewayCredentials {
   tripayApiKey?: string;
   tripayPrivateKey?: string;
   tripayPaymentMethod?: string;
+  qrislyApiKey?: string;
+  qrislyQrisId?: string;
 }
 
 function isPaymentGatewayCredentials(value: unknown): value is PaymentGatewayCredentials {
@@ -540,9 +545,10 @@ function isPaymentGatewayCredentials(value: unknown): value is PaymentGatewayCre
       credentials.provider === 'doku' ||
       credentials.provider === 'xendit' ||
       credentials.provider === 'tripay' ||
+      credentials.provider === 'qrisly' ||
       credentials.provider === 'none') &&
     typeof credentials.isProduction === 'boolean' &&
-    ['serverKey', 'clientKey', 'dokuClientId', 'dokuSecretKey', 'xenditApiKey', 'xenditCallbackToken', 'tripayMerchantCode', 'tripayApiKey', 'tripayPrivateKey', 'tripayPaymentMethod'].every(key =>
+    ['serverKey', 'clientKey', 'dokuClientId', 'dokuSecretKey', 'xenditApiKey', 'xenditCallbackToken', 'tripayMerchantCode', 'tripayApiKey', 'tripayPrivateKey', 'tripayPaymentMethod', 'qrislyApiKey', 'qrislyQrisId'].every(key =>
       credentials[key] === undefined || typeof credentials[key] === 'string'
     )
   );

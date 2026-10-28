@@ -9,6 +9,9 @@ import {
   Copy,
   Database,
   Download,
+  Eye,
+  EyeOff,
+  Send,
   Image,
   KeyRound,
   Mail,
@@ -28,7 +31,7 @@ interface Props {
   onRefreshSettings: () => void;
 }
 
-type SettingsSection = 'business' | 'billing' | 'reminders' | 'database' | 'security';
+type SettingsSection = 'business' | 'billing' | 'reminders' | 'telegram' | 'database' | 'security';
 
 interface DatabaseInfo {
   dbPath: string;
@@ -46,6 +49,7 @@ const settingsSections: Array<{ id: SettingsSection; label: string; description:
   { id: 'business', label: 'Profil bisnis', description: 'Nama dan kontak pada invoice', icon: Building },
   { id: 'billing', label: 'Billing & voucher', description: 'Format kode voucher', icon: Sliders },
   { id: 'reminders', label: 'Pengingat otomatis', description: 'Jadwal notifikasi WhatsApp', icon: Activity },
+  { id: 'telegram', label: 'Bot Telegram', description: 'Notifikasi & tombol persetujuan', icon: Send },
   { id: 'database', label: 'Database & backup', description: 'Status dan pencadangan data', icon: Database },
   { id: 'security', label: 'Admin & keamanan', description: 'Akun dan kunci enkripsi', icon: ShieldCheck },
 ];
@@ -82,6 +86,8 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
   const [portalSessionSecretConfigured, setPortalSessionSecretConfigured] = useState(false);
   const [portalSessionSecret, setPortalSessionSecret] = useState('');
   const [showPortalSessionSecret, setShowPortalSessionSecret] = useState(false);
+  const [testingTelegram, setTestingTelegram] = useState(false);
+  const [showTelegramToken, setShowTelegramToken] = useState(false);
   const [loadingPortalSessionSecret, setLoadingPortalSessionSecret] = useState(false);
 
   useEffect(() => setFormData(settings), [settings]);
@@ -161,6 +167,31 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
     };
 
   const hasChanges = JSON.stringify({ ...formData, updatedAt: settings.updatedAt }) !== JSON.stringify(settings);
+
+  const handleTestTelegram = async () => {
+    if (!formData.telegramBotToken?.trim()) {
+      toast('Token Bot Telegram wajib diisi', 'error');
+      return;
+    }
+    setTestingTelegram(true);
+    try {
+      const res = await fetch('/api/admin/telegram/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: formData.telegramBotToken.trim(),
+          chatId: formData.telegramChatId?.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast('Koneksi Telegram Berhasil', 'success', data.message || `Bot @${data.username} terhubung.`);
+    } catch (error) {
+      toast('Uji Telegram Gagal', 'error', error instanceof Error ? error.message : String(error));
+    } finally {
+      setTestingTelegram(false);
+    }
+  };
 
   const saveSettings = async () => {
     if (!formData.appName.trim() || !formData.brandName.trim()) {
@@ -617,6 +648,101 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
               </label>
               <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-foreground">
                 Pastikan provider dan kredensial WhatsApp telah diatur di menu WhatsApp API. Tautan pelanggan memerlukan URL aplikasi publik yang benar.
+              </div>
+            </>
+          )}
+
+          {section === 'telegram' && (
+            <>
+              <header className="border-b border-border pb-4">
+                <h2 className="text-lg font-bold">Integrasi Bot Telegram</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Terima notifikasi otomatis saat ada pesanan voucher atau tagihan manual, dan setujui langsung via tombol di Telegram.
+                </p>
+              </header>
+
+              <label className="flex items-start gap-3 rounded-xl border border-border bg-background p-4">
+                <input
+                  type="checkbox"
+                  checked={Boolean(formData.telegramEnabled)}
+                  onChange={event => updateSetting('telegramEnabled', event.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-indigo-600"
+                />
+                <span>
+                  <span className="block text-sm font-semibold">Aktifkan Notifikasi & Persetujuan Bot Telegram</span>
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    Ketika aktif, bot Telegram akan mengirim pesan saat pelanggan membuat pesanan manual, lengkap dengan rincian pembayaran serta tombol <b>SETUJUI</b> dan <b>BATALKAN</b>.
+                  </span>
+                </span>
+              </label>
+
+              <div className="space-y-4 rounded-xl border border-border bg-background p-4">
+                <div>
+                  <label className="block text-xs font-semibold text-foreground">
+                    Token Bot Telegram (dari @BotFather)
+                  </label>
+                  <div className="relative mt-1 flex items-center">
+                    <input
+                      type={showTelegramToken ? 'text' : 'password'}
+                      value={formData.telegramBotToken || ''}
+                      onChange={e => updateSetting('telegramBotToken', e.target.value)}
+                      placeholder="Contoh: 1234567890:ABCdefGhIjkLmNoPqRsTuVwXyZ..."
+                      className={`${inputClass} pr-10 font-mono`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowTelegramToken(v => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      title={showTelegramToken ? 'Sembunyikan' : 'Tampilkan'}
+                    >
+                      {showTelegramToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Buat bot di Telegram melalui <b>@BotFather</b> dengan perintah <code>/newbot</code>, lalu salin token yang diberikan ke sini.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-foreground">
+                    ID Pengguna / Chat ID Telegram yang Diberi Akses
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.telegramChatId || ''}
+                    onChange={e => updateSetting('telegramChatId', e.target.value)}
+                    placeholder="Contoh: 12345678, 98765432"
+                    className={`${inputClass} font-mono`}
+                  />
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Hanya ID Telegram di kolom ini yang akan menerima notifikasi dan berhak menekan tombol <b>SETUJUI</b> / <b>BATALKAN</b>. Pisahkan dengan tanda koma (,) jika lebih dari satu ID.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleTestTelegram()}
+                    disabled={testingTelegram || !formData.telegramBotToken?.trim()}
+                    className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-xs font-semibold text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {testingTelegram ? <Activity className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                    {testingTelegram ? 'Menguji...' : 'Uji Koneksi & Kirim Pesan Tes'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4 text-xs text-foreground space-y-2">
+                <p className="font-semibold text-indigo-700 dark:text-indigo-400">💡 Cara Mengetahui ID Telegram Anda:</p>
+                <ol className="list-decimal pl-4 space-y-1 text-muted-foreground">
+                  <li>Buka bot Anda di Telegram (cari sesuai username bot yang dibuat di @BotFather).</li>
+                  <li>Kirim perintah <code>/myid</code> ke bot Anda.</li>
+                  <li>Bot akan membalas nomor ID Telegram Anda.</li>
+                  <li>Salin ID tersebut ke kolom <b>ID Pengguna Telegram</b> di atas, lalu simpan.</li>
+                </ol>
+                <p className="text-muted-foreground">
+                  <i>Catatan: Verifikasi bukti transfer tetap dilakukan via WhatsApp. Tombol pada bot Telegram mempermudah Anda langsung mengaktifkan voucher dari HP tanpa membuka browser admin.</i>
+                </p>
               </div>
             </>
           )}

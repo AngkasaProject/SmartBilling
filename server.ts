@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { createHash, createHmac, randomBytes, randomUUID, randomInt, scryptSync, timingSafeEqual } from 'crypto';
 import { renderWhatsAppTemplate } from './src/utils/whatsappTemplates';
+import { telegramBot } from './server/telegram.js';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { AppDataSnapshot, Customer, HotspotProfile, HotspotServiceProfile, HotspotValidityPreset, Invoice, ManualPaymentMethod, PaymentTransaction, RouterConfig, Voucher } from './src/types/index.js';
@@ -698,6 +699,9 @@ async function startServer() {
   }
 
   async function paymentGatewayReady(config: PaymentGatewayCredentials): Promise<boolean> {
+    if (config.provider === 'qrisly') {
+      return Boolean(config.qrislyApiKey && config.qrislyQrisId);
+    }
     const [appUrl, webhookUrl] = await Promise.all([
       configuredPaymentAppUrl(),
       configuredPaymentWebhookUrl(),
@@ -724,7 +728,10 @@ async function startServer() {
     returnUrl: string;
     successUrl: string;
     failureUrl: string;
-  }): Promise<{ redirectUrl: string; provider: 'midtrans' | 'doku' | 'xendit' | 'tripay' }> {
+  }): Promise<
+    | { redirectUrl: string; provider: 'midtrans' | 'doku' | 'xendit' | 'tripay' }
+    | { provider: 'qrisly'; historyId: string; qrString: string; amount: number; expiresAt: string }
+  > {
     const { config } = input;
     if (config.provider === 'midtrans' && config.serverKey) {
       const response = await fetch(
@@ -953,6 +960,84 @@ async function startServer() {
         throw new Error('Tripay mengembalikan URL pembayaran yang tidak valid');
       }
       return { redirectUrl: parsedUrl.toString(), provider: 'tripay' };
+    }
+
+    if (config.provider === 'qrisly' && config.qrislyApiKey && config.qrislyQrisId) {
+      if (input.amount < 1000) {
+        throw new Error('Nominal pembayaran QRISly minimal Rp 1.000');
+      }
+      const baseUrl = config.isProduction
+        ? 'https://api.collaborator.komerce.id/user'
+        : 'https://api-sandbox.collaborator.komerce.id/user';
+      const configuredQrisId = config.qrislyQrisId.trim();
+      const qrisId = /^\d+$/.test(configuredQrisId) && Number.isSafeInteger(Number(configuredQrisId))
+        ? Number(configuredQrisId)
+        : configuredQrisId;
+      const response = await fetch(`${baseUrl}/api/v1/qrisly/generate-qris`, {
+        method: 'POST',
+        headers: {
+          'X-API-Key': config.qrislyApiKey,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          qris_id: qrisId,
+          amount: input.amount,
+          output_type: 'string',
+          unique_amount: false,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const payload: unknown = await response.json();
+      const payloadRecord = isRecord(payload) ? payload : undefined;
+      const responseData = payloadRecord?.data;
+      const data = isRecord(responseData) && isRecord(responseData.data)
+        ? responseData.data
+        : responseData;
+      const historyId = isRecord(data) ? data.history_id : undefined;
+      const qrString = isRecord(data) ? data.qris_string : undefined;
+      const originalAmount = isRecord(data) ? data.original_amount : undefined;
+      const finalAmount = isRecord(data) ? data.final_amount : undefined;
+      const nestedMeta = payloadRecord && isRecord(payloadRecord.meta) ? payloadRecord.meta : undefined;
+      const providerMessage = payloadRecord
+        ? payloadRecord.message ?? payloadRecord.error ?? nestedMeta?.message
+        : undefined;
+      const success = payloadRecord?.success === true ||
+        (nestedMeta?.status === 'success' && Number(nestedMeta.code) === 200);
+      const hasHistoryId = (typeof historyId === 'number' || typeof historyId === 'string') &&
+        Boolean(String(historyId).trim());
+      const hasQrString = typeof qrString === 'string' && Boolean(qrString.trim());
+      const amountsValid = Number(originalAmount) === input.amount &&
+        Number.isSafeInteger(Number(finalAmount)) &&
+        Number(finalAmount) >= input.amount;
+      if (
+        !response.ok ||
+        !payloadRecord ||
+        !success ||
+        !isRecord(data) ||
+        !hasHistoryId ||
+        !hasQrString ||
+        !amountsValid
+      ) {
+        const message = typeof providerMessage === 'string' && providerMessage.trim()
+          ? providerMessage.trim().slice(0, 300)
+          : `HTTP ${response.status}`;
+        const details = response.ok
+          ? `Respons HTTP ${response.status} tidak cocok dengan kontrak QRISly (success=${success}, data=${isRecord(data)}, history_id=${hasHistoryId}, qris_string=${hasQrString}, original_amount=${String(originalAmount)}, final_amount=${String(finalAmount)}, nominal_diminta=${input.amount}).`
+          : message;
+        throw new Error(`Qrisly gagal membuat QR pembayaran: ${details}`);
+      }
+      const rawExpiry = data.expiry_time;
+      const expiryDate = typeof rawExpiry === 'string' ? new Date(rawExpiry) : null;
+      return {
+        provider: 'qrisly',
+        historyId: String(historyId),
+        qrString: qrString.trim(),
+        amount: Number(finalAmount),
+        expiresAt: expiryDate && Number.isFinite(expiryDate.getTime())
+          ? expiryDate.toISOString()
+          : new Date(Date.now() + 15 * 60_000).toISOString(),
+      };
     }
 
     throw new Error('Payment gateway otomatis belum dikonfigurasi');
@@ -1413,11 +1498,15 @@ async function startServer() {
     }
   }
 
-  async function approveInvoicePayment(orderId: string, paymentChannel: string): Promise<void> {
+  async function approveInvoicePayment(
+    orderId: string,
+    paymentChannel: string,
+    provider: PaymentTransaction['paymentMethod'] = 'manual'
+  ): Promise<void> {
     const stored = await getAppDataDb();
     const transactions = stored.data.transactions || [];
     const transaction = transactions.find(item =>
-      item.orderId === orderId && item.orderType === 'invoice' && item.paymentMethod === 'manual'
+      item.orderId === orderId && item.orderType === 'invoice' && item.paymentMethod === provider
     );
     if (!transaction?.invoiceId) throw new Error('Permintaan pembayaran invoice tidak ditemukan');
     if (transaction.status === 'settlement') return;
@@ -1436,7 +1525,7 @@ async function startServer() {
       const now = new Date();
       const paidAt = now.toISOString();
       updatedInvoices = invoices.map(item => item.id === invoice.id
-        ? { ...item, status: 'paid' as const, paidAt, paymentMethod: 'manual', paymentChannel, paymentRef: orderId }
+        ? { ...item, status: 'paid' as const, paidAt, paymentMethod: provider, paymentChannel, paymentRef: orderId }
         : item);
       const customer = updatedCustomers.find(item => item.id === invoice.customerId);
       if (customer) {
@@ -1479,7 +1568,7 @@ async function startServer() {
               monthlyFee: scheduledPackage.monthlyFee,
               pendingPppoePackageId: undefined,
             } : {}),
-            notes: `Pembayaran manual diverifikasi pada ${paidAt}. ${activationNote}`,
+            notes: `Pembayaran ${provider.toUpperCase()} diverifikasi pada ${paidAt}. ${activationNote}`,
           }
           : item);
       }
@@ -1508,10 +1597,123 @@ async function startServer() {
         await recordWhatsAppLog(customer.phone, customer.name, 'payment_success', message, 'sent', JSON.stringify(sent.data));
       } catch (error) {
         const failure = error instanceof Error ? error.message : String(error);
-        console.error(`[WhatsApp] Invoice ${invoice.invoiceNumber} paid, but receipt delivery failed: ${failure}`);
+        console.error(`[WhatsApp] Invoice ${invoice.invoiceNumber} paid via ${provider}, but receipt delivery failed: ${failure}`);
         await recordWhatsAppLog(customer.phone, customer.name, 'payment_success', message, 'failed', failure);
       }
     }
+  }
+
+  const qrislyStatusChecks = new Set<string>();
+  async function refreshQrislyPayment(orderId: string): Promise<PaymentTransaction> {
+    const stored = await getAppDataDb();
+    const transaction = (stored.data.transactions || []).find(item =>
+      item.orderId === orderId && item.paymentMethod === 'qrisly'
+    );
+    if (!transaction) throw new Error('Transaksi Qrisly tidak ditemukan');
+    if (transaction.status !== 'pending') return transaction;
+    if (!transaction.providerTransactionId) throw new Error('ID transaksi Qrisly tidak tersimpan');
+    if (qrislyStatusChecks.has(orderId)) return transaction;
+
+    qrislyStatusChecks.add(orderId);
+    try {
+      const gateway = await paymentGatewayCredentials();
+      if (gateway.provider !== 'qrisly' || !gateway.qrislyApiKey) {
+        throw new Error('Qrisly API Key tidak tersedia untuk verifikasi status');
+      }
+      const baseUrl = gateway.isProduction
+        ? 'https://api.collaborator.komerce.id/user'
+        : 'https://api-sandbox.collaborator.komerce.id/user';
+      const response = await fetch(
+        `${baseUrl}/api/v1/qrisly/payment-status/${encodeURIComponent(transaction.providerTransactionId)}`,
+        {
+          headers: { 'X-API-Key': gateway.qrislyApiKey, Accept: 'application/json' },
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+      const payload: unknown = await response.json();
+      const data = isRecord(payload) ? payload.data : undefined;
+      const providerStatus = isRecord(data) ? data.payment_status : undefined;
+      const amount = isRecord(data) ? data.amount : undefined;
+      if (
+        !response.ok ||
+        !isRecord(data) ||
+        typeof providerStatus !== 'string' ||
+        (typeof amount !== 'number' && typeof amount !== 'string')
+      ) {
+        const message = isRecord(payload) && isRecord(payload.meta) && typeof payload.meta.message === 'string'
+          ? payload.meta.message
+          : `HTTP ${response.status}`;
+        throw new Error(`Qrisly gagal memverifikasi status pembayaran: ${message}`);
+      }
+      if (!Number.isFinite(Number(amount)) || Number(amount) !== transaction.amount) {
+        throw new Error('Nominal status pembayaran Qrisly tidak cocok dengan pesanan');
+      }
+
+      const normalizedStatus = providerStatus.toLowerCase();
+      if (normalizedStatus === 'paid') {
+        if (transaction.orderType === 'voucher') {
+          await activateAndSettleVoucher(orderId, 'qrisly');
+        } else if (transaction.invoiceId) {
+          const invoices = stored.data.invoices || [];
+          const invoice = invoices.find(item => item.id === transaction.invoiceId);
+          if (!invoice) throw new Error('Invoice transaksi Qrisly tidak ditemukan');
+          const customers = stored.data.customers || [];
+          const requiresReconciliation =
+            invoice.status === 'canceled' ||
+            invoice.status === 'expired' ||
+            customers.some(customer => customer.id === invoice.customerId && customer.cancelAtExpiry);
+          if (requiresReconciliation) {
+            const paidAt = new Date().toISOString();
+            const updatedTransactions = (stored.data.transactions || []).map(item =>
+              item.orderId === orderId
+                ? {
+                  ...item,
+                  status: 'settlement' as const,
+                  paymentChannel: 'qrisly',
+                  paidAt,
+                  reconciliationRequired: true,
+                }
+                : item
+            );
+            await savePublicPaymentUpdateDb(
+              customers,
+              invoices,
+              updatedTransactions
+            );
+            console.error(`[Payment] Late Qrisly payment ${orderId} for invoice ${invoice.invoiceNumber} requires reconciliation.`);
+          } else {
+            await approveInvoicePayment(orderId, 'qrisly', 'qrisly');
+          }
+        } else {
+          throw new Error('Invoice transaksi Qrisly tidak ditemukan');
+        }
+      } else if (normalizedStatus === 'expired' || normalizedStatus === 'cancelled') {
+        const newStatus: PaymentTransaction['status'] =
+          normalizedStatus === 'expired' ? 'expired' : 'canceled';
+        const latest = await getAppDataDb();
+        const updatedTransactions = (latest.data.transactions || []).map(item =>
+          item.orderId === orderId ? { ...item, status: newStatus } : item
+        );
+        const vouchers = (latest.data.vouchers || []).map(item =>
+          item.orderId === orderId ? { ...item, status: 'expired' as const } : item
+        );
+        await savePublicPaymentUpdateDb(
+          latest.data.customers || [],
+          latest.data.invoices || [],
+          updatedTransactions,
+          vouchers
+        );
+      } else if (normalizedStatus !== 'unpaid') {
+        throw new Error(`Status pembayaran Qrisly tidak dikenal: ${providerStatus}`);
+      }
+    } finally {
+      qrislyStatusChecks.delete(orderId);
+    }
+
+    const updated = await getAppDataDb();
+    const result = (updated.data.transactions || []).find(item => item.orderId === orderId);
+    if (!result) throw new Error('Transaksi Qrisly hilang setelah verifikasi');
+    return result;
   }
 
   // Health check endpoint (for Docker healthcheck)
@@ -1531,6 +1733,7 @@ async function startServer() {
   });
 
   const publicLookupAttempts = new Map<string, { count: number; resetAt: number }>();
+  const publicVoucherLookupAttempts = new Map<string, { count: number; resetAt: number }>();
   const isManualPaymentMethodReady = (method: ManualPaymentMethod): boolean => {
     const accountHolder = method.accountHolder || method.serviceName;
     if (
@@ -2149,6 +2352,9 @@ async function startServer() {
       if (!Number.isSafeInteger(profile.price) || profile.price <= 0) {
         return res.status(400).json({ error: 'Harga paket tidak valid untuk checkout' });
       }
+      if (paymentMode === 'automatic' && gateway.provider === 'qrisly' && profile.price < 1000) {
+        return res.status(400).json({ error: 'Nominal pembayaran Qrisly minimal Rp 1.000' });
+      }
 
       const now = new Date();
       const createdAt = now.toISOString();
@@ -2168,7 +2374,7 @@ async function startServer() {
         code = `${voucherPrefix}${Array.from({ length: voucherLength }, () => randomInt(0, 10)).join('')}`;
       } while (vouchers.some(item => item.code === code));
       const transactions = stored.data.transactions || [];
-      const paymentCode = paymentMode === 'manual' ? createPaymentCode(transactions, 'SBV') : undefined;
+      const paymentCode = createPaymentCode(transactions, 'SBV');
       const voucher: Voucher = {
         id: randomUUID(),
         code,
@@ -2191,7 +2397,7 @@ async function startServer() {
       const transaction: PaymentTransaction = {
         id: randomUUID(),
         orderId,
-        ...(paymentCode ? { paymentCode } : {}),
+        paymentCode,
         orderType: 'voucher',
         amount: profile.price,
         customerName: customerName.trim(),
@@ -2210,6 +2416,21 @@ async function startServer() {
 
       if (paymentMode === 'manual') {
         await saveVoucherOrderDb([voucher, ...vouchers], [transaction, ...transactions]);
+        void telegramBot.notifyManualPayment({
+          orderId,
+          orderType: 'voucher',
+          paymentCode,
+          amount: profile.price,
+          customerName: customerName.trim(),
+          customerPhone: phone.trim(),
+          itemName: profile.name,
+          validity: profile.validityDuration,
+          methodName: manualMethod!.name,
+          accountNumber: manualMethod!.accountNumber,
+          accountHolder: manualMethod!.accountHolder || manualMethod!.serviceName,
+          instructions: manualMethod!.instructions,
+          createdAt,
+        });
         const settings = await getAppSettingsDb();
         const operatorPhone = settings.phoneContact.replace(/[^0-9]/g, '');
         const operatorWhatsapp = operatorPhone
@@ -2233,7 +2454,10 @@ async function startServer() {
         });
       }
 
-      const appUrl = (await configuredPaymentAppUrl())!;
+      const appUrl = await configuredPaymentAppUrl();
+      if (!appUrl && gateway.provider !== 'qrisly') {
+        return res.status(503).json({ error: 'APP_URL belum dikonfigurasi untuk gateway pembayaran' });
+      }
       const checkout = await createOnlineCheckout({
         config: gateway,
         orderId,
@@ -2243,9 +2467,9 @@ async function startServer() {
         customerName: customerName.trim(),
         customerPhone: phone.trim(),
         customerEmail: typeof email === 'string' ? email.trim() || undefined : undefined,
-        returnUrl: `${appUrl.origin}/portal?payment=return&tab=voucher&orderId=${encodeURIComponent(orderId)}`,
-        successUrl: `${appUrl.origin}/portal?payment=success&tab=voucher&orderId=${encodeURIComponent(orderId)}`,
-        failureUrl: `${appUrl.origin}/portal?payment=failed&tab=voucher&orderId=${encodeURIComponent(orderId)}`,
+        returnUrl: appUrl ? `${appUrl.origin}/portal?payment=return&tab=voucher&orderId=${encodeURIComponent(orderId)}` : '',
+        successUrl: appUrl ? `${appUrl.origin}/portal?payment=success&tab=voucher&orderId=${encodeURIComponent(orderId)}` : '',
+        failureUrl: appUrl ? `${appUrl.origin}/portal?payment=failed&tab=voucher&orderId=${encodeURIComponent(orderId)}` : '',
       });
       transaction.paymentMethod = checkout.provider;
       transaction.paymentChannel = checkout.provider === 'midtrans'
@@ -2253,9 +2477,27 @@ async function startServer() {
         : checkout.provider === 'doku'
           ? 'checkout'
           : checkout.provider;
-      transaction.paymentUrl = checkout.redirectUrl;
+        if (checkout.provider === 'qrisly') {
+          transaction.amount = checkout.amount;
+          transaction.providerTransactionId = checkout.historyId;
+          transaction.qrCodeData = checkout.qrString;
+          transaction.expiresAt = checkout.expiresAt;
+          transaction.expiryMinutes = Math.max(1, Math.ceil((Date.parse(checkout.expiresAt) - Date.now()) / 60_000));
+      } else {
+        transaction.paymentUrl = checkout.redirectUrl;
+      }
       await saveVoucherOrderDb([voucher, ...vouchers], [transaction, ...transactions]);
-      res.status(201).json({ orderId, redirectUrl: transaction.paymentUrl, status: 'pending' });
+      if (checkout.provider === 'qrisly') {
+        return res.status(201).json({
+          orderId,
+          paymentCode,
+          qrString: checkout.qrString,
+          amount: checkout.amount,
+          expiresAt: transaction.expiresAt,
+          status: 'pending',
+        });
+      }
+      res.status(201).json({ orderId, paymentCode, redirectUrl: transaction.paymentUrl, status: 'pending' });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -2263,7 +2505,10 @@ async function startServer() {
 
   app.post('/api/portal/voucher-orders/status', async (req, res) => {
     const { orderId, phone } = req.body || {};
-    if (typeof orderId !== 'string' || typeof phone !== 'string') {
+    if (
+      typeof orderId !== 'string' || !orderId.trim() || orderId.length > 128 ||
+      typeof phone !== 'string' || !phone.trim() || phone.length > 32
+    ) {
       return res.status(400).json({ error: 'Nomor pesanan dan nomor WhatsApp diperlukan' });
     }
     try {
@@ -2274,14 +2519,126 @@ async function startServer() {
         item.customerPhone.replace(/[^0-9]/g, '') === phone.replace(/[^0-9]/g, '')
       );
       if (!transaction) return res.status(404).json({ error: 'Pesanan tidak ditemukan' });
+      const currentTransaction = transaction.paymentMethod === 'qrisly' && transaction.status === 'pending'
+        ? await refreshQrislyPayment(orderId)
+        : transaction;
       const voucher = (stored.data.vouchers || []).find(item => item.orderId === orderId);
       res.setHeader('Cache-Control', 'no-store');
       res.json({
-        status: transaction.status,
-        expiresAt: transaction.expiresAt,
-        voucher: transaction.status === 'settlement' && voucher
+        status: currentTransaction.status,
+        amount: currentTransaction.amount,
+        expiresAt: currentTransaction.expiresAt,
+        voucher: currentTransaction.status === 'settlement' && voucher
           ? { code: voucher.code, password: voucher.password, validityDuration: voucher.validityDuration }
           : undefined,
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/portal/voucher-lookup', async (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const attempts = publicVoucherLookupAttempts.get(ip);
+    if (attempts && attempts.resetAt > Date.now() && attempts.count >= 30) {
+      return res.status(429).json({ error: 'Terlalu banyak pemeriksaan pesanan. Coba lagi sebentar.' });
+    }
+    publicVoucherLookupAttempts.set(ip, {
+      count: attempts && attempts.resetAt > Date.now() ? attempts.count + 1 : 1,
+      resetAt: attempts && attempts.resetAt > Date.now() ? attempts.resetAt : Date.now() + 60_000,
+    });
+
+    const { query } = req.body || {};
+    if (typeof query !== 'string' || !query.trim() || query.length > 128) {
+      return res.status(400).json({ error: 'Masukkan ID pesanan atau kode bayar voucher yang valid' });
+    }
+    const rawQuery = query.trim();
+    const lowerQuery = rawQuery.toLowerCase();
+
+    try {
+      const stored = await getAppDataDb();
+      const transactions = stored.data.transactions || [];
+      const vouchers = stored.data.vouchers || [];
+      const profiles = stored.data.hotspotProfiles || [];
+      const manualMethods = stored.data.paymentConfig?.manualPaymentMethods || [];
+      const settings = await getAppSettingsDb();
+
+      // Voucher status lookup only accepts the order ID or payment code.
+      const matchedTransactions = transactions.filter(item => {
+        if (item.orderType !== 'voucher') return false;
+        if (item.paymentCode && item.paymentCode.toLowerCase() === lowerQuery) return true;
+        if (item.orderId.toLowerCase() === lowerQuery) return true;
+        return false;
+      });
+
+      if (!matchedTransactions.length) {
+        return res.status(404).json({ error: 'Pesanan voucher tidak ditemukan. Periksa kembali ID pesanan atau kode bayar.' });
+      }
+
+      matchedTransactions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      let transaction = matchedTransactions[0];
+      if (transaction.paymentMethod === 'qrisly' && transaction.status === 'pending') {
+        transaction = await refreshQrislyPayment(transaction.orderId);
+      }
+      const voucher = vouchers.find(v => v.orderId === transaction.orderId || (transaction.voucherCode && v.code === transaction.voucherCode));
+      const profile = voucher?.profileId ? profiles.find(p => p.id === voucher.profileId) : undefined;
+      const manualMethod = transaction.paymentMethod === 'manual'
+        ? manualMethods.find(m => m.id === transaction.paymentChannel || m.name === transaction.paymentChannel)
+        : undefined;
+
+      const operatorDigits = settings.phoneContact.replace(/[^0-9]/g, '');
+      const operatorWhatsapp = operatorDigits
+        ? (operatorDigits.startsWith('0') ? `62${operatorDigits.slice(1)}` : operatorDigits)
+        : '';
+      const contactMessage =
+        `Yth. Operator, saya ingin mengonfirmasi pembayaran voucher.\n\n` +
+        `Kode pembayaran: ${transaction.paymentCode || transaction.orderId}\n` +
+        `Paket: ${voucher?.profileName || profile?.name || 'Voucher Hotspot'}\n` +
+        `Nominal: Rp ${transaction.amount.toLocaleString('id-ID')}\n` +
+        `Nama pelanggan: ${transaction.customerName}\n` +
+        `Nomor WhatsApp: ${transaction.customerPhone}`;
+      const operatorUrl = operatorWhatsapp
+        ? `https://wa.me/${operatorWhatsapp}?text=${encodeURIComponent(contactMessage)}`
+        : '';
+
+      res.json({
+        found: true,
+        orderId: transaction.orderId,
+        paymentCode: transaction.paymentCode || transaction.orderId,
+        orderType: 'voucher',
+        status: transaction.status,
+        amount: transaction.amount,
+        customerName: transaction.customerName,
+        customerPhone: transaction.customerPhone,
+        packageName: voucher?.profileName || profile?.name || 'Voucher Hotspot',
+        validityDuration: voucher?.validityDuration || profile?.validityDuration || '',
+        speedLimit: voucher?.speedLimit || profile?.speedLimit || '',
+        paymentMethod: transaction.paymentMethod,
+        paymentChannel: transaction.paymentChannel,
+        qrString: transaction.status === 'pending' ? transaction.qrCodeData : undefined,
+        manualMethod: manualMethod ? {
+          id: manualMethod.id,
+          name: manualMethod.name,
+          accountHolder: manualMethod.accountHolder || manualMethod.serviceName || '',
+          accountNumber: manualMethod.accountNumber || '',
+          instructions: manualMethod.instructions || '',
+        } : undefined,
+        operatorUrl,
+        createdAt: transaction.createdAt,
+        paidAt: transaction.paidAt,
+        voucher: (transaction.status === 'settlement' || voucher?.status === 'unused') && voucher ? {
+          code: voucher.code,
+          password: voucher.password || voucher.code,
+          validityDuration: voucher.validityDuration,
+          speedLimit: voucher.speedLimit,
+        } : undefined,
+        recentMatches: matchedTransactions.slice(0, 5).map(m => ({
+          orderId: m.orderId,
+          paymentCode: m.paymentCode || m.orderId,
+          status: m.status,
+          amount: m.amount,
+          createdAt: m.createdAt,
+        })),
       });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3047,13 +3404,47 @@ async function startServer() {
 
     const { lookupValue } = req.body || {};
     if (typeof lookupValue !== 'string' || !lookupValue.trim() || lookupValue.length > 128) {
-      return res.status(400).json({ error: 'Masukkan ID pelanggan atau nomor terdaftar' });
+      return res.status(400).json({ error: 'Masukkan ID pelanggan, nomor terdaftar, atau kode bayar' });
     }
     try {
       const stored = await getAppDataDb();
       const customers = stored.data.customers || [];
+      const allInvoices = stored.data.invoices || [];
+      const transactions = stored.data.transactions || [];
       const searchValue = lookupValue.trim();
       const normalizedPhone = searchValue.replace(/[^0-9]/g, '');
+      const invoicePayment = transactions.find(item =>
+        item.orderType === 'invoice' &&
+        (item.paymentCode?.toLowerCase() === searchValue.toLowerCase() ||
+          item.orderId.toLowerCase() === searchValue.toLowerCase())
+      );
+      if (invoicePayment) {
+        const invoice = allInvoices.find(item => item.id === invoicePayment.invoiceId);
+        if (!invoice) return res.status(404).json({ error: 'Tagihan tidak ditemukan' });
+        const latestPayment = transactions
+          .filter(item => item.orderType === 'invoice' && item.invoiceId === invoice.id)
+          .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json({
+          invoices: [{
+            id: invoice.id,
+            invoiceNumber: invoice.invoiceNumber,
+            profileName: invoice.profileName,
+            periodMonth: invoice.periodMonth,
+            amount: invoice.amount,
+            uniqueCode: invoice.uniqueCode,
+            totalAmount: invoice.totalAmount,
+            status: invoice.status,
+            dueDate: invoice.dueDate,
+            paidAt: invoice.paidAt,
+            paymentMethod: invoice.paymentMethod,
+            latestPaymentStatus: latestPayment?.status,
+            latestPaymentMethod: latestPayment?.paymentMethod,
+            latestPaymentChannel: latestPayment?.paymentChannel,
+          }],
+          lookupType: 'paymentCode',
+        });
+      }
       let customer = customers.find(item =>
         item.customerId.toLowerCase() === searchValue.toLowerCase()
       );
@@ -3069,7 +3460,7 @@ async function startServer() {
       if (!customer) return res.status(404).json({ error: 'Pelanggan tidak ditemukan' });
       await ensureDueInvoice(customer.id);
       const latest = await getAppDataDb();
-      const invoices = (latest.data.invoices || [])
+      const customerInvoices = (latest.data.invoices || [])
         .filter(invoice => invoice.customerId === customer.id)
         .filter(invoice => invoice.status === 'unpaid')
         .map(invoice => ({
@@ -3084,7 +3475,7 @@ async function startServer() {
             dueDate: invoice.dueDate,
           }));
       res.setHeader('Cache-Control', 'no-store');
-      res.json({ invoices });
+      res.json({ invoices: customerInvoices, lookupType: 'customer' });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -3509,7 +3900,20 @@ async function startServer() {
       } else {
         const searchValue = lookupValue.trim();
         const normalizedPhone = searchValue.replace(/[^0-9]/g, '');
-        customer = customers.find(item =>
+        const invoicePayment = (stored.data.transactions || []).find(item =>
+          item.orderType === 'invoice' &&
+          item.invoiceId === invoiceId &&
+          (item.paymentCode?.toLowerCase() === searchValue.toLowerCase() ||
+            item.orderId.toLowerCase() === searchValue.toLowerCase())
+        );
+        const paymentInvoice = invoicePayment
+          ? (stored.data.invoices || []).find(item =>
+            item.id === invoicePayment.invoiceId && item.id === invoiceId
+          )
+          : undefined;
+        customer = (paymentInvoice
+          ? customers.find(item => item.id === paymentInvoice.customerId)
+          : undefined) || customers.find(item =>
           item.customerId.toLowerCase() === searchValue.toLowerCase()
         ) || (normalizedPhone.length >= 8
           ? customers.find(item =>
@@ -3527,6 +3931,9 @@ async function startServer() {
       if (invoice.status !== 'unpaid') return res.status(409).json({ error: 'Tagihan ini tidak dapat dibayar secara online' });
       if (!Number.isSafeInteger(invoice.totalAmount) || invoice.totalAmount <= 0) {
         return res.status(400).json({ error: 'Nominal tagihan tidak valid untuk checkout' });
+      }
+      if (paymentMode === 'automatic' && gateway.provider === 'qrisly' && invoice.totalAmount < 1000) {
+        return res.status(400).json({ error: 'Nominal pembayaran Qrisly minimal Rp 1.000' });
       }
       if (paymentMode === 'manual') {
         const paymentConfig = stored.data.paymentConfig;
@@ -3560,6 +3967,20 @@ async function startServer() {
           invoiceId: invoice.id,
         };
         await saveAppDataCollectionDb('transactions', [transaction, ...transactions]);
+        void telegramBot.notifyManualPayment({
+          orderId,
+          orderType: 'invoice',
+          paymentCode,
+          amount: invoice.totalAmount,
+          customerName: customer.name,
+          customerPhone: customer.phone,
+          itemName: `Tagihan ${invoice.invoiceNumber} (${invoice.profileName})`,
+          methodName: method.name,
+          accountNumber: method.accountNumber,
+          accountHolder: method.accountHolder || method.serviceName,
+          instructions: method.instructions,
+          createdAt: transaction.createdAt,
+        });
         const appSettings = await getAppSettingsDb();
         const operatorNumber = appSettings.phoneContact.replace(/[^0-9]/g, '');
         const operatorWhatsapp = operatorNumber
@@ -3602,16 +4023,31 @@ async function startServer() {
       }
 
       const appUrl = await configuredPaymentAppUrl();
-      if (!await paymentGatewayReady(gateway) || !appUrl) {
+      if (!await paymentGatewayReady(gateway) || (!appUrl && gateway.provider !== 'qrisly')) {
         return res.status(503).json({ error: 'Gateway otomatis belum dikonfigurasi oleh administrator' });
       }
       if (paymentCheckoutInProgress.has(invoice.id)) {
         return res.status(409).json({ error: 'Checkout tagihan sedang dibuat. Silakan coba lagi.' });
       }
       const existing = (stored.data.transactions || []).find(item =>
-        item.invoiceId === invoice.id && item.status === 'pending' && item.paymentUrl
+        item.invoiceId === invoice.id &&
+        item.status === 'pending' &&
+        (item.paymentUrl || item.providerTransactionId)
       );
-      if (existing?.paymentUrl) return res.json({ redirectUrl: existing.paymentUrl });
+      if (existing?.paymentMethod === 'qrisly' && existing.qrCodeData) {
+        return res.json({
+          orderId: existing.orderId,
+          paymentCode: existing.paymentCode,
+          qrString: existing.qrCodeData,
+          amount: existing.amount,
+          expiresAt: existing.expiresAt,
+          status: existing.status,
+        });
+      }
+      if (existing?.paymentUrl) return res.json({
+        paymentCode: existing.paymentCode,
+        redirectUrl: existing.paymentUrl,
+      });
 
       paymentCheckoutInProgress.add(invoice.id);
       try {
@@ -3625,22 +4061,29 @@ async function startServer() {
           customerName: customer.name,
           customerPhone: customer.phone,
           customerEmail: customer.email || undefined,
-          returnUrl: portalToken
-            ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=return`
-            : `${appUrl.origin}/portal?payment=return&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`,
-          successUrl: portalToken
-            ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=success`
-            : `${appUrl.origin}/portal?payment=success&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`,
-          failureUrl: portalToken
-            ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=failed`
-            : `${appUrl.origin}/portal?payment=failed&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`,
+          returnUrl: appUrl
+            ? portalToken
+              ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=return`
+              : `${appUrl.origin}/portal?payment=return&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`
+            : '',
+          successUrl: appUrl
+            ? portalToken
+              ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=success`
+              : `${appUrl.origin}/portal?payment=success&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`
+            : '',
+          failureUrl: appUrl
+            ? portalToken
+              ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=failed`
+              : `${appUrl.origin}/portal?payment=failed&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`
+            : '',
         });
 
         const transaction: PaymentTransaction = {
           id: randomUUID(),
           orderId,
+          paymentCode: createPaymentCode(stored.data.transactions || [], 'SBM'),
           orderType: 'invoice',
-          amount: invoice.totalAmount,
+          amount: checkout.provider === 'qrisly' ? checkout.amount : invoice.totalAmount,
           customerName: customer.name,
           customerPhone: customer.phone,
           customerEmail: customer.email || undefined,
@@ -3651,13 +4094,32 @@ async function startServer() {
               ? 'checkout'
               : checkout.provider,
           status: 'pending',
-          paymentUrl: checkout.redirectUrl,
-          expiryMinutes: 1440,
+          ...(checkout.provider === 'qrisly'
+            ? {
+              providerTransactionId: checkout.historyId,
+              qrCodeData: checkout.qrString,
+              ...(checkout.expiresAt ? { expiresAt: checkout.expiresAt } : {}),
+              expiryMinutes: checkout.expiresAt
+                ? Math.max(1, Math.ceil((Date.parse(checkout.expiresAt) - Date.now()) / 60_000))
+                : 15,
+            }
+            : { paymentUrl: checkout.redirectUrl, expiryMinutes: 1440 }),
           createdAt: new Date().toISOString(),
           invoiceId: invoice.id,
         };
         await saveAppDataCollectionDb('transactions', [...(stored.data.transactions || []), transaction]);
-        res.json({ redirectUrl: transaction.paymentUrl });
+        if (checkout.provider === 'qrisly') {
+          res.json({
+            orderId,
+            paymentCode: transaction.paymentCode,
+            qrString: checkout.qrString,
+            amount: checkout.amount,
+            expiresAt: transaction.expiresAt,
+            status: transaction.status,
+          });
+        } else {
+          res.json({ paymentCode: transaction.paymentCode, redirectUrl: transaction.paymentUrl });
+        }
       } finally {
         paymentCheckoutInProgress.delete(invoice.id);
       }
@@ -3665,6 +4127,155 @@ async function startServer() {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
+
+  app.post('/api/portal/payment/status', async (req, res) => {
+    const { orderId, invoiceId, lookupValue, portalToken } = req.body || {};
+    if (
+      typeof orderId !== 'string' || !orderId ||
+      typeof invoiceId !== 'string' || !invoiceId ||
+      (typeof lookupValue !== 'string' && typeof portalToken !== 'string')
+    ) {
+      return res.status(400).json({ error: 'Pesanan dan identitas tagihan diperlukan untuk memeriksa status' });
+    }
+    try {
+      const stored = await getAppDataDb();
+      const invoice = (stored.data.invoices || []).find(item => item.id === invoiceId);
+      if (!invoice) return res.status(404).json({ error: 'Tagihan tidak ditemukan' });
+      const transaction = (stored.data.transactions || []).find(item =>
+        item.orderId === orderId &&
+        item.orderType === 'invoice' &&
+        item.invoiceId === invoice.id
+      );
+      if (!transaction) return res.status(404).json({ error: 'Transaksi tagihan tidak ditemukan' });
+
+      const customer = (stored.data.customers || []).find(item => item.id === invoice.customerId);
+      let authorized = false;
+      if (typeof portalToken === 'string') {
+        const secret = await getOrCreatePortalLinkSecretDb();
+        const token = verifyPortalLinkToken(portalToken, secret);
+        authorized = Boolean(token && (!token.invoiceId || token.invoiceId === invoice.id) &&
+          (!token.customerId || token.customerId === invoice.customerId));
+      } else if (customer && typeof lookupValue === 'string') {
+        const lookup = lookupValue.trim();
+        const normalizedPhone = lookup.replace(/[^0-9]/g, '');
+        authorized =
+          customer.customerId.toLowerCase() === lookup.toLowerCase() ||
+          transaction.paymentCode?.toLowerCase() === lookup.toLowerCase() ||
+          transaction.orderId.toLowerCase() === lookup.toLowerCase() ||
+          (normalizedPhone.length >= 8 &&
+            canonicalPortalPhone(customer.phone) === canonicalPortalPhone(normalizedPhone));
+      }
+      if (!authorized) return res.status(403).json({ error: 'Identitas pelanggan tidak cocok dengan tagihan' });
+
+      const current = transaction.paymentMethod === 'qrisly' && transaction.status === 'pending'
+        ? await refreshQrislyPayment(orderId)
+        : transaction;
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        status: current.status,
+        amount: current.amount,
+        expiresAt: current.expiresAt,
+        reconciliationRequired: current.reconciliationRequired,
+      });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post(
+    '/api/payment/qrisly/upload',
+    requireAdminSession,
+    express.raw({ type: 'application/octet-stream', limit: '5mb' }),
+    async (req, res) => {
+      const file = req.body;
+      const contentType = req.get('Content-Type') || '';
+      const encodedName = req.get('X-Qrisly-Name') || '';
+      const providedApiKey = req.get('X-Qrisly-Api-Key') || '';
+      let name: string;
+      try {
+        name = decodeURIComponent(encodedName).trim();
+      } catch {
+        return res.status(400).json({ error: 'Nama QRIS tidak valid' });
+      }
+      if (!name) return res.status(400).json({ error: 'Nama merchant QRIS wajib diisi' });
+      if (name.length > 100) return res.status(400).json({ error: 'Nama merchant QRIS maksimal 100 karakter' });
+      if (providedApiKey.length > 512) return res.status(400).json({ error: 'API Key Qrisly tidak valid' });
+      if (!Buffer.isBuffer(file) || file.length === 0) {
+        return res.status(400).json({ error: 'File gambar QRIS tidak diterima. Pilih ulang file PNG atau JPG.' });
+      }
+      if (file.length > 5 * 1024 * 1024) {
+        return res.status(400).json({ error: 'Ukuran gambar QRIS maksimal 5 MB' });
+      }
+
+      const isPng = file.length >= 8 &&
+        file.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      const isJpeg = file.length >= 4 &&
+        file[0] === 0xff && file[1] === 0xd8 && file[2] === 0xff &&
+        file.lastIndexOf(Buffer.from([0xff, 0xd9])) >= 2;
+      if (!isPng && !isJpeg) {
+        return res.status(400).json({ error: 'Format gambar tidak dikenali. Gunakan file PNG atau JPG asli; WebP, PDF, dan screenshot format lain belum didukung.' });
+      }
+      const imageType = isPng ? 'image/png' : 'image/jpeg';
+      if (contentType && contentType !== 'application/octet-stream' &&
+          contentType !== imageType && contentType !== (isJpeg ? 'image/jpg' : imageType)) {
+        return res.status(400).json({ error: 'Tipe file tidak cocok dengan isi gambar. Pilih ulang file PNG/JPG asli, jangan hanya mengganti ekstensi.' });
+      }
+
+      try {
+        const saved = await paymentGatewayCredentials();
+        const apiKey = providedApiKey.trim() ||
+          (saved.provider === 'qrisly' ? saved.qrislyApiKey || '' : '');
+        if (!apiKey) return res.status(400).json({ error: 'Isi API Key Qrisly sebelum mengunggah QRIS' });
+        const endpoint = isProd
+          ? 'https://api.collaborator.komerce.id/user/api/v1/qrisly/upload-qris'
+          : 'https://api-sandbox.collaborator.komerce.id/user/api/v1/qrisly/upload-qris';
+        const form = new FormData();
+        form.append('name', name);
+        form.append('qris_image', new Blob([new Uint8Array(file)], { type: imageType }), isPng ? 'qris.png' : 'qris.jpg');
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'X-API-Key': apiKey, Accept: 'application/json' },
+          body: form,
+          signal: AbortSignal.timeout(20000),
+        });
+        const payload: unknown = await response.json();
+        const payloadRecord = isRecord(payload) ? payload : undefined;
+        const data = payloadRecord?.data;
+        const nestedData = isRecord(data) && isRecord(data.data) ? data.data : undefined;
+        const qrisId = [
+          isRecord(data) ? data.qris_id : undefined,
+          isRecord(data) ? data.id : undefined,
+          isRecord(nestedData) ? nestedData.qris_id : undefined,
+          isRecord(nestedData) ? nestedData.id : undefined,
+          payloadRecord?.qris_id,
+        ].find(value =>
+          (typeof value === 'string' || typeof value === 'number') && String(value).trim()
+        );
+        if (
+          !response.ok ||
+          !payloadRecord ||
+          (payloadRecord.success === false) ||
+          (typeof qrisId !== 'string' && typeof qrisId !== 'number') ||
+          !String(qrisId).trim()
+        ) {
+          const nestedMeta = payloadRecord && isRecord(payloadRecord.meta) ? payloadRecord.meta : undefined;
+          const rawMessage = payloadRecord
+            ? payloadRecord.message ?? payloadRecord.error ?? nestedMeta?.message
+            : undefined;
+          const message = typeof rawMessage === 'string' && rawMessage.trim()
+            ? rawMessage.trim().slice(0, 500)
+            : `HTTP ${response.status}`;
+          const conflictHint = response.status === 409
+            ? ' Qrisly tidak menjelaskan kode 409 ini di dokumentasinya. Mungkin QRIS sudah pernah terdaftar: jangan upload ulang, gunakan QRIS ID lama pada kolom QRIS ID. Jika belum punya ID tersebut, minta Qrisly menunjukkan ID QRIS yang sudah terdaftar.'
+            : '';
+          return res.status(502).json({ error: `Qrisly gagal mengunggah QRIS: ${message}${conflictHint}` });
+        }
+        return res.json({ qrisId: String(qrisId).trim(), name });
+      } catch (error) {
+        return res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  );
 
   app.get('/api/payment/config', requireAdminSession, async (_req, res) => {
     try {
@@ -3686,6 +4297,8 @@ async function startServer() {
         tripayApiKeyConfigured: Boolean(config.tripayApiKey),
         tripayPrivateKeyConfigured: Boolean(config.tripayPrivateKey),
         tripayPaymentMethod: config.tripayPaymentMethod || 'QRIS',
+        qrislyApiKeyConfigured: Boolean(config.qrislyApiKey),
+        qrislyQrisId: config.qrislyQrisId || '',
         appUrlConfigured: Boolean(appOrigin),
         webhookUrlConfigured: Boolean(publicUrls.parsedWebhookUrl),
         appUrl: publicUrls.appUrl,
@@ -3702,7 +4315,7 @@ async function startServer() {
   app.put('/api/payment/config', requireAdminSession, async (req, res) => {
     const { provider, isProduction } = req.body || {};
     if (
-      !['none', 'midtrans', 'doku', 'xendit', 'tripay'].includes(provider) ||
+      !['none', 'midtrans', 'doku', 'xendit', 'tripay', 'qrisly'].includes(provider) ||
       typeof isProduction !== 'boolean'
     ) {
       return res.status(400).json({ error: 'Pilih satu gateway otomatis valid atau nonaktifkan gateway otomatis' });
@@ -3786,6 +4399,18 @@ async function startServer() {
         config.tripayApiKey = tripayApiKey.trim();
         config.tripayPrivateKey = tripayPrivateKey.trim();
         config.tripayPaymentMethod = tripayPaymentMethod;
+      } else if (provider === 'qrisly') {
+        const qrislyApiKey = req.body.qrislyApiKey || (previous.provider === provider ? previous.qrislyApiKey : '');
+        const qrislyQrisId = req.body.qrislyQrisId || (previous.provider === provider ? previous.qrislyQrisId : '');
+        if (
+          typeof qrislyApiKey !== 'string' || qrislyApiKey.length > 512 || !qrislyApiKey.trim() ||
+          typeof qrislyQrisId !== 'string' || qrislyQrisId.length > 128 ||
+          !/^[A-Za-z0-9_-]{1,128}$/.test(qrislyQrisId.trim())
+        ) {
+          return res.status(400).json({ error: 'API Key dan QRIS ID Qrisly wajib valid' });
+        }
+        config.qrislyApiKey = qrislyApiKey.trim();
+        config.qrislyQrisId = qrislyQrisId.trim();
       }
       const credentialsChanged =
         config.provider !== previous.provider ||
@@ -3798,13 +4423,15 @@ async function startServer() {
         config.tripayMerchantCode !== previous.tripayMerchantCode ||
         config.tripayApiKey !== previous.tripayApiKey ||
         config.tripayPrivateKey !== previous.tripayPrivateKey ||
-        config.tripayPaymentMethod !== previous.tripayPaymentMethod;
+        config.tripayPaymentMethod !== previous.tripayPaymentMethod ||
+        config.qrislyApiKey !== previous.qrislyApiKey ||
+        config.qrislyQrisId !== previous.qrislyQrisId;
       if (credentialsChanged && previous.provider !== 'none') {
         const stored = await getAppDataDb();
         const pendingOrders = (stored.data.transactions || []).filter(transaction =>
           transaction.paymentMethod === previous.provider &&
           transaction.status === 'pending' &&
-          Boolean(transaction.paymentUrl)
+          Boolean(transaction.paymentUrl || transaction.providerTransactionId)
         );
         if (pendingOrders.length) {
           return res.status(409).json({
@@ -3833,6 +4460,8 @@ async function startServer() {
         tripayApiKeyConfigured: Boolean(config.tripayApiKey),
         tripayPrivateKeyConfigured: Boolean(config.tripayPrivateKey),
         tripayPaymentMethod: config.tripayPaymentMethod || 'QRIS',
+        qrislyApiKeyConfigured: Boolean(config.qrislyApiKey),
+        qrislyQrisId: config.qrislyQrisId || '',
         appUrlConfigured: Boolean(publicUrls.parsedAppUrl),
         webhookUrlConfigured: Boolean(publicUrls.parsedWebhookUrl),
         appUrl: publicUrls.appUrl,
@@ -3879,13 +4508,13 @@ async function startServer() {
     }
   });
 
-  app.post('/api/admin/payment-requests/:orderId/:action', requireAdminSession, async (req, res) => {
-    const { orderId, action } = req.params;
-    if (action !== 'approve' && action !== 'reject') {
-      return res.status(400).json({ error: 'Aksi persetujuan pembayaran tidak valid' });
-    }
+  async function processPaymentDecision(
+    orderId: string,
+    action: 'approve' | 'reject',
+    channel: string = 'manual-admin-approved'
+  ): Promise<{ success: boolean; message?: string }> {
     if (voucherApprovalsInProgress.has(orderId)) {
-      return res.status(409).json({ error: 'Pesanan sedang diproses' });
+      return { success: false, message: 'Pesanan sedang diproses' };
     }
     voucherApprovalsInProgress.add(orderId);
     try {
@@ -3893,11 +4522,13 @@ async function startServer() {
       const transaction = (stored.data.transactions || []).find(item =>
         item.orderId === orderId && item.paymentMethod === 'manual' && item.status === 'pending'
       );
-      if (!transaction) return res.status(404).json({ error: 'Permintaan pembayaran tidak ditemukan atau sudah diproses' });
+      if (!transaction) return { success: false, message: 'Permintaan pembayaran tidak ditemukan atau sudah diproses' };
       if (action === 'approve') {
         if (transaction.orderType === 'voucher') {
-          await activateAndSettleVoucher(orderId, 'manual-admin-approved');
-        } else await approveInvoicePayment(orderId, 'manual-admin-approved');
+          await activateAndSettleVoucher(orderId, channel);
+        } else {
+          await approveInvoicePayment(orderId, channel);
+        }
       } else {
         const updatedTransactions = (stored.data.transactions || []).map(item =>
           item.orderId === orderId ? { ...item, status: 'canceled' as const } : item
@@ -3912,11 +4543,40 @@ async function startServer() {
           updatedVouchers
         );
       }
-      res.json({ status: action === 'approve' ? 'settlement' : 'canceled' });
+      return { success: true };
     } catch (error) {
-      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+      return { success: false, message: error instanceof Error ? error.message : String(error) };
     } finally {
       voucherApprovalsInProgress.delete(orderId);
+    }
+  }
+
+  telegramBot.setActionHandler(async (orderId, _orderType, action, adminInfo) => {
+    return await processPaymentDecision(orderId, action, `manual-telegram:${adminInfo}`);
+  });
+
+  app.post('/api/admin/payment-requests/:orderId/:action', requireAdminSession, async (req, res) => {
+    const { orderId, action } = req.params;
+    if (action !== 'approve' && action !== 'reject') {
+      return res.status(400).json({ error: 'Aksi persetujuan pembayaran tidak valid' });
+    }
+    const result = await processPaymentDecision(orderId, action, 'manual-admin-approved');
+    if (!result.success) {
+      return res.status(result.message === 'Pesanan sedang diproses' ? 409 : 502).json({ error: result.message });
+    }
+    res.json({ status: action === 'approve' ? 'settlement' : 'canceled' });
+  });
+
+  app.post('/api/admin/telegram/test', requireAdminSession, async (req, res) => {
+    const { token, chatId } = req.body || {};
+    try {
+      const result = await telegramBot.testConnection(
+        typeof token === 'string' && token.trim() ? token.trim() : undefined,
+        typeof chatId === 'string' && chatId.trim() ? chatId.trim() : undefined
+      );
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 
@@ -4028,6 +4688,20 @@ async function startServer() {
       delete settingsInput.paymentServerKey;
       delete settingsInput.paymentWebhookSecret;
       const updated = await saveAppSettingsDb(settingsInput);
+      if (
+        settingsInput.telegramBotToken !== undefined ||
+        settingsInput.telegramChatId !== undefined ||
+        settingsInput.telegramEnabled !== undefined
+      ) {
+        telegramBot.restartPolling({
+          botToken: updated.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '',
+          allowedChatIds: (updated.telegramChatId || process.env.TELEGRAM_CHAT_ID || '')
+            .split(',')
+            .map(id => id.trim())
+            .filter(Boolean),
+          enabled: updated.telegramEnabled ?? false,
+        });
+      }
       res.json({ status: 'success', settings: { ...updated, mikrotikPass: '', openwaApiKey: '', paymentServerKey: '', paymentWebhookSecret: '' } });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -4916,6 +5590,37 @@ async function startServer() {
               ? 'pending'
               : body.status;
       payment_type = typeof body.payment_method === 'string' ? body.payment_method : 'tripay';
+    } else if (gateway.provider === 'qrisly') {
+      if (!gateway.qrislyApiKey) {
+        return res.status(503).json({ error: 'Qrisly API Key tidak dikonfigurasi' });
+      }
+      const body = req.body || {};
+      const data = isRecord(body) ? body.data : undefined;
+      const historyId = isRecord(data) ? data.qris_history_id : undefined;
+      if (
+        !isRecord(body) ||
+        typeof body.event !== 'string' ||
+        (typeof historyId !== 'string' && typeof historyId !== 'number')
+      ) {
+        return res.status(400).json({ error: 'Payload webhook Qrisly tidak valid' });
+      }
+      if (body.event !== 'payment.success' && body.event !== 'payment.expired') {
+        return res.json({ status: 'ignored' });
+      }
+      try {
+        const stored = await getAppDataDb();
+        const transaction = (stored.data.transactions || []).find(item =>
+          item.paymentMethod === 'qrisly' &&
+          item.providerTransactionId === String(historyId)
+        );
+        if (!transaction) return res.json({ status: 'ignored' });
+        const updated = await refreshQrislyPayment(transaction.orderId);
+        return res.json({ status: updated.status });
+      } catch (error) {
+        return res.status(502).json({
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     } else {
       return res.status(503).json({ error: 'Tidak ada gateway pembayaran otomatis yang aktif' });
     }
@@ -5539,15 +6244,30 @@ async function startServer() {
     });
   }
 
-  const httpServer = app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = app.listen(PORT, '0.0.0.0', async () => {
     console.log(`🚀 NetFlow MikroTik Billing Server running at http://0.0.0.0:${PORT}`);
     console.log(`📦 Persistent SQLite database loaded at data/billing.sqlite`);
     console.log('📱 WhatsApp notifications use the externally configured provider REST API');
+    try {
+      const initialSettings = await getAppSettingsDb();
+      telegramBot.updateConfig({
+        botToken: initialSettings.telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '',
+        allowedChatIds: (initialSettings.telegramChatId || process.env.TELEGRAM_CHAT_ID || '')
+          .split(',')
+          .map(id => id.trim())
+          .filter(Boolean),
+        enabled: initialSettings.telegramEnabled ?? false,
+      });
+      telegramBot.startPolling();
+    } catch (e) {
+      console.error('[Telegram] Inisialisasi bot gagal:', e);
+    }
   });
   let shuttingDown = false;
   const shutdown = () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    telegramBot.stopPolling();
     httpServer.close(() => {
       void closeRouterApiSessions()
         .then(() => process.exit(0))

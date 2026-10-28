@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, CreditCard, ExternalLink, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, CreditCard, ExternalLink, Pencil, Plus, Trash2, Upload, X } from 'lucide-react';
 import { useToast } from '../ui/toast';
 
-type GatewayProvider = 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay';
+type GatewayProvider = 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay' | 'qrisly';
 type GatewayChoice = 'midtrans' | 'doku' | 'custom';
 
 interface PaymentEnvironment {
@@ -18,6 +18,8 @@ interface PaymentEnvironment {
   tripayApiKeyConfigured: boolean;
   tripayPrivateKeyConfigured: boolean;
   tripayPaymentMethod: string;
+  qrislyApiKeyConfigured: boolean;
+  qrislyQrisId: string;
   appUrl: string;
   appUrlManagedByEnvironment: boolean;
   webhookUrlManagedByEnvironment: boolean;
@@ -53,7 +55,7 @@ export const PaymentGatewayTab: React.FC = () => {
   const [environment, setEnvironment] = useState<PaymentEnvironment | null>(null);
   const [choice, setChoice] = useState<GatewayChoice>('midtrans');
   const [disableAutomatic, setDisableAutomatic] = useState(false);
-  const [customProvider, setCustomProvider] = useState<'xendit' | 'tripay'>('xendit');
+  const [customProvider, setCustomProvider] = useState<'xendit' | 'tripay' | 'qrisly'>('xendit');
   const [isProduction, setIsProduction] = useState(false);
   const [serverKey, setServerKey] = useState('');
   const [clientKey, setClientKey] = useState('');
@@ -65,6 +67,11 @@ export const PaymentGatewayTab: React.FC = () => {
   const [tripayApiKey, setTripayApiKey] = useState('');
   const [tripayPrivateKey, setTripayPrivateKey] = useState('');
   const [tripayPaymentMethod, setTripayPaymentMethod] = useState('QRIS');
+  const [qrislyApiKey, setQrislyApiKey] = useState('');
+  const [qrislyQrisId, setQrislyQrisId] = useState('');
+  const [qrislyName, setQrislyName] = useState('');
+  const [qrislyImage, setQrislyImage] = useState<File | null>(null);
+  const [uploadingQrisly, setUploadingQrisly] = useState(false);
   const [appUrl, setAppUrl] = useState('');
   const [webhookUrl, setWebhookUrl] = useState('');
   const [error, setError] = useState('');
@@ -86,12 +93,13 @@ export const PaymentGatewayTab: React.FC = () => {
         setEnvironment(payment);
         setAppUrl(payment.appUrl || '');
         setWebhookUrl(payment.webhookUrl || '');
-        setChoice(payment.provider === 'doku' ? 'doku' : payment.provider === 'xendit' || payment.provider === 'tripay' ? 'custom' : 'midtrans');
+        setChoice(payment.provider === 'doku' ? 'doku' : payment.provider === 'xendit' || payment.provider === 'tripay' || payment.provider === 'qrisly' ? 'custom' : 'midtrans');
         setDisableAutomatic(payment.provider === 'none');
-        if (payment.provider === 'xendit' || payment.provider === 'tripay') setCustomProvider(payment.provider);
+        if (payment.provider === 'xendit' || payment.provider === 'tripay' || payment.provider === 'qrisly') setCustomProvider(payment.provider);
         setIsProduction(Boolean(payment.isProduction));
         setTripayMerchantCode(payment.tripayMerchantCode || '');
         setTripayPaymentMethod(payment.tripayPaymentMethod || 'QRIS');
+        setQrislyQrisId(payment.qrislyQrisId || '');
         if (Array.isArray(manual.manualPaymentMethods)) {
           setMethods(manual.manualPaymentMethods.map((method: ManualMethod) => ({
             ...method,
@@ -110,6 +118,48 @@ export const PaymentGatewayTab: React.FC = () => {
   const selectedProvider: GatewayProvider = disableAutomatic
     ? 'none'
     : choice === 'custom' ? customProvider : choice;
+
+  const uploadQrisly = async () => {
+    if (!qrislyImage || !qrislyName.trim()) {
+      setError('Pilih gambar QRIS dan isi nama merchant sebelum upload.');
+      return;
+    }
+    if (qrislyImage.size > 5 * 1024 * 1024) {
+      setError('Ukuran gambar QRIS maksimal 5 MB.');
+      return;
+    }
+    setUploadingQrisly(true);
+    setError('');
+    try {
+      const response = await fetch('/api/payment/qrisly/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-Qrisly-Name': encodeURIComponent(qrislyName.trim()),
+          ...(qrislyApiKey ? { 'X-Qrisly-Api-Key': qrislyApiKey } : {}),
+        },
+        body: qrislyImage,
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      const uploadedQrisId = result.qrisId ?? result.qris_id ?? result.data?.qris_id ?? result.data?.id;
+      if (
+        (typeof uploadedQrisId !== 'string' && typeof uploadedQrisId !== 'number') ||
+        !String(uploadedQrisId).trim()
+      ) {
+        throw new Error('Respons upload Qrisly tidak berisi QRIS ID yang valid.');
+      }
+      setQrislyQrisId(String(uploadedQrisId).trim());
+      setQrislyImage(null);
+      toast('QRIS berhasil diunggah', 'success', `QRIS ID ${String(uploadedQrisId).trim()} sudah dimasukkan.`);
+    } catch (uploadError) {
+      const message = uploadError instanceof Error ? uploadError.message : String(uploadError);
+      setError(message);
+      toast('Gagal mengunggah QRIS', 'error', message);
+    } finally {
+      setUploadingQrisly(false);
+    }
+  };
 
   const saveGateway = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -133,6 +183,7 @@ export const PaymentGatewayTab: React.FC = () => {
             tripayPrivateKey,
             tripayPaymentMethod,
           } : {}),
+          ...(selectedProvider === 'qrisly' ? { qrislyApiKey, qrislyQrisId } : {}),
         }),
       });
       const result = await response.json();
@@ -148,6 +199,7 @@ export const PaymentGatewayTab: React.FC = () => {
       setXenditCallbackToken('');
       setTripayApiKey('');
       setTripayPrivateKey('');
+      setQrislyApiKey('');
       toast(
         selectedProvider === 'none' ? 'Gateway otomatis dinonaktifkan' : 'Gateway otomatis berhasil disimpan',
         'success',
@@ -302,7 +354,7 @@ export const PaymentGatewayTab: React.FC = () => {
             {([
               { id: 'midtrans', title: 'Midtrans', tag: 'OPSI 1', description: 'Snap Pop-up & Core API. Cukup masukkan Server Key; Client Key opsional.' },
               { id: 'doku', title: 'DOKU Payment', tag: 'OPSI 2', description: 'DOKU Checkout. Cukup masukkan Client ID dan Secret Key.' },
-              { id: 'custom', title: 'Custom Gateway', tag: 'OPSI 3', description: 'Adapter gateway tambahan seperti Xendit dan Tripay dengan kredensial khusus provider.' },
+              { id: 'custom', title: 'Custom Gateway', tag: 'OPSI 3', description: 'Adapter Xendit, Tripay, atau Qrisly dengan kredensial khusus provider.' },
             ] as const).map(card => {
               const selected = !disableAutomatic && choice === card.id;
               return (
@@ -364,9 +416,10 @@ export const PaymentGatewayTab: React.FC = () => {
               {choice === 'custom' && (
                 <label className="block max-w-md text-xs font-semibold text-slate-300">
                   Provider Custom
-                  <select value={customProvider} onChange={event => setCustomProvider(event.target.value as 'xendit' | 'tripay')} className={inputClass}>
+                  <select value={customProvider} onChange={event => setCustomProvider(event.target.value as 'xendit' | 'tripay' | 'qrisly')} className={inputClass}>
                     <option value="xendit">Xendit</option>
                     <option value="tripay">Tripay</option>
+                    <option value="qrisly">Qrisly.id</option>
                   </select>
                 </label>
               )}
@@ -417,13 +470,55 @@ export const PaymentGatewayTab: React.FC = () => {
                   </label>
                 </div>
               )}
+              {selectedProvider === 'qrisly' && (
+                <div className="space-y-3">
+                  <p className="text-xs leading-relaxed text-slate-400">
+                    Unggah QRIS merchant sekali di sini. SmartBilling akan mengambil QRIS ID dari respons Qrisly dan memasukkannya otomatis. QRIS yang diunggah dipakai ulang; biaya dikenakan saat membuat QR pembayaran.
+                  </p>
+                  <a href="https://rajaongkir.com/docs/qrisly/getting-started/getting-started" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-indigo-300">
+                    Dokumentasi integrasi Qrisly <ExternalLink className="h-3 w-3" />
+                  </a>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="text-xs text-slate-300">Qrisly API Key
+                      <input type="password" autoComplete="new-password" value={qrislyApiKey} onChange={event => setQrislyApiKey(event.target.value)} placeholder={environment?.qrislyApiKeyConfigured ? 'Kredensial tersimpan' : 'API Key Qrisly'} className={inputClass} />
+                    </label>
+                    <label className="text-xs text-slate-300">QRIS ID
+                      <input type="text" autoComplete="off" value={qrislyQrisId} onChange={event => setQrislyQrisId(event.target.value)} placeholder="ID hasil upload QRIS" className={inputClass} />
+                    </label>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="text-xs text-slate-300">Nama merchant QRIS
+                      <input type="text" maxLength={100} value={qrislyName} onChange={event => setQrislyName(event.target.value)} placeholder="Nama merchant" className={inputClass} />
+                    </label>
+                    <label className="text-xs text-slate-300">Gambar QRIS (PNG/JPG, maks. 5 MB)
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg"
+                        onChange={event => setQrislyImage(event.target.files?.[0] || null)}
+                        className={`${inputClass} file:mr-3 file:rounded-md file:border-0 file:bg-slate-800 file:px-2 file:py-1 file:text-xs`}
+                      />
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void uploadQrisly()}
+                    disabled={uploadingQrisly || !qrislyName.trim() || !qrislyImage}
+                    className="inline-flex items-center gap-2 rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-3 py-2 text-xs font-bold text-indigo-200 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Upload className="h-4 w-4" />
+                    {uploadingQrisly ? 'Mengunggah...' : 'Upload QRIS & Ambil ID'}
+                  </button>
+                </div>
+              )}
             </>
           )}
 
           <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/70 p-4">
             <div>
               <h3 className="text-xs font-bold text-white">URL Portal & Webhook Pembayaran</h3>
-              <p className="mt-1 text-[11px] text-slate-400">APP_URL dipakai untuk tautan dan redirect pelanggan. Webhook harus menunjuk ke endpoint API SmartBilling.</p>
+              <p className="mt-1 text-[11px] text-slate-400">
+                APP_URL dan webhook diperlukan gateway checkout lainnya. Qrisly menggunakan QR dinamis dan verifikasi status langsung, jadi keduanya tidak wajib untuk Qrisly.
+              </p>
             </div>
             <label className="block text-xs text-slate-300">
               APP_URL — origin Portal publik
@@ -463,15 +558,16 @@ export const PaymentGatewayTab: React.FC = () => {
               {selectedProvider === 'doku' && <a href="https://dashboard.doku.com/" target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-indigo-300">Dashboard DOKU <ExternalLink className="h-3 w-3" /></a>}
               {selectedProvider === 'xendit' && <p className="mt-2 text-slate-400">Atur callback ini pada Xendit dan salin Verification Token ke kolom konfigurasi.</p>}
               {selectedProvider === 'tripay' && <p className="mt-2 text-slate-400">Daftarkan URL ini sebagai Callback URL pada dashboard Tripay.</p>}
+              {selectedProvider === 'qrisly' && <p className="mt-2 text-slate-400">Daftarkan URL ini pada menu Webhook → QRISLY di dashboard Qrisly. Status tetap diverifikasi langsung ke API Qrisly.</p>}
             </div>
           )}
 
-          {(!environment?.appUrlConfigured && !disableAutomatic) && (
+          {(!environment?.appUrlConfigured && !disableAutomatic && selectedProvider !== 'qrisly') && (
             <p className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-950/30 p-3 text-xs text-amber-100">
               <AlertCircle className="h-4 w-4 shrink-0" /> APP_URL belum valid. Isi URL Portal HTTPS di atas atau atur APP_URL di environment server.
             </p>
           )}
-          {environment?.appUrlConfigured && !environment.webhookUrlConfigured && !disableAutomatic && (
+          {environment?.appUrlConfigured && !environment.webhookUrlConfigured && !disableAutomatic && selectedProvider !== 'qrisly' && (
             <p className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-950/30 p-3 text-xs text-amber-100">
               <AlertCircle className="h-4 w-4 shrink-0" /> PAYMENT_WEBHOOK_URL belum valid. Isi endpoint publik SmartBilling di atas. Gateway otomatis belum aktif sampai webhook dikonfigurasi.
             </p>
