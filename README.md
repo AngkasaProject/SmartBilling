@@ -296,7 +296,7 @@ Status isolir billing tidak otomatis mengubah akses MikroTik. Saat mengubah stat
 
 Menu **Pembayaran** mengatur metode manual dan addon gateway otomatis secara terpisah:
 
-- **Pembayaran manual** selalu berdiri sendiri. Konfigurasikan satu atau lebih metode (misalnya transfer bank, dompet digital, atau QRIS statis) beserta instruksinya. Permintaan tetap menunggu verifikasi operator tanpa kedaluwarsa otomatis; layanan dan voucher baru aktif setelah pembayaran disetujui.
+- **Pembayaran manual** selalu berdiri sendiri. Konfigurasikan rekening bank, e-wallet, QRIS statis (unggah gambar PNG/JPG), atau metode lain. QRIS ditampilkan di Portal saat pelanggan memilih metode dan setelah membuat pesanan; pembayaran tetap menunggu verifikasi operator, bukan terdeteksi otomatis. Pelanggan dapat mengganti metode pembayaran yang masih menunggu untuk invoice maupun voucher; kode bayar lama dibatalkan sebelum pesanan baru dibuat. Jangan ganti metode setelah pembayaran dilakukan. Gambar QRIS disimpan di `data/payment-methods`; sertakan folder tersebut dalam cadangan data aplikasi. Layanan dan voucher baru aktif setelah pembayaran disetujui.
 - Kode unik nominal invoice dapat diaktifkan atau dinonaktifkan dari bagian Pembayaran Manual. Default-nya nonaktif; pengaturan berlaku untuk invoice baru dan tidak mengubah tagihan yang sudah dibuat.
 - **Gateway otomatis (addon)**: aktifkan maksimal satu provider, atau nonaktifkan semua gateway otomatis.
   - **Midtrans** — Server Key wajib, Client Key opsional; pilih sandbox atau production.

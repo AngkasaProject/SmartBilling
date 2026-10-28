@@ -18,6 +18,7 @@ import {
   Ticket,
 } from "lucide-react";
 import { QrCode } from "./common/QrCode";
+import { QrisImage } from "./common/QrisImage";
 
 interface PortalStatus {
   connected: boolean;
@@ -45,14 +46,17 @@ interface PortalInvoice {
   latestPaymentStatus?: "pending" | "settlement" | "expired" | "canceled";
   latestPaymentMethod?: string;
   latestPaymentChannel?: string;
+  latestManualOrderId?: string;
 }
 
 interface PaymentMethod {
   id: string;
   name: string;
+  category?: 'bank' | 'ewallet' | 'qris' | 'other';
   accountHolder?: string;
   serviceName?: string;
   accountNumber?: string;
+  qrisImageUrl?: string;
   instructions: string;
 }
 
@@ -83,6 +87,7 @@ interface VoucherOrder {
   message?: string;
   qrString?: string;
   amount?: number;
+  method?: PaymentMethod;
 }
 
 interface VoucherOrderStatus {
@@ -129,8 +134,10 @@ interface VoucherLookupData {
   manualMethod?: {
     id: string;
     name: string;
+    category?: 'bank' | 'ewallet' | 'qris' | 'other';
     accountHolder: string;
     accountNumber: string;
+    qrisImageUrl?: string;
     instructions: string;
   };
   operatorUrl?: string;
@@ -289,12 +296,21 @@ function PortalPaymentDialog({
   const [result, setResult] = useState<PaymentResult | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingManualCanceled, setPendingManualCanceled] = useState(false);
+  const hasAlternativeMethod = Boolean(
+    options?.automaticAvailable ||
+    options?.manualMethods.some(method => method.id !== invoice.latestPaymentChannel)
+  );
 
   useEffect(() => {
     if (!options) return;
     setMode(options.automaticAvailable ? "automatic" : "manual");
-    setMethodId(options.manualMethods[0]?.id || "");
-  }, [options]);
+    const alternative = options.manualMethods.find(method =>
+      method.id !== invoice.latestPaymentChannel
+    );
+    setMethodId(alternative?.id || options.manualMethods[0]?.id || "");
+    setPendingManualCanceled(false);
+  }, [options, invoice.id, invoice.latestManualOrderId]);
 
   useEffect(() => {
     if (!result?.qrString || !result.orderId || result.status !== "pending") return;
@@ -334,6 +350,22 @@ function PortalPaymentDialog({
   }, [result?.qrString, result?.orderId, result?.status, invoice.id, lookupValue, portalToken]);
 
   const submit = async () => {
+    if (
+      invoice.latestPaymentStatus === "pending" &&
+      invoice.latestPaymentMethod === "manual" &&
+      !pendingManualCanceled
+    ) {
+      setError("Batalkan pesanan yang masih menunggu terlebih dahulu sebelum membuat pembayaran baru.");
+      return;
+    }
+    if (
+      pendingManualCanceled &&
+      mode === "manual" &&
+      methodId === invoice.latestPaymentChannel
+    ) {
+      setError("Pilih metode pembayaran yang berbeda dari pesanan sebelumnya.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -355,6 +387,35 @@ function PortalPaymentDialog({
           ? requestError.message
           : "Pembayaran belum dapat diproses",
       );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelPendingInvoicePayment = async () => {
+    if (!invoice.latestManualOrderId || busy) return;
+    const confirmed = window.confirm(
+      "Pesanan manual dan kode bayar yang lama akan dibatalkan. Pastikan Anda belum melakukan pembayaran sebelum melanjutkan."
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiRequest<{ status: string }>("/api/portal/payment/manual/cancel-pending", {
+        method: "POST",
+        body: jsonBody({
+          orderId: invoice.latestManualOrderId,
+          invoiceId: invoice.id,
+          ...(lookupValue ? { lookupValue } : {}),
+          ...(portalToken ? { portalToken } : {}),
+        }),
+      });
+      setPendingManualCanceled(true);
+      setMode(options?.automaticAvailable ? "automatic" : "manual");
+    } catch (cancelError) {
+      setError(cancelError instanceof Error
+        ? cancelError.message
+        : "Pembayaran tertunda belum dapat dibatalkan. Muat ulang status tagihan.");
     } finally {
       setBusy(false);
     }
@@ -443,10 +504,19 @@ function PortalPaymentDialog({
               </p>
             </div>
             {result.method && (
-              <p className="mt-2 text-zinc-900">
-                <b>{result.method.name}</b> — {result.method.accountNumber} a.n.{" "}
-                {result.method.accountHolder || result.method.serviceName}
-              </p>
+              (result.method.category || 'bank') === 'qris' ? (
+                <div className="mt-3 flex flex-col items-center rounded-xl border border-zinc-200 bg-white p-4 text-center">
+                  <p className="mb-2 font-semibold text-zinc-900">Scan QRIS untuk membayar sesuai nominal tagihan</p>
+                  {result.method.qrisImageUrl && <QrisImage src={result.method.qrisImageUrl} alt={`QRIS ${result.method.name}`} className="h-64 w-full max-w-xs" />}
+                  {result.amount !== undefined && <p className="mt-2 font-bold text-zinc-800">{rupiah(result.amount)}</p>}
+                  {result.method.accountHolder && <p className="mt-2 text-xs text-zinc-500">Merchant: {result.method.accountHolder}</p>}
+                </div>
+              ) : (
+                <p className="mt-2 text-zinc-900">
+                  <b>{result.method.name}</b> — {result.method.accountNumber} a.n.{" "}
+                  {result.method.accountHolder || result.method.serviceName}
+                </p>
+              )
             )}
             {result.method?.instructions && (
               <p className="mt-2 whitespace-pre-wrap text-zinc-500 text-xs leading-relaxed">
@@ -478,6 +548,30 @@ function PortalPaymentDialog({
           </div>
         ) : (
           <>
+            {invoice.latestPaymentStatus === "pending" &&
+              invoice.latestPaymentMethod === "manual" &&
+              !pendingManualCanceled &&
+              hasAlternativeMethod && (
+                <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                  <p className="text-sm font-semibold text-amber-950">Pembayaran manual masih menunggu persetujuan</p>
+                  <p className="mt-1 text-xs leading-relaxed text-amber-900">
+                    Jika belum membayar dan ingin memakai metode lain, batalkan kode bayar sebelumnya terlebih dahulu. Jangan lanjutkan jika pembayaran sudah dilakukan.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void cancelPendingInvoicePayment()}
+                    disabled={busy || !invoice.latestManualOrderId}
+                    className="mt-3 rounded-lg bg-amber-900 px-4 py-2 text-xs font-bold text-white hover:bg-amber-800 disabled:opacity-50"
+                  >
+                    {busy ? "Membatalkan..." : "Ganti metode bayar"}
+                  </button>
+                </div>
+              )}
+            {pendingManualCanceled && (
+              <p className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+                Kode bayar lama dibatalkan. Pilih metode lain untuk membuat kode bayar baru.
+              </p>
+            )}
             <div className="space-y-3">
               {options?.automaticAvailable && (
                 <label
@@ -510,13 +604,29 @@ function PortalPaymentDialog({
                   />
                   <span className="flex-1">
                     <b className="block text-sm text-zinc-900">{method.name}</b>
-                    <span className="block text-xs text-zinc-500 mt-0.5">
-                      {method.accountNumber} a.n.{" "}
-                      {method.accountHolder || method.serviceName}
-                    </span>
+                    {(method.category || 'bank') === 'qris' ? (
+                      <span className="block text-xs text-zinc-500 mt-0.5">
+                        QRIS statis{method.accountHolder ? ` · ${method.accountHolder}` : ''}
+                      </span>
+                    ) : (
+                      <span className="block text-xs text-zinc-500 mt-0.5">
+                        {method.accountNumber} a.n. {method.accountHolder || method.serviceName}
+                      </span>
+                    )}
                   </span>
                 </label>
               ))}
+              {mode === "manual" && options?.manualMethods.find(method => method.id === methodId)?.qrisImageUrl && (
+                <div className="flex flex-col items-center rounded-xl border border-zinc-200 bg-white p-4 text-center">
+                  <p className="mb-2 text-sm font-semibold text-zinc-900">QRIS statis — scan dan bayar sesuai nominal tagihan</p>
+                  <p className="mb-3 text-sm font-bold text-zinc-800">{rupiah(invoice.amount)}</p>
+                  <QrisImage
+                    src={options.manualMethods.find(method => method.id === methodId)?.qrisImageUrl || ''}
+                    alt={`QRIS ${options.manualMethods.find(method => method.id === methodId)?.name || ''}`}
+                    className="h-56 w-full max-w-xs"
+                  />
+                </div>
+              )}
               {mode === "manual" &&
                 options?.manualMethods.find((method) => method.id === methodId)
                   ?.instructions && (
@@ -541,7 +651,14 @@ function PortalPaymentDialog({
               type="button"
               className={`${buttonClass} mt-6 w-full`}
               onClick={() => void submit()}
-              disabled={busy || !options || (mode === "manual" && !methodId)}
+              disabled={
+                busy ||
+                !options ||
+                (mode === "manual" && !methodId) ||
+                (invoice.latestPaymentStatus === "pending" &&
+                  invoice.latestPaymentMethod === "manual" &&
+                  !pendingManualCanceled)
+              }
             >
               {busy ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -841,9 +958,17 @@ function PublicVoucherLookup({ onSwitchToBuy }: { onSwitchToBuy?: () => void } =
                 {result.manualMethod && (
                   <div className="mt-3 rounded-xl bg-white border border-amber-200 p-3.5 text-xs space-y-1">
                     <p className="font-bold text-zinc-900">Instruksi Transfer ({result.manualMethod.name}):</p>
-                    <p className="font-mono text-sm font-bold text-zinc-800">
-                      {result.manualMethod.accountNumber} <span className="font-normal font-sans text-zinc-500">(a.n {result.manualMethod.accountHolder})</span>
-                    </p>
+                    {(result.manualMethod.category || 'bank') === 'qris' ? (
+                      <div className="flex flex-col items-center py-2 text-center">
+                        <p className="mb-2 text-zinc-700">Scan QRIS statis dan bayar sesuai nominal pesanan.</p>
+                        {result.manualMethod.qrisImageUrl && <QrisImage src={result.manualMethod.qrisImageUrl} alt={`QRIS ${result.manualMethod.name}`} className="h-64 w-full max-w-xs" />}
+                        {result.manualMethod.accountHolder && <p className="mt-2 text-zinc-500">Merchant: {result.manualMethod.accountHolder}</p>}
+                      </div>
+                    ) : (
+                      <p className="font-mono text-sm font-bold text-zinc-800">
+                        {result.manualMethod.accountNumber} <span className="font-normal font-sans text-zinc-500">(a.n {result.manualMethod.accountHolder})</span>
+                      </p>
+                    )}
                     {result.manualMethod.instructions && (
                       <p className="text-zinc-600 text-[11px] pt-1 border-t border-zinc-100">{result.manualMethod.instructions}</p>
                     )}
@@ -907,6 +1032,15 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
     useState<PaymentSelection | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [replacementMethodId, setReplacementMethodId] = useState("");
+  const replacementMethods = options?.manualMethods?.filter(method =>
+    method.id !== voucherResult?.paymentChannel
+  ) || [];
+
+  useEffect(() => {
+    const alternative = replacementMethods[0];
+    setReplacementMethodId(alternative?.id || "");
+  }, [options, voucherResult?.orderId, voucherResult?.paymentChannel]);
 
   // Fungsi pencarian (Hanya mengambil data, tanpa menyimpan ke sessionStorage)
   const lookup = useCallback(async (value: string) => {
@@ -965,6 +1099,39 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
     const value = lookupValue.trim();
     if (value) {
       void lookup(value);
+    }
+  };
+
+  const changeVoucherPaymentMethod = async () => {
+    if (!voucherResult || !replacementMethodId || busy) return;
+    const confirmed = window.confirm(
+      'Pesanan lama akan dibatalkan dan kode bayar baru dibuat. Pastikan Anda belum membayar QRIS/pesanan lama. Jika pembayaran lama sudah dilakukan, jangan ganti metode sebelum statusnya terverifikasi.'
+    );
+    if (!confirmed) return;
+
+    setBusy(true);
+    setError("");
+    try {
+      const replacement = await apiRequest<VoucherLookupData>(
+        "/api/portal/voucher-orders/change-method",
+        {
+          method: "POST",
+          body: jsonBody({
+            orderId: voucherResult.orderId,
+            phone: voucherResult.customerPhone,
+            methodId: replacementMethodId,
+          }),
+        },
+      );
+      setVoucherResult(replacement);
+      setLookupValue(replacement.paymentCode);
+      setError("");
+    } catch (changeError) {
+      setError(changeError instanceof Error
+        ? changeError.message
+        : "Metode pembayaran belum dapat diganti. Muat ulang status pesanan.");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -1071,7 +1238,11 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
                       </p>
                     )}
                   </div>
-                  {invoice.status === "unpaid" && (
+                  {invoice.status === "unpaid" &&
+                    (invoice.latestPaymentStatus !== "pending" ||
+                      invoice.latestPaymentMethod !== "manual" ||
+                      options?.automaticAvailable ||
+                      options?.manualMethods.some(method => method.id !== invoice.latestPaymentChannel)) && (
                     <button
                       type="button"
                       className={`${buttonClass} min-h-11 w-full shadow-none transition duration-200 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0 sm:w-auto`}
@@ -1079,7 +1250,7 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
                         setSelectedInvoice({ invoice, lookupValue })
                       }
                     >
-                      <CreditCard className="h-4 w-4" /> Bayar Tagihan
+                      <CreditCard className="h-4 w-4" /> {invoice.latestPaymentStatus === "pending" && invoice.latestPaymentMethod === "manual" ? "Ganti metode bayar" : "Bayar Tagihan"}
                     </button>
                   )}
                 </div>
@@ -1130,8 +1301,44 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
           {voucherResult.manualMethod && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-white p-4 text-xs">
               <p className="font-bold">Instruksi pembayaran: {voucherResult.manualMethod.name}</p>
-              <p>{voucherResult.manualMethod.accountNumber} a.n. {voucherResult.manualMethod.accountHolder}</p>
+              {(voucherResult.manualMethod.category || 'bank') === 'qris' ? (
+                <div className="mt-2 flex flex-col items-center text-center">
+                  <p>Scan QRIS statis dan bayar sesuai nominal pesanan.</p>
+                  {voucherResult.manualMethod.qrisImageUrl && <QrisImage src={voucherResult.manualMethod.qrisImageUrl} alt={`QRIS ${voucherResult.manualMethod.name}`} className="mt-2 h-64 w-full max-w-xs" />}
+                  {voucherResult.manualMethod.accountHolder && <p className="mt-2 text-zinc-500">Merchant: {voucherResult.manualMethod.accountHolder}</p>}
+                </div>
+              ) : (
+                <p>{voucherResult.manualMethod.accountNumber} a.n. {voucherResult.manualMethod.accountHolder}</p>
+              )}
               {voucherResult.manualMethod.instructions && <p className="mt-2 whitespace-pre-wrap">{voucherResult.manualMethod.instructions}</p>}
+            </div>
+          )}
+          {voucherResult.status === "pending" && voucherResult.paymentMethod === "manual" && replacementMethods.length > 0 && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p className="text-xs font-semibold text-amber-950">Belum membayar dengan metode ini?</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-amber-900">
+                Mengganti metode akan membatalkan pesanan dan kode bayar saat ini. Jangan lanjutkan jika Anda sudah melakukan pembayaran.
+              </p>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <select
+                  value={replacementMethodId}
+                  onChange={event => setReplacementMethodId(event.target.value)}
+                  disabled={busy}
+                  className="min-h-10 flex-1 rounded-lg border border-amber-300 bg-white px-3 text-xs text-zinc-900"
+                  aria-label="Pilih metode pembayaran pengganti"
+                >
+                  {replacementMethods
+                    .map(method => <option key={method.id} value={method.id}>{method.name}</option>)}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => void changeVoucherPaymentMethod()}
+                  disabled={busy || !replacementMethodId}
+                  className="min-h-10 rounded-lg bg-amber-900 px-4 text-xs font-bold text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {busy ? "Mengganti..." : "Ganti metode bayar"}
+                </button>
+              </div>
             </div>
           )}
           {voucherResult.operatorUrl && voucherResult.status === "pending" && (
@@ -2183,6 +2390,19 @@ export function PortalPage() {
                       </span>
                     </label>
                   ))}
+                  {voucherMode === "manual" && paymentOptions?.manualMethods.find(method => method.id === voucherMethodId)?.qrisImageUrl && (
+                    <div className="flex flex-col items-center rounded-xl border border-zinc-200 bg-white p-4 text-center">
+                      <p className="mb-2 text-xs font-semibold text-zinc-700">QRIS statis — scan dan bayar sesuai nominal paket</p>
+                      {hotspotProfiles.find(profile => profile.id === voucherProfileId) && (
+                        <p className="mb-3 text-sm font-bold text-zinc-800">{rupiah(hotspotProfiles.find(profile => profile.id === voucherProfileId)?.price ?? 0)}</p>
+                      )}
+                      <QrisImage
+                        src={paymentOptions.manualMethods.find(method => method.id === voucherMethodId)?.qrisImageUrl || ''}
+                        alt={`QRIS ${paymentOptions.manualMethods.find(method => method.id === voucherMethodId)?.name || ''}`}
+                        className="h-48 w-full max-w-xs"
+                      />
+                    </div>
+                  )}
                 </div>
                 <button
                   className={`${buttonClass} mt-6 min-h-12 w-full transition duration-200 hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0`}
@@ -2213,6 +2433,9 @@ export function PortalPage() {
                           ? "Menunggu pembayaran"
                           : voucherStatus?.status || voucherOrder.status}
                     </p>
+                    {voucherOrder.method && (voucherOrder.method.category || 'bank') === 'qris' && voucherOrder.amount !== undefined && (
+                      <p className="mt-2 font-bold">{rupiah(voucherOrder.amount)}</p>
+                    )}
                     {voucherOrder.qrString && (voucherStatus?.status || voucherOrder.status) === "pending" && (
                       <div className="mt-4 flex flex-col items-center rounded-xl border border-amber-200 bg-white p-4">
                         <p className="mb-3 text-xs font-semibold">Scan QRIS untuk membayar</p>
@@ -2225,6 +2448,15 @@ export function PortalPage() {
                             Berlaku sampai {new Date(voucherOrder.expiresAt).toLocaleString("id-ID")}
                           </p>
                         )}
+                      </div>
+                    )}
+                    {voucherOrder.method && (voucherOrder.method.category || 'bank') === 'qris' && (
+                      <div className="mt-4 flex flex-col items-center rounded-xl border border-amber-200 bg-white p-4 text-center">
+                        <p className="mb-2 text-xs font-semibold">Scan QRIS statis dan bayar sesuai nominal pesanan</p>
+                        {voucherOrder.amount !== undefined && <p className="mb-3 font-semibold">{rupiah(voucherOrder.amount)}</p>}
+                        {voucherOrder.method.qrisImageUrl && <QrisImage src={voucherOrder.method.qrisImageUrl} alt={`QRIS ${voucherOrder.method.name}`} className="h-64 w-full max-w-xs" />}
+                        {voucherOrder.method.accountHolder && <p className="mt-2 text-xs">Merchant: {voucherOrder.method.accountHolder}</p>}
+                        {voucherOrder.method.instructions && <p className="mt-2 whitespace-pre-wrap text-xs">{voucherOrder.method.instructions}</p>}
                       </div>
                     )}
                     {voucherOrder.message && (

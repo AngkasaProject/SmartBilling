@@ -170,9 +170,11 @@ export interface PaymentGatewayConfig {
 export interface ManualPaymentMethod {
   id: string;
   name: string;
+  category?: 'bank' | 'ewallet' | 'qris' | 'other';
   accountHolder?: string;
   serviceName?: string;
   accountNumber?: string;
+  qrisImageUrl?: string;
   instructions: string;
   enabled: boolean;
 }
@@ -211,6 +213,7 @@ export interface PaymentTransaction {
   customerEmail?: string;
   paymentMethod: string;
   paymentChannel: string;
+  manualMethod?: ManualPaymentMethod;
   status: 'pending' | 'settlement' | 'expired' | 'canceled';
   qrCodeUrl?: string;
   paymentUrl?: string;

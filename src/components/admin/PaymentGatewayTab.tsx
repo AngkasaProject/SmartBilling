@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle2, CreditCard, ExternalLink, Pencil, Plus, Trash2, Upload, X } from 'lucide-react';
 import { useToast } from '../ui/toast';
+import { QrisImage } from '../common/QrisImage';
 
 type GatewayProvider = 'none' | 'midtrans' | 'doku' | 'xendit' | 'tripay' | 'qrisly';
 type GatewayChoice = 'midtrans' | 'doku' | 'custom';
@@ -32,9 +33,11 @@ interface PaymentEnvironment {
 interface ManualMethod {
   id: string;
   name: string;
+  category: 'bank' | 'ewallet' | 'qris' | 'other';
   accountHolder?: string;
   serviceName?: string;
   accountNumber?: string;
+  qrisImageUrl?: string;
   instructions: string;
   enabled: boolean;
 }
@@ -43,9 +46,11 @@ const inputClass = 'mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 
 const emptyManualMethod: ManualMethod = {
   id: '',
   name: '',
+  category: 'bank',
   accountHolder: '',
   serviceName: '',
   accountNumber: '',
+  qrisImageUrl: '',
   instructions: '',
   enabled: true,
 };
@@ -83,6 +88,7 @@ export const PaymentGatewayTab: React.FC = () => {
   const [methodDialogOpen, setMethodDialogOpen] = useState(false);
   const [editingMethodId, setEditingMethodId] = useState<string | null>(null);
   const [methodDraft, setMethodDraft] = useState<ManualMethod>(emptyManualMethod);
+  const [uploadingManualQris, setUploadingManualQris] = useState(false);
 
   useEffect(() => {
     Promise.all([fetch('/api/payment/config'), fetch('/api/payment/manual-options')])
@@ -103,6 +109,7 @@ export const PaymentGatewayTab: React.FC = () => {
         if (Array.isArray(manual.manualPaymentMethods)) {
           setMethods(manual.manualPaymentMethods.map((method: ManualMethod) => ({
             ...method,
+            category: method.category || 'bank',
             accountHolder: method.accountHolder || method.serviceName || '',
           })));
         }
@@ -298,13 +305,17 @@ export const PaymentGatewayTab: React.FC = () => {
 
   const saveManualMethod = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (methodDraft.category === 'qris' && !methodDraft.qrisImageUrl) {
+      setManualError('Unggah gambar QRIS sebelum menyimpan metode.');
+      return;
+    }
     const method = {
       ...methodDraft,
       id: editingMethodId || `manual-${Date.now().toString(36)}`,
       name: methodDraft.name.trim(),
       accountHolder: methodDraft.accountHolder?.trim() || '',
       serviceName: undefined,
-      accountNumber: methodDraft.accountNumber?.trim() || '',
+      accountNumber: methodDraft.category === 'qris' ? '' : methodDraft.accountNumber?.trim() || '',
       instructions: methodDraft.instructions.trim(),
     };
     const nextMethods = editingMethodId
@@ -327,6 +338,39 @@ export const PaymentGatewayTab: React.FC = () => {
     );
     if (!accepted) return;
     await persistManualMethods(methods.filter(item => item.id !== method.id));
+  };
+
+  const uploadManualQris = async (file?: File) => {
+    if (!file) return;
+    if (!['image/png', 'image/jpeg'].includes(file.type)) {
+      setManualError('Pilih gambar QRIS dengan format PNG atau JPG.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setManualError('Ukuran gambar QRIS maksimal 5 MB.');
+      return;
+    }
+    setUploadingManualQris(true);
+    setManualError('');
+    try {
+      const response = await fetch('/api/payment/manual-qr', {
+        method: 'POST',
+        headers: { 'Content-Type': file.type },
+        body: file,
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      if (typeof result.qrisImageUrl !== 'string' || !result.qrisImageUrl) {
+        throw new Error('Server tidak mengembalikan alamat gambar QRIS.');
+      }
+      setMethodDraft(current => ({ ...current, qrisImageUrl: result.qrisImageUrl }));
+    } catch (uploadError) {
+      const message = uploadError instanceof Error ? uploadError.message : String(uploadError);
+      setManualError(message);
+      toast('Gagal mengunggah QRIS', 'error', message);
+    } finally {
+      setUploadingManualQris(false);
+    }
   };
 
   const chooseCard = (nextChoice: GatewayChoice) => {
@@ -614,6 +658,9 @@ export const PaymentGatewayTab: React.FC = () => {
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <h4 className="truncate text-sm font-bold text-white">{method.name}</h4>
+                        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
+                          {{ bank: 'Rekening bank', ewallet: 'E-wallet', qris: 'QRIS', other: 'Lainnya' }[method.category || 'bank']}
+                        </span>
                         <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                           method.enabled
                             ? 'bg-emerald-500/10 text-emerald-300'
@@ -630,8 +677,12 @@ export const PaymentGatewayTab: React.FC = () => {
                       </button>
                     </div>
                   </div>
-                  <p className="mt-3 break-all text-sm font-medium text-slate-200">{method.accountNumber || 'Nomor rekening/akun belum diisi'}</p>
-                  {method.accountHolder && <p className="mt-1 text-xs text-slate-400">Atas nama: <span className="font-semibold text-slate-300">{method.accountHolder}</span></p>}
+                  {(method.category || 'bank') === 'qris' && method.qrisImageUrl ? (
+                    <QrisImage src={method.qrisImageUrl} alt={`QRIS ${method.name}`} className="mt-3 h-36 w-36 rounded-lg border border-slate-700 bg-white p-2" />
+                  ) : (
+                    <p className="mt-3 break-all text-sm font-medium text-slate-200">{method.accountNumber || 'Nomor rekening/akun belum diisi'}</p>
+                  )}
+                  {method.accountHolder && <p className="mt-1 text-xs text-slate-400">{(method.category || 'bank') === 'qris' ? 'Merchant:' : 'Atas nama:'} <span className="font-semibold text-slate-300">{method.accountHolder}</span></p>}
                   {method.instructions && <p className="mt-2 line-clamp-2 whitespace-pre-wrap text-xs text-slate-500">{method.instructions}</p>}
                   <button
                     type="button"
@@ -689,17 +740,65 @@ export const PaymentGatewayTab: React.FC = () => {
               </button>
             </div>
             <form onSubmit={saveManualMethod} className="mt-5 space-y-4">
+              <label className="block text-xs font-medium text-slate-300">Kategori
+                <select
+                  value={methodDraft.category}
+                  onChange={event => {
+                    const category = event.target.value;
+                    if (category === 'bank' || category === 'ewallet' || category === 'qris' || category === 'other') {
+                      setMethodDraft(current => ({ ...current, category }));
+                    }
+                  }}
+                  className={inputClass}
+                >
+                  <option value="bank">Rekening bank</option>
+                  <option value="ewallet">E-wallet</option>
+                  <option value="qris">QRIS</option>
+                  <option value="other">Lainnya</option>
+                </select>
+              </label>
               <label className="block text-xs font-medium text-slate-300">Metode
-                <input required maxLength={64} autoFocus value={methodDraft.name} onChange={event => setMethodDraft(current => ({ ...current, name: event.target.value }))} placeholder="Contoh: BCA, DANA, QRIS" className={inputClass} />
+                <input required maxLength={64} autoFocus value={methodDraft.name} onChange={event => setMethodDraft(current => ({ ...current, name: event.target.value }))} placeholder={methodDraft.category === 'qris' ? 'Contoh: QRIS GoPay Merchant' : methodDraft.category === 'ewallet' ? 'Contoh: DANA' : methodDraft.category === 'bank' ? 'Contoh: BCA' : 'Nama metode pembayaran'} className={inputClass} />
               </label>
-              <label className="block text-xs font-medium text-slate-300">Nomor / rekening
-                <input required maxLength={500} value={methodDraft.accountNumber || ''} onChange={event => setMethodDraft(current => ({ ...current, accountNumber: event.target.value }))} placeholder="Nomor rekening, nomor e-wallet, atau URL QRIS" className={inputClass} />
-              </label>
-              <label className="block text-xs font-medium text-slate-300">Atas nama
-                <input required maxLength={100} value={methodDraft.accountHolder || ''} onChange={event => setMethodDraft(current => ({ ...current, accountHolder: event.target.value }))} placeholder="Nama pemilik rekening/akun" className={inputClass} />
-              </label>
+              {methodDraft.category === 'qris' ? (
+                <div className="space-y-2">
+                  <label className="block text-xs font-medium text-slate-300">Gambar QRIS (PNG/JPG, maksimal 5 MB)
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg"
+                      disabled={uploadingManualQris || savingManual}
+                      onChange={event => {
+                        void uploadManualQris(event.target.files?.[0]);
+                        event.currentTarget.value = '';
+                      }}
+                      className={`${inputClass} file:mr-3 file:rounded-md file:border-0 file:bg-slate-700 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-white`}
+                    />
+                  </label>
+                  {uploadingManualQris && <p className="text-xs text-slate-400">Mengunggah gambar QRIS...</p>}
+                  {methodDraft.qrisImageUrl && (
+                    <div className="flex items-start gap-3 rounded-xl border border-slate-700 bg-slate-950 p-3">
+                      <QrisImage src={methodDraft.qrisImageUrl} alt="Pratinjau QRIS" className="h-32 w-32 rounded-lg bg-white p-2" />
+                      <button type="button" onClick={() => setMethodDraft(current => ({ ...current, qrisImageUrl: '' }))} className="text-xs font-semibold text-rose-300 hover:text-rose-200">
+                        Hapus gambar
+                      </button>
+                    </div>
+                  )}
+                  <label className="block text-xs font-medium text-slate-300">Nama merchant (opsional)
+                    <input maxLength={100} value={methodDraft.accountHolder || ''} onChange={event => setMethodDraft(current => ({ ...current, accountHolder: event.target.value }))} placeholder="Contoh: Toko Saya" className={inputClass} />
+                  </label>
+                </div>
+              ) : (
+                <>
+                  <label className="block text-xs font-medium text-slate-300">Nomor / rekening
+                    <input required maxLength={500} value={methodDraft.accountNumber || ''} onChange={event => setMethodDraft(current => ({ ...current, accountNumber: event.target.value }))} placeholder="Nomor rekening atau nomor e-wallet" className={inputClass} />
+                  </label>
+                  <label className="block text-xs font-medium text-slate-300">Atas nama
+                    <input required maxLength={100} value={methodDraft.accountHolder || ''} onChange={event => setMethodDraft(current => ({ ...current, accountHolder: event.target.value }))} placeholder="Nama pemilik rekening/akun" className={inputClass} />
+                  </label>
+                </>
+              )}
               <label className="block text-xs font-medium text-slate-300">Catatan
-                <textarea required maxLength={1000} rows={4} value={methodDraft.instructions} onChange={event => setMethodDraft(current => ({ ...current, instructions: event.target.value }))} placeholder="Contoh: Transfer sesuai nominal, lalu kirim bukti pembayaran." className={inputClass} />
+                <textarea required={methodDraft.category !== 'qris'} maxLength={1000} rows={4} value={methodDraft.instructions} onChange={event => setMethodDraft(current => ({ ...current, instructions: event.target.value }))} placeholder={methodDraft.category === 'qris' ? 'Instruksi tambahan (opsional), misalnya konfirmasi setelah membayar.' : 'Contoh: Transfer sesuai nominal, lalu kirim bukti pembayaran.'} className={inputClass} />
               </label>
               <label className="flex items-center gap-2 text-xs text-slate-300">
                 <input type="checkbox" checked={methodDraft.enabled} onChange={event => setMethodDraft(current => ({ ...current, enabled: event.target.checked }))} />
@@ -708,7 +807,7 @@ export const PaymentGatewayTab: React.FC = () => {
               {manualError && <p role="alert" className="rounded-xl border border-rose-500/30 bg-rose-950/40 p-3 text-xs text-rose-200">{manualError}</p>}
               <div className="flex justify-end gap-2 border-t border-slate-800 pt-4">
                 <button type="button" onClick={() => setMethodDialogOpen(false)} disabled={savingManual} className="rounded-xl border border-slate-700 px-4 py-2.5 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-50">Batal</button>
-                <button type="submit" disabled={savingManual} className="rounded-xl bg-emerald-700 px-4 py-2.5 text-xs font-bold text-white hover:bg-emerald-600 disabled:opacity-50">
+                <button type="submit" disabled={savingManual || uploadingManualQris} className="rounded-xl bg-emerald-700 px-4 py-2.5 text-xs font-bold text-white hover:bg-emerald-600 disabled:opacity-50">
                   {savingManual ? 'Menyimpan...' : editingMethodId ? 'Simpan perubahan' : 'Tambah metode'}
                 </button>
               </div>

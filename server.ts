@@ -1734,15 +1734,29 @@ async function startServer() {
 
   const publicLookupAttempts = new Map<string, { count: number; resetAt: number }>();
   const publicVoucherLookupAttempts = new Map<string, { count: number; resetAt: number }>();
+  const manualPaymentUploadDir = path.resolve(process.cwd(), 'data', 'payment-methods');
+  const isManualQrisImageUrl = (value: unknown): value is string => {
+    if (typeof value !== 'string') return false;
+    const match = value.match(/^\/api\/payment\/manual-qr\/([0-9a-f-]{36}\.(?:png|jpg))$/);
+    return Boolean(match && fs.existsSync(path.join(manualPaymentUploadDir, match[1])));
+  };
   const isManualPaymentMethodReady = (method: ManualPaymentMethod): boolean => {
+    const category = method.category || 'bank';
     const accountHolder = method.accountHolder || method.serviceName;
     if (
       !method.enabled ||
       typeof method.name !== 'string' ||
-      typeof accountHolder !== 'string' ||
-      typeof method.accountNumber !== 'string' ||
-      typeof method.instructions !== 'string'
+      (method.instructions !== undefined && typeof method.instructions !== 'string')
     ) return false;
+    if (category === 'qris') {
+      return Boolean(
+        method.name.trim() &&
+        isManualQrisImageUrl(method.qrisImageUrl)
+      );
+    }
+    if (typeof accountHolder !== 'string' || typeof method.accountNumber !== 'string' || typeof method.instructions !== 'string') {
+      return false;
+    }
     return Boolean(
       method.name.trim() &&
       accountHolder.trim() &&
@@ -2013,6 +2027,9 @@ async function startServer() {
             latestPaymentStatus: payment?.status,
             latestPaymentMethod: payment?.paymentMethod,
             latestPaymentChannel: payment?.paymentChannel,
+            latestManualOrderId: payment?.paymentMethod === 'manual' && payment.status === 'pending'
+              ? payment.orderId
+              : undefined,
           };
         });
       res.setHeader('Cache-Control', 'no-store');
@@ -2407,6 +2424,7 @@ async function startServer() {
         paymentChannel: paymentMode === 'manual'
           ? manualMethod!.id
           : gateway.provider === 'midtrans' ? 'snap' : 'checkout',
+        ...(paymentMode === 'manual' ? { manualMethod: { ...manualMethod! } } : {}),
         status: 'pending',
         ...(paymentMode === 'automatic' ? { expiryMinutes: 1440 } : {}),
         createdAt,
@@ -2583,7 +2601,7 @@ async function startServer() {
       const voucher = vouchers.find(v => v.orderId === transaction.orderId || (transaction.voucherCode && v.code === transaction.voucherCode));
       const profile = voucher?.profileId ? profiles.find(p => p.id === voucher.profileId) : undefined;
       const manualMethod = transaction.paymentMethod === 'manual'
-        ? manualMethods.find(m => m.id === transaction.paymentChannel || m.name === transaction.paymentChannel)
+        ? transaction.manualMethod || manualMethods.find(m => m.id === transaction.paymentChannel || m.name === transaction.paymentChannel)
         : undefined;
 
       const operatorDigits = settings.phoneContact.replace(/[^0-9]/g, '');
@@ -2621,6 +2639,8 @@ async function startServer() {
           name: manualMethod.name,
           accountHolder: manualMethod.accountHolder || manualMethod.serviceName || '',
           accountNumber: manualMethod.accountNumber || '',
+          category: manualMethod.category || 'bank',
+          qrisImageUrl: manualMethod.qrisImageUrl || '',
           instructions: manualMethod.instructions || '',
         } : undefined,
         operatorUrl,
@@ -2645,6 +2665,224 @@ async function startServer() {
     }
   });
 
+  app.post(
+    '/api/payment/manual-qr',
+    requireAdminSession,
+    express.raw({ type: ['image/png', 'image/jpeg'], limit: '5mb' }),
+    async (req, res) => {
+      const image = req.body;
+      if (!Buffer.isBuffer(image) || image.length === 0) {
+        return res.status(400).json({ error: 'Pilih gambar QRIS PNG atau JPG yang valid.' });
+      }
+      const isPng = image.length >= 8 &&
+        image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      const isJpeg = image.length >= 4 &&
+        image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff &&
+        image.lastIndexOf(Buffer.from([0xff, 0xd9])) >= 2;
+      if (!isPng && !isJpeg) {
+        return res.status(400).json({ error: 'Isi gambar tidak dikenali. Gunakan gambar QRIS PNG atau JPG.' });
+      }
+      try {
+        await fs.promises.mkdir(manualPaymentUploadDir, { recursive: true });
+        const fileName = `${randomUUID()}.${isPng ? 'png' : 'jpg'}`;
+        await fs.promises.writeFile(path.join(manualPaymentUploadDir, fileName), image, { flag: 'wx' });
+        return res.status(201).json({ qrisImageUrl: `/api/payment/manual-qr/${fileName}` });
+      } catch (error) {
+        console.error('[Payment] Gagal menyimpan gambar QRIS manual:', error);
+        return res.status(500).json({ error: 'Gambar QRIS gagal disimpan. Coba lagi.' });
+      }
+    }
+  );
+
+  app.get('/api/payment/manual-qr/:fileName', async (req, res) => {
+    const fileName = req.params.fileName;
+    if (!/^[0-9a-f-]{36}\.(?:png|jpg)$/.test(fileName)) {
+      return res.status(404).json({ error: 'Gambar QRIS tidak ditemukan' });
+    }
+    const filePath = path.join(manualPaymentUploadDir, fileName);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Gambar QRIS tidak ditemukan' });
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.type(fileName.endsWith('.png') ? 'png' : 'jpg');
+    return res.sendFile(filePath);
+  });
+
+  app.post('/api/portal/voucher-orders/change-method', async (req, res) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const current = publicLookupAttempts.get(ip);
+    if (current && current.resetAt > Date.now() && current.count >= 30) {
+      return res.status(429).json({ error: 'Terlalu banyak permintaan. Coba lagi dalam satu menit.' });
+    }
+    publicLookupAttempts.set(ip, {
+      count: current && current.resetAt > Date.now() ? current.count + 1 : 1,
+      resetAt: current && current.resetAt > Date.now() ? current.resetAt : Date.now() + 60_000,
+    });
+
+    const { orderId, phone, methodId } = req.body || {};
+    if (
+      typeof orderId !== 'string' || !/^SBV-[0-9a-f-]{36}$/i.test(orderId) ||
+      typeof phone !== 'string' || phone.length > 32 ||
+      typeof methodId !== 'string' || !/^[a-z0-9-]{1,32}$/.test(methodId)
+    ) {
+      return res.status(400).json({ error: 'Pesanan, nomor WhatsApp, atau metode pembayaran tidak valid' });
+    }
+    const normalizedPhone = phone.replace(/[^0-9]/g, '');
+    if (normalizedPhone.length < 8 || normalizedPhone.length > 15) {
+      return res.status(400).json({ error: 'Nomor WhatsApp tidak valid' });
+    }
+    if (voucherApprovalsInProgress.has(orderId)) {
+      return res.status(409).json({ error: 'Penggantian metode pesanan ini sedang diproses. Muat ulang status pesanan.' });
+    }
+    voucherApprovalsInProgress.add(orderId);
+
+    try {
+      const stored = await getAppDataDb();
+      const transactions = stored.data.transactions || [];
+      const vouchers = stored.data.vouchers || [];
+      const profiles = stored.data.hotspotProfiles || [];
+      const paymentConfig = stored.data.paymentConfig;
+      const oldTransaction = transactions.find(item =>
+        item.orderId === orderId &&
+        item.orderType === 'voucher' &&
+        item.paymentMethod === 'manual' &&
+        item.status === 'pending' &&
+        canonicalPortalPhone(item.customerPhone) === canonicalPortalPhone(normalizedPhone)
+      );
+      if (!oldTransaction) {
+        return res.status(409).json({ error: 'Pesanan tidak ditemukan, sudah tidak menunggu, atau nomor WhatsApp tidak cocok. Periksa status sebelum mencoba lagi.' });
+      }
+      const oldVoucher = vouchers.find(item =>
+        item.orderId === orderId || (oldTransaction.voucherCode && item.code === oldTransaction.voucherCode)
+      );
+      if (!oldVoucher || oldVoucher.status !== 'pending') {
+        return res.status(409).json({ error: 'Voucher pesanan ini sudah tidak dapat diganti metode pembayarannya.' });
+      }
+      const profile = profiles.find(item => item.id === oldVoucher.profileId);
+      if (!profile || !profile.routerId || !profile.routerProfileName) {
+        return res.status(409).json({ error: 'Paket tidak lagi tersedia untuk dipesan. Hubungi operator.' });
+      }
+      const method = paymentConfig?.manualPaymentMethods?.find(item =>
+        item.id === methodId && item.id !== oldTransaction.paymentChannel && isManualPaymentMethodReady(item)
+      );
+      if (!method) {
+        return res.status(400).json({ error: 'Pilih metode pembayaran manual lain yang masih tersedia.' });
+      }
+
+      const now = new Date();
+      const createdAt = now.toISOString();
+      const appSettings = await getAppSettingsDb();
+      const voucherPrefix = /^[A-Z0-9-]{0,12}$/.test(appSettings.defaultVoucherPrefix)
+        ? appSettings.defaultVoucherPrefix
+        : 'NET-';
+      const voucherLength = Number.isInteger(appSettings.voucherLength) && appSettings.voucherLength >= 4 && appSettings.voucherLength <= 8
+        ? appSettings.voucherLength
+        : 5;
+      let code: string;
+      do {
+        code = `${voucherPrefix}${Array.from({ length: voucherLength }, () => randomInt(0, 10)).join('')}`;
+      } while (vouchers.some(item => item.code === code));
+      const orderIdNext = `SBV-${randomUUID()}`;
+      const paymentCode = createPaymentCode(transactions, 'SBV');
+      const nextVoucher: Voucher = {
+        ...oldVoucher,
+        id: randomUUID(),
+        code,
+        password: code,
+        status: 'pending',
+        batchCode: orderIdNext,
+        createdAt,
+        expiredAt: undefined,
+        activatedAt: undefined,
+        paymentMethod: method.name,
+        paymentRef: undefined,
+        orderId: orderIdNext,
+      };
+      const nextTransaction: PaymentTransaction = {
+        id: randomUUID(),
+        orderId: orderIdNext,
+        paymentCode,
+        orderType: 'voucher',
+        amount: oldTransaction.amount,
+        customerName: oldTransaction.customerName,
+        customerPhone: oldTransaction.customerPhone,
+        customerEmail: oldTransaction.customerEmail,
+        paymentMethod: 'manual',
+        paymentChannel: method.id,
+        manualMethod: { ...method },
+        status: 'pending',
+        createdAt,
+        voucherCode: code,
+      };
+      const updatedTransactions = transactions.map(item =>
+        item.orderId === orderId ? { ...item, status: 'canceled' as const } : item
+      );
+      const updatedVouchers = vouchers.map(item =>
+        item.id === oldVoucher.id ? { ...item, status: 'expired' as const, expiredAt: createdAt } : item
+      );
+      await saveVoucherOrderDb(
+        [nextVoucher, ...updatedVouchers],
+        [nextTransaction, ...updatedTransactions],
+      );
+
+      void telegramBot.notifyManualPayment({
+        orderId: orderIdNext,
+        orderType: 'voucher',
+        paymentCode,
+        amount: nextTransaction.amount,
+        customerName: nextTransaction.customerName,
+        customerPhone: nextTransaction.customerPhone,
+        itemName: profile.name,
+        validity: profile.validityDuration,
+        methodName: method.name,
+        accountNumber: method.accountNumber,
+        accountHolder: method.accountHolder || method.serviceName,
+        instructions: method.instructions,
+        createdAt,
+      });
+      const operatorDigits = appSettings.phoneContact.replace(/[^0-9]/g, '');
+      const operatorWhatsapp = operatorDigits
+        ? (operatorDigits.startsWith('0') ? `62${operatorDigits.slice(1)}` : operatorDigits)
+        : '';
+      const contactMessage =
+        `Yth. Operator, saya ingin mengonfirmasi pembayaran voucher.\n\n` +
+        `Kode pembayaran: ${paymentCode}\nPaket: ${profile.name}\nNominal: Rp ${nextTransaction.amount.toLocaleString('id-ID')}\n` +
+        `Metode: ${method.name}\nNama pelanggan: ${nextTransaction.customerName}\nNomor WhatsApp: ${nextTransaction.customerPhone}`;
+      const operatorUrl = operatorWhatsapp
+        ? `https://wa.me/${operatorWhatsapp}?text=${encodeURIComponent(contactMessage)}`
+        : '';
+
+      return res.status(201).json({
+        found: true,
+        orderId: orderIdNext,
+        paymentCode,
+        orderType: 'voucher',
+        status: 'pending',
+        amount: nextTransaction.amount,
+        customerName: nextTransaction.customerName,
+        customerPhone: nextTransaction.customerPhone,
+        packageName: profile.name,
+        validityDuration: profile.validityDuration,
+        speedLimit: profile.speedLimit,
+        paymentMethod: 'manual',
+        paymentChannel: method.id,
+        manualMethod: {
+          id: method.id,
+          name: method.name,
+          category: method.category || 'bank',
+          accountHolder: method.accountHolder || method.serviceName || '',
+          accountNumber: method.accountNumber || '',
+          qrisImageUrl: method.qrisImageUrl || '',
+          instructions: method.instructions || '',
+        },
+        operatorUrl,
+        createdAt,
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      voucherApprovalsInProgress.delete(orderId);
+    }
+  });
+
   app.put('/api/payment/manual-options', requireAdminSession, async (req, res) => {
     const { manualPaymentMethods, uniqueAmountEnabled } = req.body || {};
     if (!Array.isArray(manualPaymentMethods) || manualPaymentMethods.length > 8) {
@@ -2660,10 +2898,25 @@ async function startServer() {
       (method.accountHolder !== undefined && (typeof method.accountHolder !== 'string' || method.accountHolder.length > 100)) ||
       (method.serviceName !== undefined && (typeof method.serviceName !== 'string' || method.serviceName.length > 64)) ||
       (method.accountNumber !== undefined && (typeof method.accountNumber !== 'string' || method.accountNumber.length > 500)) ||
+      (method.category !== undefined && (
+        typeof method.category !== 'string' ||
+        !['bank', 'ewallet', 'qris', 'other'].includes(method.category)
+      )) ||
+      (method.qrisImageUrl !== undefined && (
+        typeof method.qrisImageUrl !== 'string' ||
+        method.qrisImageUrl.length > 200 ||
+        (method.qrisImageUrl !== '' && !isManualQrisImageUrl(method.qrisImageUrl))
+      )) ||
       (method.instructions !== undefined && (typeof method.instructions !== 'string' || method.instructions.length > 1000)) ||
       typeof method.enabled !== 'boolean'
     )) {
       return res.status(400).json({ error: 'Data metode pembayaran tidak valid. Periksa metode, nomor rekening/akun, atas nama, catatan, dan statusnya.' });
+    }
+    if (manualPaymentMethods.some((method: ManualPaymentMethod) =>
+      (method.category || 'bank') === 'qris' &&
+      !isManualQrisImageUrl(method.qrisImageUrl)
+    )) {
+      return res.status(400).json({ error: 'Metode QRIS wajib memiliki gambar QRIS yang sudah diunggah.' });
     }
     const ids = manualPaymentMethods.map((method: ManualPaymentMethod) => method.id);
     if (new Set(ids).size !== ids.length) return res.status(400).json({ error: 'ID metode pembayaran tidak boleh duplikat' });
@@ -2673,6 +2926,7 @@ async function startServer() {
         const normalized = {
           ...method,
           name: method.name.trim(),
+          category: method.category || 'bank',
           accountHolder: method.accountHolder?.trim() || method.serviceName?.trim() || '',
           accountNumber: method.accountNumber?.trim() || '',
           instructions: method.instructions?.trim() || '',
@@ -3441,6 +3695,9 @@ async function startServer() {
             latestPaymentStatus: latestPayment?.status,
             latestPaymentMethod: latestPayment?.paymentMethod,
             latestPaymentChannel: latestPayment?.paymentChannel,
+            latestManualOrderId: latestPayment?.paymentMethod === 'manual' && latestPayment.status === 'pending'
+              ? latestPayment.orderId
+              : undefined,
           }],
           lookupType: 'paymentCode',
         });
@@ -3535,6 +3792,9 @@ async function startServer() {
             latestPaymentStatus: payment?.status,
             latestPaymentMethod: payment?.paymentMethod,
             latestPaymentChannel: payment?.paymentChannel,
+            latestManualOrderId: payment?.paymentMethod === 'manual' && payment.status === 'pending'
+              ? payment.orderId
+              : undefined,
           };
         }),
         paymentAvailable: await paymentGatewayReady(await paymentGatewayCredentials()),
@@ -3962,6 +4222,7 @@ async function startServer() {
           customerEmail: customer.email || undefined,
           paymentMethod: 'manual',
           paymentChannel: method.id,
+          manualMethod: { ...method },
           status: 'pending',
           createdAt: createdAt.toISOString(),
           invoiceId: invoice.id,
@@ -4017,7 +4278,9 @@ async function startServer() {
           status: 'pending',
           orderId: transaction.orderId,
           paymentCode,
+          amount: invoice.totalAmount,
           operatorUrl,
+          method: { ...method },
           message: 'Kode bayar dibuat. Hubungi operator melalui WhatsApp setelah menyelesaikan transfer.',
         });
       }
@@ -4125,6 +4388,69 @@ async function startServer() {
       }
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/portal/payment/manual/cancel-pending', async (req, res) => {
+    const { orderId, invoiceId, lookupValue, portalToken } = req.body || {};
+    if (
+      typeof orderId !== 'string' || !orderId || orderId.length > 128 ||
+      typeof invoiceId !== 'string' || !invoiceId || invoiceId.length > 128 ||
+      (typeof lookupValue !== 'string' && typeof portalToken !== 'string')
+    ) {
+      return res.status(400).json({ error: 'Pesanan dan identitas tagihan diperlukan untuk membatalkan pembayaran tertunda' });
+    }
+    if (voucherApprovalsInProgress.has(orderId)) {
+      return res.status(409).json({ error: 'Pembatalan pembayaran ini sedang diproses. Muat ulang status tagihan.' });
+    }
+    voucherApprovalsInProgress.add(orderId);
+    try {
+      const stored = await getAppDataDb();
+      const invoice = (stored.data.invoices || []).find(item => item.id === invoiceId);
+      if (!invoice || invoice.status !== 'unpaid') {
+        return res.status(404).json({ error: 'Tagihan tidak ditemukan atau sudah tidak dapat dibayar' });
+      }
+      const transactions = stored.data.transactions || [];
+      const transaction = transactions.find(item =>
+        item.orderId === orderId &&
+        item.orderType === 'invoice' &&
+        item.invoiceId === invoice.id &&
+        item.paymentMethod === 'manual' &&
+        item.status === 'pending'
+      );
+      if (!transaction) {
+        return res.status(409).json({ error: 'Pembayaran manual ini sudah tidak menunggu atau tidak dapat diganti.' });
+      }
+      const customer = (stored.data.customers || []).find(item => item.id === invoice.customerId);
+      let authorized = false;
+      if (typeof portalToken === 'string') {
+        const secret = await getOrCreatePortalLinkSecretDb();
+        const token = verifyPortalLinkToken(portalToken, secret);
+        authorized = Boolean(token && (!token.invoiceId || token.invoiceId === invoice.id) &&
+          (!token.customerId || token.customerId === invoice.customerId));
+      } else if (customer && typeof lookupValue === 'string') {
+        const lookup = lookupValue.trim();
+        const normalizedPhone = lookup.replace(/[^0-9]/g, '');
+        authorized =
+          customer.customerId.toLowerCase() === lookup.toLowerCase() ||
+          transaction.paymentCode?.toLowerCase() === lookup.toLowerCase() ||
+          transaction.orderId.toLowerCase() === lookup.toLowerCase() ||
+          (normalizedPhone.length >= 8 &&
+            canonicalPortalPhone(customer.phone) === canonicalPortalPhone(normalizedPhone));
+      }
+      if (!authorized) return res.status(403).json({ error: 'Identitas pelanggan tidak cocok dengan tagihan' });
+
+      await saveAppDataCollectionDb(
+        'transactions',
+        transactions.map(item => item.orderId === orderId
+          ? { ...item, status: 'canceled' as const }
+          : item)
+      );
+      return res.json({ status: 'canceled' });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      voucherApprovalsInProgress.delete(orderId);
     }
   });
 
