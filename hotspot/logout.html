@@ -2,62 +2,219 @@
 <html lang="id">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Logout Berhasil - Hotspot WiFi</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="pragma" content="no-cache">
+  <meta http-equiv="expires" content="-1">
+  <meta name="theme-color" content="#f8fafc">
+  <title>Logout - Hotspot WiFi</title>
   <style>
+    :root {
+      color-scheme: light;
+      --background: #f8fafc;
+      --foreground: #09090b;
+      --card: #fff;
+      --muted: #f4f4f5;
+      --muted-foreground: #71717a;
+      --border: #e4e4e7;
+      --primary: #18181b;
+      --primary-foreground: #fafafa;
+      --radius: 16px;
+    }
+    * { box-sizing: border-box; }
     body {
-      background: #090d16;
-      color: #f8fafc;
       min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 16px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 28px 16px calc(88px + env(safe-area-inset-bottom));
+      background: radial-gradient(ellipse at 50% -12%, rgba(228, 228, 231, .75), transparent 48%), var(--background);
+      color: var(--foreground);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { -webkit-tap-highlight-color: transparent; }
+    a:focus-visible { outline: 2px solid #a1a1aa; outline-offset: 3px; }
+    .page { width: 100%; max-width: 430px; margin: 0 auto; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; margin: 0 2px 32px; }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand-mark {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card);
+    }
+    .brand-mark img { width: 28px; height: 28px; object-fit: contain; }
+    .brand-name { font-size: 14px; font-weight: 700; letter-spacing: -.02em; }
+    .connection-pill {
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .8);
+      color: var(--muted-foreground);
+      font-size: 11px;
+      font-weight: 600;
     }
     .card {
-      background: #131b2e;
-      border: 1px solid #1e293b;
-      border-radius: 24px;
-      width: 100%;
-      max-width: 380px;
-      padding: 28px 24px;
+      padding: 25px 21px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--card);
+      box-shadow: 0 8px 24px rgba(24, 24, 27, .045), 0 1px 2px rgba(24, 24, 27, .04);
       text-align: center;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
     }
     .icon {
-      width: 60px;
-      height: 60px;
-      background: rgba(99, 102, 241, 0.15);
-      border-radius: 50%;
+      display: grid;
+      width: 58px;
+      height: 58px;
+      margin: 0 auto 15px;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: var(--muted);
+      color: var(--foreground);
+    }
+    h1 { margin: 0; font-size: 22px; font-weight: 750; letter-spacing: -.04em; }
+    .description { margin: 8px 0 0; color: var(--muted-foreground); font-size: 13px; }
+    .summary {
+      margin-top: 21px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      text-align: left;
+    }
+    .summary-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 13px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .summary-row:last-child { border-bottom: 0; }
+    .summary-label { color: var(--muted-foreground); }
+    .summary-value {
+      max-width: 60%;
+      color: var(--foreground);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 650;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+    .button {
       display: inline-flex;
+      width: 100%;
+      min-height: 46px;
       align-items: center;
       justify-content: center;
-      font-size: 24px;
-      color: #818cf8;
-      margin-bottom: 12px;
-    }
-    h1 { font-size: 20px; font-weight: 800; margin-bottom: 6px; }
-    p { font-size: 13px; color: #94a3b8; line-height: 1.5; }
-    .btn-login {
-      display: block;
-      margin-top: 20px;
-      padding: 12px;
-      background: #4f46e5;
-      color: white;
-      text-decoration: none;
-      border-radius: 14px;
-      font-weight: 700;
+      gap: 9px;
+      margin-top: 18px;
+      padding: 11px 14px;
+      border: 1px solid transparent;
+      border-radius: 11px;
+      background: var(--primary);
+      color: var(--primary-foreground);
       font-size: 13px;
+      font-weight: 650;
+      text-decoration: none;
+    }
+    .button:hover { background: #27272a; }
+    .footer-note { margin: 14px 0 0; color: var(--muted-foreground); font-size: 11px; }
+    .bottom-nav {
+      position: fixed;
+      z-index: 5;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      display: grid;
+      width: min(100%, 430px);
+      min-height: 68px;
+      grid-template-columns: 1fr 1fr;
+      align-items: center;
+      margin: 0 auto;
+      padding: 8px 18px calc(8px + env(safe-area-inset-bottom));
+      border: 1px solid rgba(228, 228, 231, .9);
+      border-bottom: 0;
+      border-radius: 18px 18px 0 0;
+      background: rgba(255, 255, 255, .96);
+      box-shadow: 0 -6px 22px rgba(24, 24, 27, .06);
+      backdrop-filter: blur(14px);
+    }
+    .nav-item { display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--muted-foreground); font-size: 10px; font-weight: 600; text-decoration: none; }
+    .nav-item.current { color: var(--foreground); }
+    .nav-icon { display: grid; width: 23px; height: 23px; place-items: center; }
+    @media (max-width: 360px) {
+      body { padding-right: 12px; padding-left: 12px; }
+      .card { padding: 20px 17px; }
+      h1 { font-size: 20px; }
     }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="icon">🔒</div>
-    <h1>Anda Telah Logout</h1>
-    <p>Sesi internet untuk voucher $(username) telah diputuskan. Sisa kuota dan durasi tetap tersimpan.</p>
-    <a href="$(link-login)" class="btn-login">Login Kembali ke Hotspot</a>
-  </div>
+  <main class="page" id="logout">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">
+          <img data-brand-logo alt="" hidden>
+          <svg data-brand-fallback width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 9.5a11 11 0 0 1 14 0M8 12.5a6.5 6.5 0 0 1 8 0M10.8 15.5a2.1 2.1 0 0 1 2.4 0M12 19h.01"/>
+          </svg>
+        </span>
+        <span class="brand-name" data-brand-name>WiFi Hotspot</span>
+      </div>
+      <span class="connection-pill">Sesi selesai</span>
+    </header>
+
+    <section class="card" aria-labelledby="page-title">
+      <div class="icon" aria-hidden="true">
+        <svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 17l5-5-5-5M15 12H3M21 19V5a2 2 0 0 0-2-2h-4"/>
+        </svg>
+      </div>
+      <h1 id="page-title">Anda sudah logout</h1>
+      <p class="description">Sesi internet untuk akun <strong>$(username)</strong> telah berakhir.</p>
+      <div class="summary" aria-label="Ringkasan sesi terakhir">
+        <div class="summary-row">
+          <span class="summary-label">Alamat IP</span>
+          <span class="summary-value">$(ip)</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Lama terhubung</span>
+          <span class="summary-value">$(uptime)</span>
+        </div>
+      </div>
+
+      <a href="$(link-login)" class="button">
+        Login kembali
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5 12h14M13 6l6 6-6 6"/>
+        </svg>
+      </a>
+      <p class="footer-note">Anda dapat masuk kembali dengan voucher yang masih berlaku.</p>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Navigasi hotspot">
+    <a class="nav-item current" href="$(link-login)" aria-current="page">
+      <span class="nav-icon" aria-hidden="true">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2h-4v-7H9v7H5a2 2 0 0 1-2-2z"/>
+        </svg>
+      </span>
+      Login
+    </a>
+    <a class="nav-item" href="https://BILLING_DOMAIN/?tab=voucher" data-portal-link>
+      <span class="nav-icon" aria-hidden="true">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 7h15l-1.5 9h-12zM6 7 5 3H2M9 20h.01M18 20h.01"/>
+        </svg>
+      </span>
+      Beli paket
+    </a>
+  </nav>
+  <script type="text/javascript" src="hotspot-config.js"></script>
 </body>
 </html>

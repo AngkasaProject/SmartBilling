@@ -71,7 +71,7 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
   - Voucher dibuat pada MikroTik hanya setelah pembayaran otomatis terverifikasi atau operator mengonfirmasi transaksi manual. Status pesanan dan kode voucher ditampilkan di portal pelanggan.
 
 - **📱 Template Hotspot Captive Portal MikroTik Siap Pakai**:
-  - File `login.html`, `status.html`, dan `logout.html` dengan desain responsif mobile-friendly.
+  - File `login.html`, `alogin.html`, `status.html`, dan `logout.html` dengan desain responsif mobile-friendly; identitas dan tautan Portal dikonfigurasi lewat JSON, logo opsional, serta login mendukung scan QR voucher offline.
   - Form login voucher untuk autentikasi yang diproses oleh RouterOS.
 
 - **🎫 Generator & Cetak Voucher Massal**:
@@ -104,9 +104,15 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 ├── server.ts                # Backend Express, healthcheck & API aplikasi
 ├── data/                    # Database SQLite persisten (tidak masuk Git)
 ├── hotspot/                 # File template captive portal siap upload ke MikroTik
-│   ├── login.html           # Halaman login hotspot
-│   ├── status.html          # Halaman status internet dan info sisa kuota/waktu
-│   ├── logout.html          # Halaman konfirmasi pemutusan koneksi
+│   ├── login.html           # Halaman login hotspot dengan pemindai QR offline
+│   ├── alogin.html          # Konfirmasi login berhasil dan redirect ke tujuan
+│   ├── status.html          # Halaman status internet dan pemakaian sesi
+│   ├── logout.html          # Ringkasan sesi setelah logout
+│   ├── config.json          # Pengaturan brand, nama WiFi, portal, dan logo
+│   ├── hotspot-config.js    # Loader konfigurasi untuk semua halaman hotspot
+│   ├── jsQR.js              # Decoder QR lokal untuk login hotspot
+│   ├── jsQR-LICENSE.txt     # Lisensi decoder QR
+│   ├── logo.png             # Logo opsional (tambahkan sendiri; icon default jadi fallback)
 │   └── rsc/
 │       ├── walled-garden.rsc # Template akses portal hotspot
 │       └── firewall-isolir.rsc # Catatan operasi isolir via API
@@ -121,7 +127,7 @@ Backend menyediakan `GET /api/data` untuk memuat snapshot data dan `PUT /api/dat
 - Jika kedua variabel admin diisi di `.env`, login memakai kredensial tersebut dan perubahan kredensial harus dilakukan lewat environment server. Jangan hanya mengisi salah satunya.
 - Halaman utama `/` adalah Portal publik pelanggan dengan tombol Cek tagihan, Beli voucher, dan Login Admin (`/admin`). Pelanggan dapat mengecek tagihan menggunakan ID pelanggan atau nomor WhatsApp terdaftar tanpa login; status pembayaran diambil dari Billing dan diperbarui berkala.
 - Tautan invoice bertanda tangan untuk pelanggan/admin tetap tersedia di `/portal/billing`. Token tautan baru memakai format ringkas, dan token lama tetap diterima sampai kedaluwarsa.
-- Login captive hotspot tetap disediakan sebagai file di folder `hotspot/` untuk dipasang ke MikroTik. Ganti `https://BILLING_DOMAIN/?tab=voucher` pada `hotspot/login.html` dengan URL publik Billing Anda.
+- Template captive hotspot tersedia di folder `hotspot/` untuk dipasang ke MikroTik. Sesuaikan `hotspot/config.json`; tidak perlu mengedit file HTML untuk mengatur identitas WiFi dan tautan Portal.
 - `APP_ENCRYPTION_KEY` bersifat opsional. Tanpa nilai tersebut, aplikasi membuat kunci acak di `data/router-secrets.key`; file itu harus ikut dicadangkan bersama database. Kunci yang dibuat dapat dilihat/disalin melalui Pengaturan → Admin & Keamanan. Simpan di tempat aman. Jika kunci dikelola environment, rotasi melalui panel terkunci.
 - Database dapat diunduh dan dipulihkan dari **Pengaturan → Database & backup**. Restore menerima backup SQLite SmartBilling yang valid, membuat salinan database aktif sebelum menggantinya, dan memuat ulang aplikasi. Jika database backup memakai kredensial terenkripsi, kunci enkripsi yang cocok (`APP_ENCRYPTION_KEY` atau `data/router-secrets.key`) tetap diperlukan.
 - **Reset All** di bagian yang sama menghapus data operasional dan konfigurasi router, WhatsApp, serta pembayaran yang tersimpan di database, tetapi mempertahankan identitas bisnis, akun admin, dan kunci enkripsi. Dialog meminta teks `RESET ALL`; database aktif dicadangkan otomatis, sesi admin dicabut, dan konfigurasi dari environment server tidak diubah. Reset tidak mengubah konfigurasi atau akun pada router MikroTik fisik.
@@ -252,8 +258,12 @@ Template login captive page disediakan di folder `/hotspot`. Halaman captive dis
 ### 1. Upload Template ke Router MikroTik
 1. Buka Winbox dan hubungkan ke MikroTik Anda.
 2. Buka menu **Files**.
-3. Drag & drop folder `hotspot` dari komputer Anda ke dalam Winbox, atau letakkan file `login.html`, `status.html`, dan `logout.html` ke direktori `hotspot/`.
-4. Sebelum mengunggah, edit `hotspot/login.html` dan ganti `https://BILLING_DOMAIN/?tab=voucher` dengan URL publik SmartBilling Anda, misalnya `https://billing.contoh.id/?tab=voucher`.
+3. Sebelum upload, buka `hotspot/config.json` di komputer dengan editor teks. Atur `brandName` untuk nama usaha, `wifiName` untuk nama WiFi yang ditampilkan, dan `portalUrl` untuk tautan pembelian lengkap sampai `?tab=voucher` (contoh: `https://billing.contoh.id/?tab=voucher`). Pengaturan yang sama dipakai di halaman login, sukses, status, dan logout.
+4. Logo bersifat opsional: simpan gambar bernama `logo.png` di folder `hotspot`, sesuai nilai default `logoPath`. Anda juga dapat mengatur `logoPath` ke file lokal lain di folder tersebut, seperti `images/logo.webp`, atau isi string kosong untuk selalu memakai icon bawaan. Jika file tidak ada atau gagal dimuat, template otomatis kembali ke icon bawaan.
+5. Pertahankan `md5.js` bawaan pada folder HotSpot MikroTik yang sudah ada; file ini diperlukan jika profil memakai HTTP-CHAP. Unggah file template `login.html`, `alogin.html`, `status.html`, `logout.html`, `config.json`, `hotspot-config.js`, `jsQR.js`, dan `jsQR-LICENSE.txt` ke direktori HTML yang sama tanpa menghapus `md5.js`. Jangan unggah folder sebagai subfolder tambahan jika HTML Directory sudah menunjuk langsung ke folder tersebut.
+6. Pemindai QR berjalan offline tanpa CDN. QR pada kartu voucher berisi kode voucher dan hasil scan akan mengisi form login.
+7. Kamera live browser memerlukan halaman HTTPS. Captive portal MikroTik umumnya dibuka melalui HTTP sebelum login, sehingga gunakan tombol **Scan QR** untuk mengambil foto/pilih gambar voucher; pemindaian dilakukan lokal di perangkat dan gambar tidak dikirim ke server.
+8. `alogin.html` adalah halaman bawaan HotSpot untuk login yang berhasil. Halaman ini menampilkan konfirmasi lalu mengarahkan pengguna ke URL tujuan; pengguna juga dapat membuka status koneksi dari tombol **Lihat status koneksi**.
 
 ### 2. Atur Server Profile Hotspot
 1. Di Winbox, buka **IP** > **Hotspot** > tab **Server Profiles**.

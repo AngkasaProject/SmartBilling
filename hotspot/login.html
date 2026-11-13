@@ -2,337 +2,523 @@
 <html lang="id">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta http-equiv="pragma" content="no-cache">
   <meta http-equiv="expires" content="-1">
-  <title>Login Hotspot WiFi - High Speed Internet</title>
+  <meta name="theme-color" content="#f8fafc">
+  <title>Login Hotspot WiFi</title>
   <style>
     :root {
-      --primary: #4f46e5;
-      --primary-hover: #4338ca;
-      --emerald: #10b981;
-      --emerald-hover: #059669;
-      --bg: #090d16;
-      --card: #131b2e;
-      --card-border: #1e293b;
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
+      color-scheme: light;
+      --background: #f8fafc;
+      --foreground: #09090b;
+      --card: #ffffff;
+      --muted: #f4f4f5;
+      --muted-foreground: #71717a;
+      --border: #e4e4e7;
+      --primary: #18181b;
+      --primary-foreground: #fafafa;
+      --ring: #a1a1aa;
+      --destructive: #dc2626;
+      --radius: 16px;
     }
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    }
+    * { box-sizing: border-box; }
+    html { min-height: 100%; scroll-behavior: smooth; }
     body {
-      background: var(--bg);
-      color: var(--text);
       min-height: 100vh;
+      margin: 0;
+      padding: 28px 16px calc(104px + env(safe-area-inset-bottom));
+      background:
+        radial-gradient(ellipse at 50% -12%, rgba(228, 228, 231, .75), transparent 48%),
+        var(--background);
+      color: var(--foreground);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input, a { font: inherit; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, a:focus-visible, input:focus-visible {
+      outline: 2px solid var(--ring);
+      outline-offset: 3px;
+    }
+    .page { width: 100%; max-width: 430px; margin: 0 auto; }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 0 2px 32px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand-mark {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card);
+      color: var(--foreground);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
+    }
+    .brand-mark img { width: 28px; height: 28px; object-fit: contain; }
+    .brand-name { font-size: 14px; font-weight: 700; letter-spacing: -.02em; }
+    .connection-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .8);
+      color: var(--muted-foreground);
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .connection-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }
+    .intro { margin-bottom: 22px; text-align: center; }
+    .intro-icon {
+      display: grid;
+      width: 54px;
+      height: 54px;
+      margin: 0 auto 15px;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 17px;
+      background: var(--card);
+      color: var(--foreground);
+      box-shadow: 0 4px 12px rgba(24, 24, 27, .05);
+    }
+    h1 { margin: 0; font-size: 24px; font-weight: 750; letter-spacing: -.045em; }
+    .subtitle { margin: 7px 0 0; color: var(--muted-foreground); font-size: 13px; }
+    .card {
+      padding: 22px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--card);
+      box-shadow: 0 8px 24px rgba(24, 24, 27, .045), 0 1px 2px rgba(24, 24, 27, .04);
+    }
+    .error-box {
+      margin-bottom: 16px;
+      padding: 11px 12px;
+      border: 1px solid #fecaca;
+      border-radius: 12px;
+      background: #fef2f2;
+      color: #b91c1c;
+      font-size: 12px;
+    }
+    .tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      margin-bottom: 21px;
+      padding: 4px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--muted);
+    }
+    .tab {
+      min-height: 37px;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted-foreground);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      transition: background .15s, color .15s, box-shadow .15s;
+    }
+    .tab.active {
+      background: var(--card);
+      color: var(--foreground);
+      box-shadow: 0 1px 3px rgba(24, 24, 27, .12);
+    }
+    .field { margin-bottom: 16px; }
+    .field-label {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--foreground);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .text-input {
+      width: 100%;
+      min-height: 48px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      background: var(--card);
+      color: var(--foreground);
+      font-size: 15px;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .text-input::placeholder { color: #a1a1aa; }
+    .text-input:focus { border-color: #a1a1aa; box-shadow: 0 0 0 3px rgba(161, 161, 170, .18); outline: none; }
+    .voucher-input {
+      text-align: center;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .button-primary, .button-outline {
+      display: inline-flex;
+      width: 100%;
+      min-height: 46px;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      padding: 11px 14px;
+      border: 1px solid transparent;
+      border-radius: 11px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 650;
+      text-decoration: none;
+      transition: background .15s, transform .15s;
+    }
+    .button-primary { background: var(--primary); color: var(--primary-foreground); }
+    .button-primary:hover { background: #27272a; }
+    .button-primary:active, .button-outline:active { transform: scale(.99); }
+    .button-outline { border-color: var(--border); background: var(--card); color: var(--foreground); }
+    .button-outline:hover { background: var(--muted); }
+    .separator {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 21px 0 16px;
+      color: #a1a1aa;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .separator::before, .separator::after { height: 1px; flex: 1; background: var(--border); content: ""; }
+    .buy-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 15px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fafafa;
+    }
+    .buy-copy strong { display: block; font-size: 12px; }
+    .buy-copy span { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: 11px; }
+    .buy-link {
+      display: inline-flex;
+      min-height: 36px;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--card);
+      color: var(--foreground);
+      font-size: 11px;
+      font-weight: 650;
+      text-decoration: none;
+    }
+    .trial-wrap { margin-top: 14px; text-align: center; }
+    .trial-link { color: var(--muted-foreground); font-size: 12px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+    .device-info {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 18px 2px 0;
+      color: #a1a1aa;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 10px;
+    }
+    .bottom-nav {
+      position: fixed;
+      z-index: 5;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      display: grid;
+      width: min(100%, 430px);
+      min-height: 73px;
+      grid-template-columns: 1fr 1fr 1fr;
+      align-items: end;
+      margin: 0 auto;
+      padding: 9px 16px calc(8px + env(safe-area-inset-bottom));
+      border: 1px solid rgba(228, 228, 231, .9);
+      border-bottom: 0;
+      border-radius: 18px 18px 0 0;
+      background: rgba(255, 255, 255, .96);
+      box-shadow: 0 -6px 22px rgba(24, 24, 27, .06);
+      backdrop-filter: blur(14px);
+    }
+    .nav-item {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      border: 0;
+      background: transparent;
+      color: var(--muted-foreground);
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .nav-item.current { color: var(--foreground); }
+    .nav-icon { display: grid; width: 23px; height: 23px; place-items: center; }
+    .nav-scan { position: relative; top: -18px; gap: 5px; }
+    .scan-orb {
+      display: grid;
+      width: 54px;
+      height: 54px;
+      place-items: center;
+      border: 5px solid var(--background);
+      border-radius: 50%;
+      background: var(--primary);
+      color: #fff;
+      box-shadow: 0 4px 12px rgba(24, 24, 27, .2);
+    }
+    .scanner-backdrop {
+      position: fixed;
+      z-index: 10;
+      inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 16px;
-      line-height: 1.5;
+      background: rgba(9, 9, 11, .55);
+      backdrop-filter: blur(4px);
     }
-    .login-card {
-      background: var(--card);
-      border: 1px solid var(--card-border);
-      border-radius: 24px;
+    .scanner-backdrop[hidden] { display: none; }
+    .scanner-dialog {
       width: 100%;
-      max-width: 400px;
-      padding: 28px 24px;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-      position: relative;
+      max-width: 390px;
       overflow: hidden;
-    }
-    .glow {
-      position: absolute;
-      top: -40px;
-      right: -40px;
-      width: 120px;
-      height: 120px;
-      background: radial-gradient(circle, rgba(79, 70, 229, 0.25) 0%, rgba(79, 70, 229, 0) 70%);
-      pointer-events: none;
-    }
-    .header {
-      text-align: center;
-      margin-bottom: 24px;
-    }
-    .logo-icon {
-      width: 56px;
-      height: 56px;
-      background: linear-gradient(135deg, #4f46e5, #10b981);
-      border-radius: 16px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      color: white;
-      font-weight: 900;
-      font-size: 24px;
-      margin-bottom: 12px;
-      box-shadow: 0 10px 20px -5px rgba(79, 70, 229, 0.4);
-    }
-    h1 {
-      font-size: 20px;
-      font-weight: 800;
-      letter-spacing: -0.5px;
-      color: #ffffff;
-    }
-    .subtitle {
-      font-size: 12px;
-      color: var(--text-muted);
-      margin-top: 4px;
-    }
-    .badge-ssid {
-      display: inline-block;
-      margin-top: 8px;
-      background: rgba(16, 185, 129, 0.15);
-      color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      padding: 2px 10px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 600;
-    }
-    .error-box {
-      background: rgba(239, 68, 68, 0.15);
-      border: 1px solid rgba(239, 68, 68, 0.3);
-      color: #fca5a5;
-      padding: 10px 14px;
-      border-radius: 12px;
-      font-size: 12px;
-      text-align: center;
-      margin-bottom: 16px;
-    }
-    .tab-switch {
-      display: flex;
-      background: #0b1120;
-      padding: 4px;
-      border-radius: 12px;
-      margin-bottom: 18px;
-      border: 1px solid var(--card-border);
-    }
-    .tab-btn {
-      flex: 1;
-      padding: 8px 12px;
-      font-size: 12px;
-      font-weight: 600;
-      border: none;
-      background: transparent;
-      color: var(--text-muted);
-      border-radius: 8px;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .tab-btn.active {
-      background: var(--primary);
-      color: white;
-      box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
-    }
-    .form-group {
-      margin-bottom: 16px;
-    }
-    label {
-      display: block;
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-muted);
-      margin-bottom: 6px;
-    }
-    .input-code {
-      width: 100%;
-      padding: 12px 16px;
-      background: #090d16;
-      border: 1px solid #27354f;
-      border-radius: 14px;
-      font-size: 18px;
-      font-family: monospace;
-      font-weight: 700;
-      text-align: center;
-      letter-spacing: 2px;
-      color: white;
-      outline: none;
-      text-transform: uppercase;
-      transition: border-color 0.2s;
-    }
-    .input-code:focus {
-      border-color: var(--primary);
-      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2);
-    }
-    .btn-submit {
-      width: 100%;
-      padding: 14px;
-      background: linear-gradient(135deg, var(--primary), #6366f1);
-      border: none;
-      border-radius: 14px;
-      color: white;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      box-shadow: 0 10px 20px -5px rgba(79, 70, 229, 0.4);
-      transition: transform 0.1s, opacity 0.2s;
-    }
-    .btn-submit:active {
-      transform: scale(0.99);
-    }
-    .divider {
-      position: relative;
-      text-align: center;
-      margin: 22px 0;
-    }
-    .divider::before {
-      content: "";
-      position: absolute;
-      left: 0;
-      top: 50%;
-      width: 100%;
-      height: 1px;
-      background: var(--card-border);
-    }
-    .divider span {
-      position: relative;
+      border: 1px solid rgba(255, 255, 255, .35);
+      border-radius: 18px;
       background: var(--card);
-      padding: 0 10px;
-      font-size: 10px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      color: #64748b;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .25);
     }
-    .btn-buy {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      width: 100%;
-      padding: 12px 14px;
-      background: #10b981;
-      color: white;
-      text-decoration: none;
-      font-size: 13px;
-      font-weight: 700;
-      border-radius: 14px;
-      box-shadow: 0 8px 16px -4px rgba(16, 185, 129, 0.3);
-      transition: background 0.2s, transform 0.1s;
+    .scanner-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 18px 12px; }
+    .scanner-head h2 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
+    .scanner-head p { margin: 4px 0 0; color: var(--muted-foreground); font-size: 11px; }
+    .icon-button {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      flex: 0 0 auto;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--card);
+      color: var(--foreground);
+      cursor: pointer;
     }
-    .btn-buy:hover {
-      background: var(--emerald-hover);
+    .camera-frame {
+      position: relative;
+      display: grid;
+      min-height: 230px;
+      margin: 0 18px;
+      overflow: hidden;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: #18181b;
     }
-    .btn-trial {
-      display: inline-block;
-      margin-top: 14px;
-      color: #818cf8;
-      text-decoration: none;
-      font-size: 12px;
-      font-weight: 600;
+    .camera-frame video { display: block; width: 100%; max-height: 320px; object-fit: cover; }
+    .camera-frame video[hidden] { display: none; }
+    .camera-placeholder { max-width: 245px; padding: 24px; color: #d4d4d8; text-align: center; }
+    .camera-placeholder svg { margin-bottom: 8px; }
+    .camera-placeholder p { margin: 0; font-size: 12px; line-height: 1.55; }
+    .scanner-status { min-height: 20px; margin: 11px 18px 0; color: var(--muted-foreground); font-size: 11px; text-align: center; }
+    .scanner-status.error { color: var(--destructive); }
+    .scanner-actions { display: grid; gap: 9px; padding: 14px 18px 18px; }
+    .file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
+    .scanner-help { margin: 0; color: var(--muted-foreground); font-size: 10px; line-height: 1.45; text-align: center; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
+    @media (max-width: 360px) {
+      body { padding-right: 12px; padding-left: 12px; }
+      .card { padding: 18px; }
+      .topbar { margin-bottom: 26px; }
+      h1 { font-size: 22px; }
     }
-    .btn-trial:hover {
-      text-decoration: underline;
-    }
-    .footer-note {
-      margin-top: 12px;
-      text-align: center;
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-    .footer-info {
-      margin-top: 22px;
-      padding-top: 14px;
-      border-top: 1px solid rgba(255, 255, 255, 0.05);
-      display: flex;
-      justify-content: space-between;
-      font-size: 10px;
-      color: #64748b;
-      font-family: monospace;
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
     }
   </style>
 </head>
 <body>
-  <div class="login-card">
-    <div class="glow"></div>
+  <main class="page" id="home">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">
+          <img data-brand-logo alt="" hidden>
+          <svg data-brand-fallback width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 9.5a11 11 0 0 1 14 0M8 12.5a6.5 6.5 0 0 1 8 0M10.8 15.5a2.1 2.1 0 0 1 2.4 0M12 19h.01"/>
+          </svg>
+        </span>
+        <span class="brand-name" data-brand-name>WiFi Hotspot</span>
+      </div>
+      <span class="connection-pill"><span class="connection-dot"></span><span data-wifi-name>Jaringan tersedia</span></span>
+    </header>
 
-    <div class="header">
-      <div class="logo-icon">W</div>
-      <h1>Login Hotspot</h1>
-      <p class="subtitle">Masukkan kredensial hotspot Anda</p>
-    </div>
+    <section class="intro" aria-labelledby="page-title">
+      <div class="intro-icon" aria-hidden="true">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4" y="3" width="16" height="18" rx="3"/>
+          <path d="M8 7h8M8 11h8M8 15h3M16 15h.01"/>
+        </svg>
+      </div>
+      <h1 id="page-title">Selamat datang</h1>
+      <p class="subtitle">Masuk untuk mulai menikmati internet.</p>
+    </section>
 
-    <!-- MikroTik Error Notification Display -->
-    $(if error)
-    <div class="error-box">
-      $(error)
-    </div>
-    $(endif)
+    <section class="card" id="login" aria-label="Login hotspot">
+      $(if error)
+      <div class="error-box" role="alert">$(error)</div>
+      $(endif)
 
-    <!-- Login Mode Tabs -->
-    <div class="tab-switch">
-      <button class="tab-btn active" id="tabVoucher" onclick="setMode('voucher')">Kode Voucher</button>
-      <button class="tab-btn" id="tabMember" onclick="setMode('member')">Akun Hotspot</button>
-    </div>
-
-    <!-- MikroTik Standard Login Form -->
-    <form name="login" action="$(link-login-only)" method="post" $(if chap-id) onSubmit="return doLogin()" $(endif)>
-      <input type="hidden" name="dst" value="$(link-orig)" />
-      <input type="hidden" name="popup" value="true" />
-
-      <!-- Field Username / Voucher Code -->
-      <div class="form-group">
-        <label id="lblUsername">Kode Voucher</label>
-        <input 
-          type="text" 
-          name="username" 
-          id="username" 
-          placeholder="Kode voucher"
-          class="input-code" 
-          required 
-          autocomplete="off" 
-          autocapitalize="characters"
-        />
+      <div class="tabs" role="tablist" aria-label="Jenis akun">
+        <button type="button" class="tab active" id="tabVoucher" role="tab" aria-selected="true" onclick="setMode('voucher')">Kode voucher</button>
+        <button type="button" class="tab" id="tabMember" role="tab" aria-selected="false" onclick="setMode('member')">Akun member</button>
       </div>
 
-      <!-- Field Password (hidden on voucher mode, visible on member mode) -->
-      <div class="form-group" id="passGroup" style="display: none;">
-        <label>Kata Sandi (Password)</label>
-        <input 
-          type="password" 
-          name="password" 
-          id="password" 
-          placeholder="Password Akun" 
-          class="input-code" 
-          style="letter-spacing: normal; font-size: 14px;"
-        />
+      <form name="login" action="$(link-login-only)" method="post" $(if chap-id) onSubmit="return doLogin()" $(endif)>
+        <input type="hidden" name="dst" value="$(link-orig)">
+        <input type="hidden" name="popup" value="true">
+
+        <div class="field">
+          <label class="field-label" id="lblUsername" for="username">Kode voucher</label>
+          <input
+            type="text"
+            name="username"
+            id="username"
+            class="text-input voucher-input"
+            placeholder="Masukkan kode"
+            required
+            autocomplete="off"
+            autocapitalize="characters"
+            spellcheck="false"
+          >
+        </div>
+
+        <div class="field" id="passGroup" hidden>
+          <label class="field-label" for="password">Kata sandi</label>
+          <input
+            type="password"
+            name="password"
+            id="password"
+            class="text-input"
+            placeholder="Masukkan kata sandi"
+            autocomplete="current-password"
+          >
+        </div>
+
+        <button type="submit" class="button-primary">
+          Masuk ke internet
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12h14M13 6l6 6-6 6"/>
+          </svg>
+        </button>
+      </form>
+
+      <div class="separator">Belum punya akses?</div>
+      <div class="buy-card" id="packages">
+        <div class="buy-copy">
+          <strong>Pilih paket internet</strong>
+          <span>Beli voucher melalui portal.</span>
+        </div>
+        <a href="https://BILLING_DOMAIN/?tab=voucher" class="buy-link" data-portal-link>
+          Lihat paket
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M7 17 17 7M7 7h10v10"/>
+          </svg>
+        </a>
       </div>
 
-      <button type="submit" class="btn-submit">
-        Masuk Sekarang
-      </button>
-    </form>
+      $(if trial == 'yes')
+      <div class="trial-wrap">
+        <a href="$(link-login-only)?dst=$(link-orig-esc)&amp;username=T-$(mac-esc)" class="trial-link">Coba akses gratis</a>
+      </div>
+      $(endif)
+    </section>
 
-    <div class="divider">
-      <span>Belum punya voucher?</span>
-    </div>
-
-    <p class="subtitle">Pilih paket dan beli voucher melalui portal billing.</p>
-    <a href="https://BILLING_DOMAIN/?tab=voucher" class="btn-buy">
-      Lihat Paket &amp; Beli Voucher
-    </a>
-    <p class="footer-note">Setelah voucher aktif, kembali ke halaman ini untuk login.</p>
-
-    <!-- Trial Gratis jika diaktifkan di MikroTik -->
-    $(if trial == 'yes')
-    <div style="text-align: center;">
-      <a href="$(link-login-only)?dst=$(link-orig-esc)&amp;username=T-$(mac-esc)" class="btn-trial">
-        Coba akses gratis
-      </a>
-    </div>
-    $(endif)
-
-    <div class="footer-info">
+    <div class="device-info">
       <span>IP: $(ip)</span>
       <span>MAC: $(mac)</span>
     </div>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Navigasi hotspot">
+    <a class="nav-item current" href="#login" aria-current="page">
+      <span class="nav-icon" aria-hidden="true">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2h-4v-7H9v7H5a2 2 0 0 1-2-2z"/>
+        </svg>
+      </span>
+      Login
+    </a>
+    <button class="nav-item nav-scan" type="button" onclick="openScanner()" aria-label="Scan QR voucher">
+      <span class="scan-orb" aria-hidden="true">
+        <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/>
+          <path d="M7 9h4v4H7zM14 9h3M14 12h3M7 16h3M14 16h3v3h-3z"/>
+        </svg>
+      </span>
+      Scan QR
+    </button>
+    <a class="nav-item" href="https://BILLING_DOMAIN/?tab=voucher" data-portal-link>
+      <span class="nav-icon" aria-hidden="true">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 7h15l-1.5 9h-12zM6 7 5 3H2M9 20h.01M18 20h.01"/>
+        </svg>
+      </span>
+      Paket
+    </a>
+  </nav>
+
+  <div class="scanner-backdrop" id="scanner" role="dialog" aria-modal="true" aria-labelledby="scannerTitle" hidden>
+    <section class="scanner-dialog">
+      <header class="scanner-head">
+        <div>
+          <h2 id="scannerTitle">Scan QR voucher</h2>
+          <p>Arahkan kamera ke QR pada kartu voucher.</p>
+        </div>
+        <button class="icon-button" type="button" onclick="closeScanner()" aria-label="Tutup pemindai">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="m18 6-12 12M6 6l12 12"/>
+          </svg>
+        </button>
+      </header>
+      <div class="camera-frame">
+        <video id="camera" playsinline muted hidden></video>
+        <div class="camera-placeholder" id="cameraPlaceholder">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/>
+            <path d="M9 9h6v6H9z"/>
+          </svg>
+          <p id="cameraMessage">Pemindai siap. Gunakan kamera atau pilih foto QR voucher.</p>
+        </div>
+      </div>
+      <p class="scanner-status" id="scannerStatus" role="status" aria-live="polite">Akses kamera hanya tersedia pada halaman HTTPS.</p>
+      <div class="scanner-actions">
+        <label class="button-primary" for="qrImage">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+            <path d="M14 3v6h6M8 15l2-2 2 2 2-2 2 2"/>
+          </svg>
+          Buka kamera / pilih foto
+        </label>
+        <input class="file-input" id="qrImage" type="file" accept="image/*" capture="environment" aria-label="Ambil foto atau pilih gambar QR voucher">
+        <p class="scanner-help">Pada captive portal HTTP, browser biasanya membatasi kamera langsung. Tombol ini membuka kamera foto atau galeri; QR dipindai langsung di perangkat tanpa mengunggah gambar.</p>
+      </div>
+    </section>
   </div>
 
   $(if chap-id)
@@ -346,47 +532,226 @@
     }
   </script>
   <form name="sendin" action="$(link-login-only)" method="post" style="display:none">
-    <input type="hidden" name="username" />
-    <input type="hidden" name="password" />
-    <input type="hidden" name="dst" value="$(link-orig)" />
-    <input type="hidden" name="popup" value="true" />
+    <input type="hidden" name="username">
+    <input type="hidden" name="password">
+    <input type="hidden" name="dst" value="$(link-orig)">
+    <input type="hidden" name="popup" value="true">
   </form>
   $(endif)
 
+  <script type="text/javascript" src="jsQR.js"></script>
   <script type="text/javascript">
     var currentMode = 'voucher';
+    var cameraStream = null;
+    var scanFrame = null;
+    var lastScanAt = 0;
+    var scanner = document.getElementById('scanner');
+    var camera = document.getElementById('camera');
+    var scannerStatus = document.getElementById('scannerStatus');
+    var cameraPlaceholder = document.getElementById('cameraPlaceholder');
+    var cameraMessage = document.getElementById('cameraMessage');
+    var qrImage = document.getElementById('qrImage');
 
     function setMode(mode) {
       currentMode = mode;
+      var isVoucher = mode === 'voucher';
       var tabV = document.getElementById('tabVoucher');
       var tabM = document.getElementById('tabMember');
-      var passGrp = document.getElementById('passGroup');
-      var lblUser = document.getElementById('lblUsername');
+      var passGroup = document.getElementById('passGroup');
+      var passInput = document.getElementById('password');
       var userInput = document.getElementById('username');
+      var label = document.getElementById('lblUsername');
 
-      if (mode === 'voucher') {
-        tabV.className = 'tab-btn active';
-        tabM.className = 'tab-btn';
-        passGrp.style.display = 'none';
-        lblUser.innerText = 'Kode Voucher';
-        userInput.placeholder = 'Kode voucher';
-        document.getElementById('password').value = userInput.value;
+      tabV.className = isVoucher ? 'tab active' : 'tab';
+      tabM.className = isVoucher ? 'tab' : 'tab active';
+      tabV.setAttribute('aria-selected', isVoucher ? 'true' : 'false');
+      tabM.setAttribute('aria-selected', isVoucher ? 'false' : 'true');
+      passGroup.hidden = isVoucher;
+      passInput.required = !isVoucher;
+      userInput.autocapitalize = isVoucher ? 'characters' : 'none';
+      userInput.className = isVoucher ? 'text-input voucher-input' : 'text-input';
+      label.textContent = isVoucher ? 'Kode voucher' : 'Username member';
+      userInput.placeholder = isVoucher ? 'Masukkan kode' : 'Masukkan username';
+
+      if (isVoucher) {
+        passInput.value = userInput.value.trim().toUpperCase();
       } else {
-        tabM.className = 'tab-btn active';
-        tabV.className = 'tab-btn';
-        passGrp.style.display = 'block';
-        lblUser.innerText = 'Username Member';
-        userInput.placeholder = 'Username Anda';
-        document.getElementById('password').value = '';
+        passInput.value = '';
       }
     }
 
-    // Auto-sync password saat mode voucher (username = password)
-    document.getElementById('username').addEventListener('input', function(e) {
+    document.getElementById('username').addEventListener('input', function(event) {
       if (currentMode === 'voucher') {
-        document.getElementById('password').value = e.target.value.trim().toUpperCase();
+        document.getElementById('password').value = event.target.value.trim().toUpperCase();
       }
     });
+
+    function setScannerStatus(message, isError) {
+      scannerStatus.textContent = message;
+      scannerStatus.className = isError ? 'scanner-status error' : 'scanner-status';
+    }
+
+    function stopCamera() {
+      if (scanFrame !== null) {
+        window.cancelAnimationFrame(scanFrame);
+        scanFrame = null;
+      }
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(function(track) { track.stop(); });
+        cameraStream = null;
+      }
+      camera.pause();
+      camera.srcObject = null;
+      camera.hidden = true;
+      cameraPlaceholder.hidden = false;
+    }
+
+    function useVoucherCode(value) {
+      var code = value.trim();
+      if (/^https?:\/\//i.test(code)) {
+        try {
+          var parsedUrl = new URL(code);
+          code = parsedUrl.searchParams.get('username') || parsedUrl.searchParams.get('voucher') || code;
+        } catch (_error) {
+          code = value.trim();
+        }
+      }
+      if (!code || /[\r\n]/.test(code)) {
+        setScannerStatus('QR tidak berisi kode voucher yang valid. Coba pindai ulang.', true);
+        return;
+      }
+
+      setMode('voucher');
+      var username = document.getElementById('username');
+      username.value = code;
+      username.dispatchEvent(new Event('input', { bubbles: true }));
+      stopCamera();
+      scanner.hidden = true;
+      document.body.style.overflow = '';
+      setScannerStatus('Kode voucher berhasil dipindai.', false);
+      username.focus();
+    }
+
+    function decodeImage(image) {
+      var width = image.naturalWidth || image.videoWidth || image.width;
+      var height = image.naturalHeight || image.videoHeight || image.height;
+      if (!width || !height || typeof window.jsQR !== 'function') {
+        setScannerStatus('Gambar tidak dapat dibaca. Coba foto QR dengan pencahayaan lebih baik.', true);
+        return;
+      }
+      var scale = Math.min(1, 1800 / Math.max(width, height));
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      var context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) {
+        setScannerStatus('Pemindai gambar tidak tersedia di browser ini.', true);
+        return;
+      }
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      var pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+      var result = window.jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: 'attemptBoth' });
+      if (result && result.data) {
+        useVoucherCode(result.data);
+      } else {
+        setScannerStatus('QR belum terbaca. Dekatkan kode, hindari pantulan, lalu coba foto lagi.', true);
+      }
+    }
+
+    function scanVideoFrame() {
+      if (scanner.hidden || !cameraStream) return;
+      var now = Date.now();
+      if (now - lastScanAt > 140 && camera.readyState >= 2 && camera.videoWidth) {
+        lastScanAt = now;
+        var canvas = document.createElement('canvas');
+        canvas.width = camera.videoWidth;
+        canvas.height = camera.videoHeight;
+        var context = canvas.getContext('2d', { willReadFrequently: true });
+        if (context) {
+          context.drawImage(camera, 0, 0, canvas.width, canvas.height);
+          var pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+          var result = window.jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: 'dontInvert' });
+          if (result && result.data) {
+            useVoucherCode(result.data);
+            return;
+          }
+        }
+      }
+      scanFrame = window.requestAnimationFrame(scanVideoFrame);
+    }
+
+    function openScanner() {
+      scanner.hidden = false;
+      document.body.style.overflow = 'hidden';
+      cameraMessage.textContent = 'Arahkan kode QR ke dalam bingkai. Gambar diproses langsung di perangkat.';
+      setScannerStatus('Menyiapkan pemindai...', false);
+
+      if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        cameraMessage.textContent = 'Pemindaian langsung dibatasi pada halaman HTTP. Ambil foto QR atau pilih gambar dari perangkat.';
+        setScannerStatus('Halaman hotspot menggunakan HTTP; kamera live perlu HTTPS. Gunakan tombol kamera / foto di bawah.', false);
+        return;
+      }
+
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
+        .then(function(stream) {
+          if (scanner.hidden) {
+            stream.getTracks().forEach(function(track) { track.stop(); });
+            return;
+          }
+          cameraStream = stream;
+          camera.srcObject = stream;
+          camera.hidden = false;
+          cameraPlaceholder.hidden = true;
+          return camera.play().then(function() {
+            setScannerStatus('Kamera aktif. Arahkan QR voucher ke kamera.', false);
+            scanFrame = window.requestAnimationFrame(scanVideoFrame);
+          });
+        })
+        .catch(function() {
+          stopCamera();
+          cameraMessage.textContent = 'Izin kamera tidak tersedia. Ambil foto QR atau pilih gambar dari perangkat.';
+          setScannerStatus('Kamera tidak dapat dibuka. Anda tetap bisa scan dari foto voucher.', true);
+        });
+    }
+
+    function closeScanner() {
+      stopCamera();
+      scanner.hidden = true;
+      document.body.style.overflow = '';
+    }
+
+    qrImage.addEventListener('change', function(event) {
+      var file = event.target.files && event.target.files[0];
+      if (!file) return;
+      if (!/^image\//i.test(file.type)) {
+        setScannerStatus('Pilih file gambar untuk memindai QR voucher.', true);
+        qrImage.value = '';
+        return;
+      }
+      setScannerStatus('Membaca QR dari gambar...', false);
+      var image = new Image();
+      var objectUrl = URL.createObjectURL(file);
+      image.onload = function() {
+        decodeImage(image);
+        URL.revokeObjectURL(objectUrl);
+        qrImage.value = '';
+      };
+      image.onerror = function() {
+        URL.revokeObjectURL(objectUrl);
+        qrImage.value = '';
+        setScannerStatus('Foto tidak dapat dibuka. Coba ambil gambar baru.', true);
+      };
+      image.src = objectUrl;
+    });
+
+    scanner.addEventListener('click', function(event) {
+      if (event.target === scanner) closeScanner();
+    });
+    document.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape' && !scanner.hidden) closeScanner();
+    });
+    window.addEventListener('pagehide', stopCamera);
   </script>
+  <script type="text/javascript" src="hotspot-config.js"></script>
 </body>
 </html>
