@@ -24,10 +24,18 @@ export const PaymentApprovalsPanel: React.FC<Props> = ({ orderType, onRefreshDat
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
     setRequests(result.requests.filter((request: Request) => request.orderType === orderType));
+    setError('');
   }, [orderType]);
 
   useEffect(() => {
     void loadRequests().catch(loadError => setError(loadError instanceof Error ? loadError.message : String(loadError)));
+  }, [loadRequests]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void loadRequests().catch(loadError => setError(loadError instanceof Error ? loadError.message : String(loadError)));
+    }, 10000);
+    return () => window.clearInterval(timer);
   }, [loadRequests]);
 
   const handleDecision = async (orderId: string, action: 'approve' | 'reject') => {
@@ -59,9 +67,7 @@ export const PaymentApprovalsPanel: React.FC<Props> = ({ orderType, onRefreshDat
         <div>
           <h2 className="font-bold text-white">Persetujuan Pembayaran Manual</h2>
           <p className="mt-1 text-xs text-slate-400">
-            {orderType === 'voucher'
-              ? 'Voucher baru diaktifkan setelah bukti disetujui dan user berhasil dibuat di MikroTik.'
-              : 'Invoice dan masa aktif pelanggan diperbarui setelah bukti pembayaran disetujui.'}
+            Periksa pembayaran manual; bukti transfer dapat diunggah pelanggan jika status belum terupdate.
           </p>
         </div>
         <button type="button" onClick={() => void loadRequests().catch(loadError => setError(loadError instanceof Error ? loadError.message : String(loadError)))} className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-bold text-slate-200">Muat ulang</button>

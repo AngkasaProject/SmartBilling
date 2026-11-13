@@ -11,7 +11,7 @@ import {
   AppSettings,
 } from "./types";
 import { StorageService } from "./services/storage";
-import { Navbar } from "./components/Navbar";
+import { AdminSidebar } from "./components/AdminSidebar";
 import { DashboardTab } from "./components/admin/DashboardTab";
 import { FinanceTab } from "./components/admin/FinanceTab";
 import { CustomersTab } from "./components/admin/CustomersTab";
@@ -20,27 +20,41 @@ import { RoutersTab } from "./components/admin/RoutersTab";
 import { WhatsAppTab } from "./components/admin/WhatsAppTab";
 import { PaymentGatewayTab } from "./components/admin/PaymentGatewayTab";
 import { SettingsTab } from "./components/admin/SettingsTab";
+import type { SettingsSection } from "./components/admin/settingsSections";
 import { AdminAuthPage } from "./components/AdminAuthPage";
 import { InvoicePrintModal } from "./components/InvoicePrintModal";
 import { VoucherPrintModal } from "./components/VoucherPrintModal";
-import { PortalPage } from "./components/PortalPage";
+import { PortalCheckoutPage, PortalPage } from "./components/PortalPage";
 import {
   Send,
   X,
   Check,
   ShieldAlert,
   CheckCircle2,
-  Database,
-  MessageCircle,
-  Router,
+  PanelLeft,
 } from "lucide-react";
 import { ToastProvider, useToast } from "./components/ui/toast";
 import { ThemeProvider } from "./components/ui/theme";
+import { Button } from "./components/ui/button";
 import { renderWhatsAppTemplate } from "./utils/whatsappTemplates";
+
+const adminTabLabels: Record<string, string> = {
+  dashboard: "Dashboard",
+  customers: "Pelanggan PPPoE",
+  vouchers: "Voucher Hotspot",
+  finance: "Keuangan",
+  settings: "Pengaturan",
+  routers: "Router MikroTik",
+  whatsapp: "WhatsApp API",
+  payment: "Pembayaran",
+};
 
 function AppContent() {
   const { toast, confirm: confirmAction } = useToast();
   const [adminTab, setAdminTab] = useState("dashboard");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("business");
+  const [isAdminSidebarCollapsed, setIsAdminSidebarCollapsed] = useState(false);
+  const [isAdminMobileMenuOpen, setIsAdminMobileMenuOpen] = useState(false);
   const [financeSection, setFinanceSection] = useState<"invoices" | "revenue">("invoices");
   const [authStatus, setAuthStatus] = useState<{
     authenticated: boolean;
@@ -189,7 +203,13 @@ function AppContent() {
     const initialize = async () => {
       try {
         const path = window.location.pathname;
-        if (path === "/" || path === "/portal" || path === "/portal/billing" || path === "/portal/dashboard") return;
+        if (
+          path === "/" ||
+          path === "/portal" ||
+          path === "/portal/billing" ||
+          path === "/portal/dashboard" ||
+          path === "/portal/checkout"
+        ) return;
         if (path !== "/admin") {
           window.location.replace("/");
           return;
@@ -487,6 +507,7 @@ function AppContent() {
   };
 
   const pathname = window.location.pathname;
+  if (pathname === "/portal/checkout") return <PortalCheckoutPage />;
   if (pathname === "/" || pathname === "/portal" || pathname === "/portal/billing" || pathname === "/portal/dashboard") {
     return <PortalPage />;
   }
@@ -503,7 +524,6 @@ function AppContent() {
     return (
       <AdminAuthPage
         registrationRequired={authStatus.registrationRequired}
-        envLoginConfigured={authStatus.envLoginConfigured}
         envLoginIncomplete={authStatus.envLoginIncomplete}
         onAuthenticated={async (username) => {
           setAuthStatus((current) =>
@@ -522,26 +542,56 @@ function AppContent() {
   }
 
   return (
-    <div className="admin-shell min-h-screen bg-background text-foreground flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
-      {/* Top Navbar */}
-      <Navbar
+    <div className="admin-shell flex min-h-screen flex-col bg-background font-['Plus_Jakarta_Sans',sans-serif] text-foreground md:flex-row">
+      <AdminSidebar
         adminTab={adminTab}
+        username={authStatus.username}
         onSelectAdminTab={handleSelectAdminTab}
         settings={appSettings}
         onRefreshData={refreshAllData}
         onLogout={handleLogout}
+        isCollapsed={isAdminSidebarCollapsed}
+        isMobileMenuOpen={isAdminMobileMenuOpen}
+        onMobileMenuOpenChange={setIsAdminMobileMenuOpen}
+        settingsSection={settingsSection}
+        onSelectSettingsSection={setSettingsSection}
       />
 
-      {dataSyncError && (
-        <div
-          role="alert"
-          className="border-b border-amber-500/30 bg-amber-950/60 px-4 py-2 text-center text-xs text-amber-200"
-        >
-          Sinkronisasi data gagal: {dataSyncError}
-        </div>
-      )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="sticky top-14 z-20 hidden h-16 shrink-0 items-center justify-between border-b border-border bg-background/90 px-4 backdrop-blur sm:px-6 md:sticky md:top-0 md:flex">
+          <div className="flex min-w-0 items-center gap-3">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="hidden h-8 w-8 shrink-0 md:inline-flex"
+              onClick={() => setIsAdminSidebarCollapsed(collapsed => !collapsed)}
+              aria-label={isAdminSidebarCollapsed ? "Perluas sidebar" : "Ciutkan sidebar"}
+              aria-expanded={!isAdminSidebarCollapsed}
+              title={isAdminSidebarCollapsed ? "Perluas sidebar" : "Ciutkan sidebar"}
+            >
+              <PanelLeft className="h-4 w-4" />
+            </Button>
+            <span aria-hidden="true" className="hidden h-4 w-px shrink-0 bg-border md:block" />
+            <h1 className="truncate text-sm font-semibold text-foreground">
+              {adminTabLabels[adminTab] || "Dashboard"}
+            </h1>
+          </div>
+          <span className="hidden rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground sm:inline-flex">
+            Admin workspace
+          </span>
+        </header>
 
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
+        {dataSyncError && (
+          <div
+            role="alert"
+            className="border-b border-amber-500/30 bg-amber-950/60 px-4 py-2 text-center text-xs text-amber-200"
+          >
+            Sinkronisasi data gagal: {dataSyncError}
+          </div>
+        )}
+
+        <main className="mx-auto w-full max-w-7xl flex-1 p-4 sm:p-6 lg:p-8">
         {adminTab === "dashboard" && (
           <DashboardTab
             customers={customers}
@@ -609,47 +659,12 @@ function AppContent() {
           <SettingsTab
             settings={appSettings}
             onRefreshSettings={refreshAllData}
+            section={settingsSection}
           />
         )}
-      </main>
+        </main>
 
-      {/* Footer */}
-      <footer className="border-t border-border bg-card/70 px-4 py-5 sm:px-6">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 text-primary">
-              <Database className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-bold text-foreground">
-                {appSettings.brandName || appSettings.appName}
-              </p>
-              <p className="text-[11px] text-muted-foreground">
-                Smart billing untuk operasional MikroTik
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-            <div className="inline-flex items-center gap-2 rounded-lg border border-border bg-background/80 px-3 py-2 text-[11px] text-muted-foreground">
-              <Database className="h-3.5 w-3.5 text-primary" />
-              <span>SQLite persistent</span>
-              <span className="hidden text-border sm:inline">·</span>
-              <code className="hidden font-mono text-[10px] text-foreground/70 sm:inline">
-                /app/data/billing.sqlite
-              </code>
-            </div>
-            <div className="inline-flex items-center gap-2 rounded-lg border border-border bg-background/80 px-3 py-2 text-[11px] text-muted-foreground">
-              <MessageCircle className="h-3.5 w-3.5 text-emerald-500" />
-              <span>OpenWA API</span>
-            </div>
-            <div className="inline-flex items-center gap-2 rounded-lg border border-border bg-background/80 px-3 py-2 text-[11px] text-muted-foreground">
-              <Router className="h-3.5 w-3.5 text-sky-500" />
-              <span>RouterOS v6 &amp; v7</span>
-            </div>
-          </div>
-        </div>
-      </footer>
+      </div>
 
       {/* Invoice Printable Sheet Modal */}
       {printInvoiceData && (

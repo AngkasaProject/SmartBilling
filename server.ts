@@ -43,6 +43,8 @@ import {
   generatePortalSessionSecretDb,
   getPppoeUsageDb,
   savePppoeUsageDb,
+  getInterfaceTrafficHistoryDb,
+  saveInterfaceTrafficSampleDb,
   savePortalOtpChallengeDb,
   consumePortalOtpChallengeDb,
   discardPortalOtpChallengeDb,
@@ -431,6 +433,51 @@ function verifyPortalLinkToken(token: unknown, secret: string): PortalLinkToken 
   } catch {
     return null;
   }
+}
+
+function hashCheckoutIntent(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function createCheckoutAccessToken(
+  orderId: string,
+  idempotencyKeyHash: string,
+  createdAt: string,
+  secret: string
+): string {
+  const expiresAt = Date.parse(createdAt) + 30 * 24 * 60 * 60_000;
+  if (!Number.isFinite(expiresAt)) throw new Error('Waktu pembuatan checkout tidak valid');
+  const expiresAtSeconds = Math.floor(expiresAt / 1000).toString(36);
+  const payload = `v1.${Buffer.from(orderId, 'utf8').toString('base64url')}.${idempotencyKeyHash}.${expiresAtSeconds}`;
+  const signature = createHmac('sha256', secret).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function verifyCheckoutAccessToken(
+  token: unknown,
+  secret: string
+): { orderId: string; idempotencyKeyHash: string } | null {
+  if (typeof token !== 'string' || token.length > 512) return null;
+  const parts = token.split('.');
+  if (
+    parts.length !== 5 ||
+    parts[0] !== 'v1' ||
+    !/^[A-Za-z0-9_-]{1,256}$/.test(parts[1]) ||
+    !/^[a-f0-9]{64}$/.test(parts[2]) ||
+    !/^[0-9a-z]{1,10}$/.test(parts[3]) ||
+    !/^[A-Za-z0-9_-]{43}$/.test(parts[4])
+  ) return null;
+
+  const payload = parts.slice(0, 4).join('.');
+  const expected = createHmac('sha256', secret).update(payload).digest();
+  const received = Buffer.from(parts[4], 'base64url');
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
+  const expiresAtSeconds = Number.parseInt(parts[3], 36);
+  if (!Number.isSafeInteger(expiresAtSeconds) || expiresAtSeconds * 1000 <= Date.now()) return null;
+
+  const orderId = Buffer.from(parts[1], 'base64url').toString('utf8');
+  if (!orderId || Buffer.from(orderId, 'utf8').toString('base64url') !== parts[1]) return null;
+  return { orderId, idempotencyKeyHash: parts[2] };
 }
 
 async function startServer() {
@@ -1735,6 +1782,57 @@ async function startServer() {
   const publicLookupAttempts = new Map<string, { count: number; resetAt: number }>();
   const publicVoucherLookupAttempts = new Map<string, { count: number; resetAt: number }>();
   const manualPaymentUploadDir = path.resolve(process.cwd(), 'data', 'payment-methods');
+  const manualPaymentProofDir = path.resolve(process.cwd(), 'data', 'payment-proofs');
+  async function notifyManualPaymentAndTrack(
+    orderId: string,
+    params: Parameters<typeof telegramBot.notifyManualPayment>[0],
+  ): Promise<void> {
+    try {
+      const result = await telegramBot.notifyManualPayment(params);
+      if (result.errors.length) {
+        console.error(`[Telegram] Notifikasi pembayaran ${orderId} gagal: ${result.errors.join('; ')}`);
+      }
+      if (!result.messages.length) return;
+      const latest = await getAppDataDb();
+      const transactions = (latest.data.transactions || []).map(transaction =>
+        transaction.orderId === orderId &&
+        transaction.paymentMethod === 'manual' &&
+        transaction.status === 'pending'
+          ? { ...transaction, telegramMessageRefs: result.messages }
+          : transaction
+      );
+      await saveAppDataCollectionDb('transactions', transactions);
+    } catch (error) {
+      console.error(`[Telegram] Gagal mengirim notifikasi pembayaran ${orderId}:`, error);
+    }
+  }
+
+  const getManualPaymentProofPath = (fileName: unknown): string | null => {
+    if (typeof fileName !== 'string' || !/^[0-9a-f-]{36}\.(?:png|jpg)$/.test(fileName)) return null;
+    return path.join(manualPaymentProofDir, fileName);
+  };
+  async function deleteManualPaymentProof(orderId: string): Promise<void> {
+    const stored = await getAppDataDb();
+    const transaction = (stored.data.transactions || []).find(item => item.orderId === orderId);
+    if (!transaction?.proofData) return;
+    const proofPath = getManualPaymentProofPath(transaction.proofData);
+    if (!proofPath) {
+      console.error(`[Payment] Refusing to delete invalid proof path for ${orderId}.`);
+      return;
+    }
+    try {
+      await fs.promises.unlink(proofPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    const latest = await getAppDataDb();
+    const transactions = (latest.data.transactions || []).map(item => {
+      if (item.orderId !== orderId || item.proofData !== transaction.proofData) return item;
+      const { proofData: _proofData, ...withoutProof } = item;
+      return withoutProof;
+    });
+    await saveAppDataCollectionDb('transactions', transactions);
+  }
   const isManualQrisImageUrl = (value: unknown): value is string => {
     if (typeof value !== 'string') return false;
     const match = value.match(/^\/api\/payment\/manual-qr\/([0-9a-f-]{36}\.(?:png|jpg))$/);
@@ -2320,7 +2418,9 @@ async function startServer() {
     }
   });
 
+  const voucherCheckoutInProgress = new Set<string>();
   app.post('/api/portal/voucher-orders', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, private');
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
     const current = publicLookupAttempts.get(ip);
     if (current && current.resetAt > Date.now() && current.count >= 30) {
@@ -2331,13 +2431,15 @@ async function startServer() {
       resetAt: current && current.resetAt > Date.now() ? current.resetAt : Date.now() + 60_000,
     });
 
-    const { profileId, customerName, phone, email, paymentMode, methodId } = req.body || {};
+    const { profileId, customerName, phone, email, paymentMode, methodId, idempotencyKey } = req.body || {};
     if (
       typeof profileId !== 'string' || !profileId ||
       typeof customerName !== 'string' || !customerName.trim() || customerName.length > 100 ||
       typeof phone !== 'string' || phone.length > 32 ||
       (email !== undefined && (typeof email !== 'string' || email.length > 254)) ||
-      (paymentMode !== 'automatic' && paymentMode !== 'manual')
+      (paymentMode !== 'automatic' && paymentMode !== 'manual') ||
+      typeof idempotencyKey !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotencyKey)
     ) {
       return res.status(400).json({ error: 'Nama, nomor WhatsApp, paket, dan metode pembayaran wajib valid' });
     }
@@ -2345,8 +2447,45 @@ async function startServer() {
     if (normalizedPhone.length < 8 || normalizedPhone.length > 15) {
       return res.status(400).json({ error: 'Nomor WhatsApp tidak valid' });
     }
+    const idempotencyKeyHash = hashCheckoutIntent(idempotencyKey);
+    const idempotencyFingerprint = hashCheckoutIntent({
+      orderType: 'voucher',
+      profileId,
+      customerName: customerName.trim(),
+      phone: normalizedPhone,
+      email: typeof email === 'string' ? email.trim() : '',
+      paymentMode,
+      methodId: paymentMode === 'manual' ? methodId : '',
+    });
+    let lockedIdempotencyKey: string | null = null;
     try {
       const stored = await getAppDataDb();
+      const transactions = stored.data.transactions || [];
+      const existingByKey = transactions.find(item =>
+        item.orderType === 'voucher' && item.idempotencyKeyHash === idempotencyKeyHash
+      );
+      if (existingByKey) {
+        if (existingByKey.idempotencyFingerprint !== idempotencyFingerprint) {
+          return res.status(409).json({ error: 'Kunci checkout sudah digunakan untuk pesanan lain.' });
+        }
+        if (existingByKey.status === 'expired' || existingByKey.status === 'canceled') {
+          return res.status(409).json({ error: 'Pesanan ini sudah tidak aktif. Mulai checkout baru untuk membuat pesanan lain.' });
+        }
+        const secret = await getOrCreatePortalLinkSecretDb();
+        const token = createCheckoutAccessToken(existingByKey.orderId, idempotencyKeyHash, existingByKey.createdAt, secret);
+        return res.json({
+          orderId: existingByKey.orderId,
+          paymentCode: existingByKey.paymentCode,
+          checkoutUrl: `/portal/checkout#${token}`,
+          status: existingByKey.status,
+        });
+      }
+      if (voucherCheckoutInProgress.has(idempotencyKeyHash)) {
+        return res.status(409).json({ error: 'Checkout sedang dibuat. Silakan coba lagi sebentar dengan permintaan yang sama.' });
+      }
+      voucherCheckoutInProgress.add(idempotencyKeyHash);
+      lockedIdempotencyKey = idempotencyKeyHash;
+
       const appSettings = await getAppSettingsDb();
       const gateway = await paymentGatewayCredentials();
       const profile = (stored.data.hotspotProfiles || []).find(item =>
@@ -2376,9 +2515,10 @@ async function startServer() {
       const now = new Date();
       const createdAt = now.toISOString();
       const orderId = `SBV-${randomUUID()}`;
-      const expiresAt = paymentMode === 'automatic'
-        ? new Date(now.getTime() + 1440 * 60_000).toISOString()
-        : undefined;
+      const expiresAt = new Date(now.getTime() + 1440 * 60_000).toISOString();
+      const secret = await getOrCreatePortalLinkSecretDb();
+      const checkoutToken = createCheckoutAccessToken(orderId, idempotencyKeyHash, createdAt, secret);
+      const checkoutUrl = `/portal/checkout#${checkoutToken}`;
       const vouchers = stored.data.vouchers || [];
       const voucherPrefix = /^[A-Z0-9-]{0,12}$/.test(appSettings.defaultVoucherPrefix)
         ? appSettings.defaultVoucherPrefix
@@ -2390,7 +2530,6 @@ async function startServer() {
       do {
         code = `${voucherPrefix}${Array.from({ length: voucherLength }, () => randomInt(0, 10)).join('')}`;
       } while (vouchers.some(item => item.code === code));
-      const transactions = stored.data.transactions || [];
       const paymentCode = createPaymentCode(transactions, 'SBV');
       const voucher: Voucher = {
         id: randomUUID(),
@@ -2426,15 +2565,17 @@ async function startServer() {
           : gateway.provider === 'midtrans' ? 'snap' : 'checkout',
         ...(paymentMode === 'manual' ? { manualMethod: { ...manualMethod! } } : {}),
         status: 'pending',
-        ...(paymentMode === 'automatic' ? { expiryMinutes: 1440 } : {}),
+        expiryMinutes: 1440,
         createdAt,
-        ...(expiresAt ? { expiresAt } : {}),
+        expiresAt,
         voucherCode: code,
+        idempotencyKeyHash,
+        idempotencyFingerprint,
       };
 
       if (paymentMode === 'manual') {
         await saveVoucherOrderDb([voucher, ...vouchers], [transaction, ...transactions]);
-        void telegramBot.notifyManualPayment({
+        await notifyManualPaymentAndTrack(orderId, {
           orderId,
           orderType: 'voucher',
           paymentCode,
@@ -2464,7 +2605,9 @@ async function startServer() {
         return res.status(201).json({
           orderId,
           paymentCode,
+          checkoutUrl,
           status: 'pending',
+          expiresAt,
           method: manualMethod,
           amount: profile.price,
           operatorUrl,
@@ -2485,9 +2628,9 @@ async function startServer() {
         customerName: customerName.trim(),
         customerPhone: phone.trim(),
         customerEmail: typeof email === 'string' ? email.trim() || undefined : undefined,
-        returnUrl: appUrl ? `${appUrl.origin}/portal?payment=return&tab=voucher&orderId=${encodeURIComponent(orderId)}` : '',
-        successUrl: appUrl ? `${appUrl.origin}/portal?payment=success&tab=voucher&orderId=${encodeURIComponent(orderId)}` : '',
-        failureUrl: appUrl ? `${appUrl.origin}/portal?payment=failed&tab=voucher&orderId=${encodeURIComponent(orderId)}` : '',
+        returnUrl: appUrl ? `${appUrl.origin}${checkoutUrl}` : '',
+        successUrl: appUrl ? `${appUrl.origin}${checkoutUrl}` : '',
+        failureUrl: appUrl ? `${appUrl.origin}${checkoutUrl}` : '',
       });
       transaction.paymentMethod = checkout.provider;
       transaction.paymentChannel = checkout.provider === 'midtrans'
@@ -2509,17 +2652,241 @@ async function startServer() {
         return res.status(201).json({
           orderId,
           paymentCode,
+          checkoutUrl,
           qrString: checkout.qrString,
           amount: checkout.amount,
           expiresAt: transaction.expiresAt,
           status: 'pending',
         });
       }
-      res.status(201).json({ orderId, paymentCode, redirectUrl: transaction.paymentUrl, status: 'pending' });
+      res.status(201).json({ orderId, paymentCode, checkoutUrl, status: 'pending' });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      if (lockedIdempotencyKey) voucherCheckoutInProgress.delete(lockedIdempotencyKey);
     }
   });
+
+  app.post('/api/portal/checkout/details', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, private');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    const { token } = req.body || {};
+    if (typeof token !== 'string' || token.length > 512) {
+      return res.status(400).json({ error: 'Tautan checkout tidak valid' });
+    }
+
+    try {
+      const secret = await getOrCreatePortalLinkSecretDb();
+      const access = verifyCheckoutAccessToken(token, secret);
+      if (!access) return res.status(404).json({ error: 'Tautan checkout tidak ditemukan atau tidak valid' });
+
+      let stored = await getAppDataDb();
+      let transaction = (stored.data.transactions || []).find(item =>
+        item.orderId === access.orderId &&
+        item.idempotencyKeyHash === access.idempotencyKeyHash
+      );
+      if (!transaction) return res.status(404).json({ error: 'Pesanan checkout tidak ditemukan' });
+
+      if (
+        transaction.status === 'pending' &&
+        transaction.paymentMethod === 'manual' &&
+        transaction.expiresAt &&
+        Date.parse(transaction.expiresAt) <= Date.now()
+      ) {
+        const expiredOrderId = transaction.orderId;
+        const transactions = (stored.data.transactions || []).map(item =>
+          item.orderId === expiredOrderId ? { ...item, status: 'expired' as const } : item
+        );
+        const vouchers = (stored.data.vouchers || []).map(item =>
+          item.orderId === expiredOrderId && item.status === 'pending'
+            ? { ...item, status: 'expired' as const }
+            : item
+        );
+        await savePublicPaymentUpdateDb(
+          stored.data.customers || [],
+          stored.data.invoices || [],
+          transactions,
+          vouchers
+        );
+        transaction = { ...transaction, status: 'expired' };
+      }
+
+      if (transaction.paymentMethod === 'qrisly' && transaction.status === 'pending') {
+        transaction = await refreshQrislyPayment(transaction.orderId);
+        stored = await getAppDataDb();
+      }
+
+      const invoice = transaction.invoiceId
+        ? (stored.data.invoices || []).find(item => item.id === transaction.invoiceId)
+        : undefined;
+      const voucher = (stored.data.vouchers || []).find(item => item.orderId === transaction.orderId);
+      const appSettings = await getAppSettingsDb();
+      const operatorNumber = appSettings.phoneContact.replace(/[^0-9]/g, '');
+      const operatorWhatsapp = operatorNumber
+        ? (operatorNumber.startsWith('0') ? `62${operatorNumber.slice(1)}` : operatorNumber)
+        : '';
+      const contactMessage = transaction.paymentMethod === 'manual'
+        ? `Yth. Operator, saya ingin mengonfirmasi pembayaran.\n\nKode pembayaran: ${transaction.paymentCode || transaction.orderId}\nNominal: ${appSettings.currencySymbol || 'Rp'} ${transaction.amount.toLocaleString('id-ID')}\nMetode: ${transaction.manualMethod?.name || transaction.paymentChannel}`
+        : '';
+      const operatorUrl = operatorWhatsapp && contactMessage
+        ? `https://wa.me/${operatorWhatsapp}?text=${encodeURIComponent(contactMessage)}`
+        : '';
+
+      res.json({
+        orderId: transaction.orderId,
+        paymentCode: transaction.paymentCode || transaction.orderId,
+        orderType: transaction.orderType,
+        status: transaction.status,
+        amount: transaction.amount,
+        itemName: transaction.orderType === 'invoice'
+          ? `Tagihan ${invoice?.invoiceNumber || ''}`.trim()
+          : voucher?.profileName || 'Voucher Hotspot',
+        invoiceNumber: invoice?.invoiceNumber,
+        paymentMethod: transaction.paymentMethod,
+        paymentChannel: transaction.paymentChannel,
+        manualMethod: transaction.manualMethod,
+        qrString: transaction.qrCodeData,
+        paymentUrl: transaction.paymentUrl,
+        expiresAt: transaction.expiresAt,
+        proofUploaded: Boolean(transaction.proofData),
+        operatorUrl,
+        voucher: transaction.status === 'settlement' && voucher
+          ? {
+            code: voucher.code,
+            password: voucher.password || voucher.code,
+            validityDuration: voucher.validityDuration,
+          }
+          : undefined,
+      });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post(
+    '/api/portal/checkout/proof',
+    express.raw({ type: ['image/png', 'image/jpeg'], limit: '5mb' }),
+    async (req, res) => {
+      const token = req.get('X-Checkout-Token') || '';
+      if (!token || token.length > 512) {
+        return res.status(400).json({ error: 'Tautan checkout tidak valid' });
+      }
+      const image = req.body;
+      if (!Buffer.isBuffer(image) || image.length === 0) {
+        return res.status(400).json({ error: 'Pilih gambar bukti transfer PNG atau JPG.' });
+      }
+      const isPng = image.length >= 8 &&
+        image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      const isJpeg = image.length >= 4 &&
+        image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff &&
+        image.lastIndexOf(Buffer.from([0xff, 0xd9])) >= 2;
+      if (!isPng && !isJpeg) {
+        return res.status(400).json({ error: 'Isi gambar tidak dikenali. Gunakan bukti transfer PNG atau JPG.' });
+      }
+
+      let filePath: string | null = null;
+      let lockedOrderId: string | null = null;
+      try {
+        const secret = await getOrCreatePortalLinkSecretDb();
+        const access = verifyCheckoutAccessToken(token, secret);
+        if (!access) return res.status(404).json({ error: 'Tautan checkout tidak ditemukan atau tidak valid' });
+
+        const stored = await getAppDataDb();
+        const transaction = (stored.data.transactions || []).find(item =>
+          item.orderId === access.orderId &&
+          item.idempotencyKeyHash === access.idempotencyKeyHash
+        );
+        if (!transaction) return res.status(404).json({ error: 'Pesanan checkout tidak ditemukan' });
+        if (transaction.paymentMethod !== 'manual') {
+          return res.status(409).json({ error: 'Bukti transfer hanya tersedia untuk pembayaran manual' });
+        }
+        if (transaction.status !== 'pending') {
+          return res.status(409).json({ error: 'Pesanan ini tidak lagi menunggu pembayaran' });
+        }
+        if (voucherApprovalsInProgress.has(transaction.orderId)) {
+          return res.status(409).json({ error: 'Pesanan sedang diproses. Silakan coba lagi.' });
+        }
+        voucherApprovalsInProgress.add(transaction.orderId);
+        lockedOrderId = transaction.orderId;
+
+        await fs.promises.mkdir(manualPaymentProofDir, { recursive: true });
+        const fileName = `${randomUUID()}.${isPng ? 'png' : 'jpg'}`;
+        filePath = path.join(manualPaymentProofDir, fileName);
+        await fs.promises.writeFile(filePath, image, { flag: 'wx' });
+
+        const latest = await getAppDataDb();
+        const current = (latest.data.transactions || []).find(item =>
+          item.orderId === access.orderId &&
+          item.idempotencyKeyHash === access.idempotencyKeyHash
+        );
+        if (!current || current.paymentMethod !== 'manual' || current.status !== 'pending') {
+          await fs.promises.unlink(filePath);
+          filePath = null;
+          return res.status(409).json({ error: 'Pesanan sudah berubah status; bukti transfer tidak disimpan' });
+        }
+        const previousProofPath = getManualPaymentProofPath(current.proofData);
+        const transactions = (latest.data.transactions || []).map(item =>
+          item.orderId === current.orderId
+            ? { ...item, proofData: fileName }
+            : item
+        );
+        await saveAppDataCollectionDb('transactions', transactions);
+        filePath = null;
+
+        if (previousProofPath && previousProofPath !== path.join(manualPaymentProofDir, fileName)) {
+          try {
+            await fs.promises.unlink(previousProofPath);
+          } catch (cleanupError) {
+            if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') {
+              console.error(`[Payment] Gagal membersihkan bukti transfer lama untuk ${current.orderId}:`, cleanupError);
+            }
+          }
+        }
+
+        const proofNotification = await telegramBot.notifyManualPaymentProof({
+          orderId: current.orderId,
+          orderType: current.orderType,
+          paymentCode: current.paymentCode || current.orderId,
+          amount: current.amount,
+          customerName: current.customerName,
+          customerPhone: current.customerPhone,
+          itemName: current.orderType === 'voucher'
+            ? (stored.data.vouchers || []).find(voucher => voucher.orderId === current.orderId)?.profileName || 'Voucher Hotspot'
+            : `Tagihan ${(stored.data.invoices || []).find(invoice => invoice.id === current.invoiceId)?.invoiceNumber || ''}`.trim(),
+          image,
+          mimeType: isPng ? 'image/png' : 'image/jpeg',
+          previousMessages: current.telegramMessageRefs || [],
+        });
+        if (proofNotification.errors.length) {
+          console.error(`[Telegram] Bukti ${current.orderId} disimpan, tetapi notifikasi gagal: ${proofNotification.errors.join('; ')}`);
+        }
+        if (proofNotification.messages.length) {
+          const latest = await getAppDataDb();
+          const transactions = (latest.data.transactions || []).map(item =>
+            item.orderId === current.orderId &&
+            item.paymentMethod === 'manual' &&
+            item.status === 'pending'
+              ? { ...item, telegramMessageRefs: proofNotification.messages }
+              : item
+          );
+          await saveAppDataCollectionDb('transactions', transactions);
+        }
+        return res.status(201).json({ proofUploaded: true, telegramNotified: proofNotification.sentCount > 0 });
+      } catch (error) {
+        if (filePath) {
+          try {
+            await fs.promises.unlink(filePath);
+          } catch (cleanupError) {
+            console.error('[Payment] Gagal membersihkan file bukti upload yang tidak tersimpan:', cleanupError);
+          }
+        }
+        console.error('[Payment] Gagal menyimpan bukti transfer:', error);
+        return res.status(500).json({ error: 'Bukti transfer gagal disimpan. Silakan coba lagi.' });
+      } finally {
+        if (lockedOrderId) voucherApprovalsInProgress.delete(lockedOrderId);
+      }
+    }
+  );
 
   app.post('/api/portal/voucher-orders/status', async (req, res) => {
     const { orderId, phone } = req.body || {};
@@ -2823,7 +3190,7 @@ async function startServer() {
         [nextTransaction, ...updatedTransactions],
       );
 
-      void telegramBot.notifyManualPayment({
+      await notifyManualPaymentAndTrack(orderIdNext, {
         orderId: orderIdNext,
         orderType: 'voucher',
         paymentCode,
@@ -4121,6 +4488,7 @@ async function startServer() {
   });
 
   app.post('/api/portal/payment', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, private');
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
     const attempts = publicLookupAttempts.get(ip);
     if (attempts && attempts.resetAt > Date.now() && attempts.count >= 30) {
@@ -4131,18 +4499,29 @@ async function startServer() {
       resetAt: attempts && attempts.resetAt > Date.now() ? attempts.resetAt : Date.now() + 60_000,
     });
 
-    const { lookupValue, invoiceId, portalToken, paymentMode = 'automatic', methodId } = req.body || {};
+    const { lookupValue, invoiceId, portalToken, paymentMode = 'automatic', methodId, idempotencyKey } = req.body || {};
     if (
       ((typeof lookupValue !== 'string' || !lookupValue.trim() || lookupValue.length > 128) &&
         typeof portalToken !== 'string') ||
       typeof invoiceId !== 'string' || !invoiceId.trim() || invoiceId.length > 128 ||
-      (paymentMode !== 'automatic' && paymentMode !== 'manual')
+      (paymentMode !== 'automatic' && paymentMode !== 'manual') ||
+      typeof idempotencyKey !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotencyKey)
     ) {
       return res.status(400).json({ error: 'Identitas pelanggan atau tautan tagihan, invoice, dan metode pembayaran wajib valid' });
     }
 
+    const idempotencyKeyHash = hashCheckoutIntent(idempotencyKey);
+    const idempotencyFingerprint = hashCheckoutIntent({
+      orderType: 'invoice',
+      invoiceId,
+      paymentMode,
+      methodId: paymentMode === 'manual' ? methodId : '',
+    });
+    let lockedInvoiceId: string | null = null;
     try {
       const stored = await getAppDataDb();
+      stored.data.transactions = await expirePendingManualPayments(stored);
       const gateway = await paymentGatewayCredentials();
       const customers = stored.data.customers || [];
       let customer: Customer | undefined;
@@ -4187,11 +4566,36 @@ async function startServer() {
         item.id === invoiceId && item.customerId === customer.id
       );
       if (!invoice) return res.status(404).json({ error: 'Tagihan tidak ditemukan' });
+      const transactions = stored.data.transactions || [];
+      const existingByKey = transactions.find(item =>
+        item.orderType === 'invoice' && item.idempotencyKeyHash === idempotencyKeyHash
+      );
+      if (existingByKey) {
+        if (existingByKey.idempotencyFingerprint !== idempotencyFingerprint) {
+          return res.status(409).json({ error: 'Kunci checkout sudah digunakan untuk pembayaran lain.' });
+        }
+        if (existingByKey.status === 'expired' || existingByKey.status === 'canceled') {
+          return res.status(409).json({ error: 'Checkout ini sudah tidak aktif. Mulai pembayaran baru untuk melanjutkan.' });
+        }
+        const secret = await getOrCreatePortalLinkSecretDb();
+        const token = createCheckoutAccessToken(existingByKey.orderId, idempotencyKeyHash, existingByKey.createdAt, secret);
+        return res.json({
+          orderId: existingByKey.orderId,
+          paymentCode: existingByKey.paymentCode,
+          checkoutUrl: `/portal/checkout#${token}`,
+          status: existingByKey.status,
+        });
+      }
       if (invoice.status === 'paid') return res.status(409).json({ error: 'Tagihan ini sudah lunas' });
       if (invoice.status !== 'unpaid') return res.status(409).json({ error: 'Tagihan ini tidak dapat dibayar secara online' });
       if (!Number.isSafeInteger(invoice.totalAmount) || invoice.totalAmount <= 0) {
         return res.status(400).json({ error: 'Nominal tagihan tidak valid untuk checkout' });
       }
+      if (paymentCheckoutInProgress.has(invoice.id)) {
+        return res.status(409).json({ error: 'Checkout tagihan sedang dibuat. Silakan coba lagi dengan permintaan yang sama.' });
+      }
+      paymentCheckoutInProgress.add(invoice.id);
+      lockedInvoiceId = invoice.id;
       if (paymentMode === 'automatic' && gateway.provider === 'qrisly' && invoice.totalAmount < 1000) {
         return res.status(400).json({ error: 'Nominal pembayaran Qrisly minimal Rp 1.000' });
       }
@@ -4208,9 +4612,12 @@ async function startServer() {
           return res.status(409).json({ error: `Pembayaran manual sudah menunggu persetujuan (${existingManualRequest.paymentCode || 'kode tersimpan'})` });
         }
         const createdAt = new Date();
-        const transactions = stored.data.transactions || [];
         const orderId = `SBM-${randomUUID()}`;
         const paymentCode = createPaymentCode(transactions, 'SBM');
+        const expiresAt = new Date(createdAt.getTime() + 24 * 60 * 60_000).toISOString();
+        const checkoutSecret = await getOrCreatePortalLinkSecretDb();
+        const checkoutToken = createCheckoutAccessToken(orderId, idempotencyKeyHash, createdAt.toISOString(), checkoutSecret);
+        const checkoutUrl = `/portal/checkout#${checkoutToken}`;
         const transaction: PaymentTransaction = {
           id: randomUUID(),
           orderId,
@@ -4224,11 +4631,15 @@ async function startServer() {
           paymentChannel: method.id,
           manualMethod: { ...method },
           status: 'pending',
+          expiryMinutes: 1440,
           createdAt: createdAt.toISOString(),
+          expiresAt,
           invoiceId: invoice.id,
+          idempotencyKeyHash,
+          idempotencyFingerprint,
         };
         await saveAppDataCollectionDb('transactions', [transaction, ...transactions]);
-        void telegramBot.notifyManualPayment({
+        await notifyManualPaymentAndTrack(orderId, {
           orderId,
           orderType: 'invoice',
           paymentCode,
@@ -4267,7 +4678,7 @@ async function startServer() {
               account_holder: method.accountHolder || method.serviceName || '-',
               account_number: method.accountNumber || '-',
               notes: method.instructions,
-              expires_at: 'Tidak ada batas waktu',
+              expires_at: new Date(expiresAt).toLocaleString('id-ID'),
               operator_url: operatorUrl || 'Hubungi nomor WhatsApp operator yang tersedia.',
             })
           );
@@ -4278,116 +4689,110 @@ async function startServer() {
           status: 'pending',
           orderId: transaction.orderId,
           paymentCode,
+          checkoutUrl,
           amount: invoice.totalAmount,
+          expiresAt,
           operatorUrl,
           method: { ...method },
           message: 'Kode bayar dibuat. Hubungi operator melalui WhatsApp setelah menyelesaikan transfer.',
         });
       }
 
-      const appUrl = await configuredPaymentAppUrl();
-      if (!await paymentGatewayReady(gateway) || (!appUrl && gateway.provider !== 'qrisly')) {
-        return res.status(503).json({ error: 'Gateway otomatis belum dikonfigurasi oleh administrator' });
-      }
-      if (paymentCheckoutInProgress.has(invoice.id)) {
-        return res.status(409).json({ error: 'Checkout tagihan sedang dibuat. Silakan coba lagi.' });
-      }
-      const existing = (stored.data.transactions || []).find(item =>
+      const existing = transactions.find(item =>
         item.invoiceId === invoice.id &&
         item.status === 'pending' &&
         (item.paymentUrl || item.providerTransactionId)
       );
-      if (existing?.paymentMethod === 'qrisly' && existing.qrCodeData) {
+      if (existing) {
+        let resumable = existing;
+        if (!resumable.idempotencyKeyHash) {
+          resumable = {
+            ...resumable,
+            idempotencyKeyHash,
+            idempotencyFingerprint,
+          };
+          await saveAppDataCollectionDb('transactions', transactions.map(item =>
+            item.orderId === existing.orderId ? resumable : item
+          ));
+        }
+        const secret = await getOrCreatePortalLinkSecretDb();
+        const token = createCheckoutAccessToken(resumable.orderId, resumable.idempotencyKeyHash!, resumable.createdAt, secret);
         return res.json({
-          orderId: existing.orderId,
-          paymentCode: existing.paymentCode,
-          qrString: existing.qrCodeData,
-          amount: existing.amount,
-          expiresAt: existing.expiresAt,
-          status: existing.status,
+          orderId: resumable.orderId,
+          paymentCode: resumable.paymentCode,
+          checkoutUrl: `/portal/checkout#${token}`,
+          status: resumable.status,
         });
       }
-      if (existing?.paymentUrl) return res.json({
-        paymentCode: existing.paymentCode,
-        redirectUrl: existing.paymentUrl,
+      const appUrl = await configuredPaymentAppUrl();
+      if (!await paymentGatewayReady(gateway) || (!appUrl && gateway.provider !== 'qrisly')) {
+        return res.status(503).json({ error: 'Gateway otomatis belum dikonfigurasi oleh administrator' });
+      }
+      const orderId = `SB-${randomUUID()}`;
+      const createdAt = new Date().toISOString();
+      const checkoutSecret = await getOrCreatePortalLinkSecretDb();
+      const checkoutToken = createCheckoutAccessToken(orderId, idempotencyKeyHash, createdAt, checkoutSecret);
+      const checkoutUrl = `/portal/checkout#${checkoutToken}`;
+      const returnUrl = appUrl ? `${appUrl.origin}${checkoutUrl}` : '';
+      const checkout = await createOnlineCheckout({
+        config: gateway,
+        orderId,
+        amount: invoice.totalAmount,
+        itemId: invoice.id,
+        itemName: `Tagihan ${invoice.invoiceNumber}`,
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        customerEmail: customer.email || undefined,
+        returnUrl,
+        successUrl: returnUrl,
+        failureUrl: returnUrl,
       });
 
-      paymentCheckoutInProgress.add(invoice.id);
-      try {
-        const orderId = `SB-${randomUUID()}`;
-        const checkout = await createOnlineCheckout({
-          config: gateway,
-          orderId,
-          amount: invoice.totalAmount,
-          itemId: invoice.id,
-          itemName: `Tagihan ${invoice.invoiceNumber}`,
-          customerName: customer.name,
-          customerPhone: customer.phone,
-          customerEmail: customer.email || undefined,
-          returnUrl: appUrl
-            ? portalToken
-              ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=return`
-              : `${appUrl.origin}/portal?payment=return&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`
-            : '',
-          successUrl: appUrl
-            ? portalToken
-              ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=success`
-              : `${appUrl.origin}/portal?payment=success&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`
-            : '',
-          failureUrl: appUrl
-            ? portalToken
-              ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(portalToken)}&payment=failed`
-              : `${appUrl.origin}/portal?payment=failed&tab=customer&invoiceId=${encodeURIComponent(invoice.id)}`
-            : '',
-        });
-
-        const transaction: PaymentTransaction = {
-          id: randomUUID(),
-          orderId,
-          paymentCode: createPaymentCode(stored.data.transactions || [], 'SBM'),
-          orderType: 'invoice',
-          amount: checkout.provider === 'qrisly' ? checkout.amount : invoice.totalAmount,
-          customerName: customer.name,
-          customerPhone: customer.phone,
-          customerEmail: customer.email || undefined,
-          paymentMethod: checkout.provider,
-          paymentChannel: checkout.provider === 'midtrans'
-            ? 'snap'
-            : checkout.provider === 'doku'
-              ? 'checkout'
-              : checkout.provider,
-          status: 'pending',
-          ...(checkout.provider === 'qrisly'
-            ? {
-              providerTransactionId: checkout.historyId,
-              qrCodeData: checkout.qrString,
-              ...(checkout.expiresAt ? { expiresAt: checkout.expiresAt } : {}),
-              expiryMinutes: checkout.expiresAt
-                ? Math.max(1, Math.ceil((Date.parse(checkout.expiresAt) - Date.now()) / 60_000))
-                : 15,
-            }
-            : { paymentUrl: checkout.redirectUrl, expiryMinutes: 1440 }),
-          createdAt: new Date().toISOString(),
-          invoiceId: invoice.id,
-        };
-        await saveAppDataCollectionDb('transactions', [...(stored.data.transactions || []), transaction]);
-        if (checkout.provider === 'qrisly') {
-          res.json({
-            orderId,
-            paymentCode: transaction.paymentCode,
-            qrString: checkout.qrString,
-            amount: checkout.amount,
-            expiresAt: transaction.expiresAt,
-            status: transaction.status,
-          });
-        } else {
-          res.json({ paymentCode: transaction.paymentCode, redirectUrl: transaction.paymentUrl });
-        }
-      } finally {
-        paymentCheckoutInProgress.delete(invoice.id);
-      }
+      const expiresAt = checkout.provider === 'qrisly'
+        ? checkout.expiresAt
+        : new Date(Date.now() + 24 * 60 * 60_000).toISOString();
+      const transaction: PaymentTransaction = {
+        id: randomUUID(),
+        orderId,
+        paymentCode: createPaymentCode(transactions, 'SBM'),
+        orderType: 'invoice',
+        amount: checkout.provider === 'qrisly' ? checkout.amount : invoice.totalAmount,
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        customerEmail: customer.email || undefined,
+        paymentMethod: checkout.provider,
+        paymentChannel: checkout.provider === 'midtrans'
+          ? 'snap'
+          : checkout.provider === 'doku'
+            ? 'checkout'
+            : checkout.provider,
+        status: 'pending',
+        ...(checkout.provider === 'qrisly'
+          ? {
+            providerTransactionId: checkout.historyId,
+            qrCodeData: checkout.qrString,
+            expiresAt,
+            expiryMinutes: Math.max(1, Math.ceil((Date.parse(expiresAt) - Date.now()) / 60_000)),
+          }
+          : { paymentUrl: checkout.redirectUrl, expiresAt, expiryMinutes: 1440 }),
+        createdAt,
+        invoiceId: invoice.id,
+        idempotencyKeyHash,
+        idempotencyFingerprint,
+      };
+      await saveAppDataCollectionDb('transactions', [...transactions, transaction]);
+      return res.status(201).json({
+        orderId,
+        paymentCode: transaction.paymentCode,
+        checkoutUrl,
+        amount: transaction.amount,
+        expiresAt,
+        status: transaction.status,
+      });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      if (lockedInvoiceId) paymentCheckoutInProgress.delete(lockedInvoiceId);
     }
   });
 
@@ -4813,15 +5218,74 @@ async function startServer() {
     }
   });
 
+  async function expirePendingManualPayments(stored: { data: Partial<AppDataSnapshot> }): Promise<PaymentTransaction[]> {
+    const transactions = stored.data.transactions || [];
+    const expiredOrderIds = new Set(
+      transactions
+        .filter(transaction =>
+          transaction.paymentMethod === 'manual' &&
+          transaction.status === 'pending' &&
+          typeof transaction.expiresAt === 'string' &&
+          Date.parse(transaction.expiresAt) <= Date.now()
+        )
+        .map(transaction => transaction.orderId)
+    );
+    if (!expiredOrderIds.size) return transactions;
+
+    const updatedTransactions = transactions.map(transaction =>
+      expiredOrderIds.has(transaction.orderId)
+        ? { ...transaction, status: 'expired' as const }
+        : transaction
+    );
+    const updatedVouchers = (stored.data.vouchers || []).map(voucher =>
+      typeof voucher.orderId === 'string' &&
+      expiredOrderIds.has(voucher.orderId) &&
+      voucher.status === 'pending'
+        ? { ...voucher, status: 'expired' as const }
+        : voucher
+    );
+    await savePublicPaymentUpdateDb(
+      stored.data.customers || [],
+      stored.data.invoices || [],
+      updatedTransactions,
+      updatedVouchers
+    );
+    return updatedTransactions;
+  }
+
+  app.get('/api/admin/payment-requests/counts', requireAdminSession, async (_req, res) => {
+    try {
+      const stored = await getAppDataDb();
+      const transactions = await expirePendingManualPayments(stored);
+      const counts = transactions.reduce(
+        (pending, transaction) => {
+          if (transaction.paymentMethod === 'manual' && transaction.status === 'pending') {
+            pending[transaction.orderType] += 1;
+          }
+          return pending;
+        },
+        { invoice: 0, voucher: 0 },
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json(counts);
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get('/api/admin/payment-requests', requireAdminSession, async (_req, res) => {
     try {
       const stored = await getAppDataDb();
+      const transactions = await expirePendingManualPayments(stored);
       const vouchers = stored.data.vouchers || [];
       const invoices = stored.data.invoices || [];
-      const requests = (stored.data.transactions || [])
+      const requests = transactions
         .filter(transaction => transaction.paymentMethod === 'manual' && transaction.status === 'pending')
         .map(transaction => ({
           ...transaction,
+          proofData: getManualPaymentProofPath(transaction.proofData)
+            ? `/api/admin/payment-requests/${encodeURIComponent(transaction.orderId)}/proof`
+            : undefined,
           voucher: vouchers.find(voucher => voucher.orderId === transaction.orderId) || null,
           invoice: transaction.invoiceId
             ? invoices.find(invoice => invoice.id === transaction.invoiceId) || null
@@ -4831,6 +5295,26 @@ async function startServer() {
       res.json({ requests });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get('/api/admin/payment-requests/:orderId/proof', requireAdminSession, async (req, res) => {
+    try {
+      const stored = await getAppDataDb();
+      const transaction = (stored.data.transactions || []).find(item =>
+        item.orderId === req.params.orderId &&
+        item.paymentMethod === 'manual' &&
+        item.status === 'pending'
+      );
+      const proofPath = getManualPaymentProofPath(transaction?.proofData);
+      if (!proofPath || !fs.existsSync(proofPath)) {
+        return res.status(404).json({ error: 'Bukti transfer tidak ditemukan' });
+      }
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.type(proofPath.endsWith('.png') ? 'png' : 'jpg');
+      return res.sendFile(proofPath);
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 
@@ -4845,7 +5329,8 @@ async function startServer() {
     voucherApprovalsInProgress.add(orderId);
     try {
       const stored = await getAppDataDb();
-      const transaction = (stored.data.transactions || []).find(item =>
+      const transactions = await expirePendingManualPayments(stored);
+      const transaction = transactions.find(item =>
         item.orderId === orderId && item.paymentMethod === 'manual' && item.status === 'pending'
       );
       if (!transaction) return { success: false, message: 'Permintaan pembayaran tidak ditemukan atau sudah diproses' };
@@ -4868,6 +5353,13 @@ async function startServer() {
           updatedTransactions,
           updatedVouchers
         );
+      }
+      if (transaction.proofData) {
+        try {
+          await deleteManualPaymentProof(orderId);
+        } catch (error) {
+          console.error(`[Payment] ${orderId} processed, but its transfer proof could not be deleted:`, error);
+        }
       }
       return { success: true };
     } catch (error) {
@@ -5174,6 +5666,52 @@ async function startServer() {
     }
   });
 
+  app.get('/api/mikrotik/interface-traffic/history', requireAdminSession, async (req, res) => {
+    const routerId = String(req.query.routerId || '');
+    const interfaceName = String(req.query.interface || '');
+    const range = String(req.query.range || '1h');
+    const rangeMilliseconds: Record<string, number> = {
+      '1h': 60 * 60 * 1000,
+      '6h': 6 * 60 * 60 * 1000,
+      '24h': 24 * 60 * 60 * 1000,
+      '7d': 7 * 24 * 60 * 60 * 1000,
+    };
+    if (
+      !routerId ||
+      !interfaceName.trim() ||
+      interfaceName.length > 128 ||
+      /[\u0000-\u001f\u007f]/.test(interfaceName) ||
+      !rangeMilliseconds[range]
+    ) {
+      return res.status(400).json({ error: 'Router, interface, atau rentang riwayat tidak valid' });
+    }
+
+    try {
+      const from = new Date(Date.now() - rangeMilliseconds[range]).toISOString();
+      const history = await getInterfaceTrafficHistoryDb(routerId, interfaceName, from);
+      let chartHistory = history;
+      if (history.length > 1200) {
+        const bucketSize = Math.ceil(history.length / 600);
+        chartHistory = [];
+        for (let start = 0; start < history.length; start += bucketSize) {
+          const bucket = history.slice(start, start + bucketSize);
+          const low = bucket.reduce((current, sample) =>
+            Math.max(sample.rxBitsPerSecond, sample.txBitsPerSecond) <
+              Math.max(current.rxBitsPerSecond, current.txBitsPerSecond) ? sample : current);
+          const high = bucket.reduce((current, sample) =>
+            Math.max(sample.rxBitsPerSecond, sample.txBitsPerSecond) >
+              Math.max(current.rxBitsPerSecond, current.txBitsPerSecond) ? sample : current);
+          chartHistory.push(...(low.sampledAt === high.sampledAt ? [low] : [low, high].sort((a, b) =>
+            a.sampledAt.localeCompare(b.sampledAt))));
+        }
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ routerId, interface: interfaceName, range, samples: chartHistory });
+    } catch (error) {
+      return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get('/api/mikrotik/interface-traffic', requireAdminSession, async (req, res) => {
     const routerId = String(req.query.routerId || '');
     const interfaceName = String(req.query.interface || '');
@@ -5189,8 +5727,10 @@ async function startServer() {
       const router = await resolveRouterConnection(routerId);
       if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
       const traffic = await getRouterInterfaceTraffic(router, interfaceName);
+      const sample = { ...traffic, sampledAt: new Date().toISOString() };
+      await saveInterfaceTrafficSampleDb(routerId, interfaceName, sample);
       res.setHeader('Cache-Control', 'no-store');
-      res.json({ routerId, interface: interfaceName, ...traffic, sampledAt: new Date().toISOString() });
+      res.json({ routerId, interface: interfaceName, ...sample });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -6249,6 +6789,47 @@ async function startServer() {
   const hotspotVoucherExpiryTimer = setInterval(() => void runHotspotVoucherExpiryTasks(), 60 * 1000);
   hotspotVoucherExpiryTimer.unref();
   void runHotspotVoucherExpiryTasks();
+
+  let qrislyBackgroundTaskRunning = false;
+  async function runQrislyBackgroundPaymentChecks(): Promise<void> {
+    if (qrislyBackgroundTaskRunning) return;
+    qrislyBackgroundTaskRunning = true;
+    try {
+      const gateway = await paymentGatewayCredentials();
+      if (gateway.provider !== 'qrisly' || !gateway.qrislyApiKey) return;
+
+      const stored = await getAppDataDb();
+      const pendingTransactions = (stored.data.transactions || [])
+        .filter(transaction =>
+          transaction.paymentMethod === 'qrisly' &&
+          transaction.status === 'pending' &&
+          transaction.providerTransactionId
+        )
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+
+      for (const transaction of pendingTransactions) {
+        try {
+          await refreshQrislyPayment(transaction.orderId);
+        } catch (error) {
+          console.error(
+            `[Qrisly payment poll] Status check failed for ${transaction.orderId}:`,
+            error,
+          );
+        }
+      }
+    } catch (error) {
+      console.error('[Qrisly payment poll] Background status check failed:', error);
+    } finally {
+      qrislyBackgroundTaskRunning = false;
+    }
+  }
+
+  const qrislyBackgroundTaskTimer = setInterval(
+    () => void runQrislyBackgroundPaymentChecks(),
+    30 * 1000,
+  );
+  qrislyBackgroundTaskTimer.unref();
+  void runQrislyBackgroundPaymentChecks();
 
   async function runBillingBackgroundTasks(): Promise<void> {
     if (backgroundTasksRunning) return;

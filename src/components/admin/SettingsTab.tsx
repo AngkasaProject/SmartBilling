@@ -4,10 +4,8 @@ import { StorageService } from '../../services/storage';
 import { useToast } from '../ui/toast';
 import {
   Activity,
-  Building,
   Check,
   Copy,
-  Database,
   Download,
   Eye,
   EyeOff,
@@ -18,20 +16,18 @@ import {
   MapPin,
   Phone,
   Save,
-  ShieldCheck,
-  Sliders,
   Trash2,
   Upload,
   Users,
   Zap,
 } from 'lucide-react';
+import type { SettingsSection } from './settingsSections';
 
 interface Props {
   settings: AppSettings;
   onRefreshSettings: () => void;
+  section: SettingsSection;
 }
-
-type SettingsSection = 'business' | 'billing' | 'reminders' | 'telegram' | 'database' | 'security';
 
 interface DatabaseInfo {
   dbPath: string;
@@ -45,15 +41,6 @@ interface AdminUser {
   createdAt: string;
 }
 
-const settingsSections: Array<{ id: SettingsSection; label: string; description: string; icon: React.ElementType }> = [
-  { id: 'business', label: 'Profil bisnis', description: 'Nama dan kontak pada invoice', icon: Building },
-  { id: 'billing', label: 'Billing & voucher', description: 'Format kode voucher', icon: Sliders },
-  { id: 'reminders', label: 'Pengingat otomatis', description: 'Jadwal notifikasi WhatsApp', icon: Activity },
-  { id: 'telegram', label: 'Bot Telegram', description: 'Notifikasi & tombol persetujuan', icon: Send },
-  { id: 'database', label: 'Database & backup', description: 'Status dan pencadangan data', icon: Database },
-  { id: 'security', label: 'Admin & keamanan', description: 'Akun dan kunci enkripsi', icon: ShieldCheck },
-];
-
 const inputClass = 'mt-1 w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20';
 const cardClass = 'rounded-2xl border border-border bg-card p-5 text-card-foreground shadow-sm sm:p-6';
 
@@ -63,9 +50,8 @@ async function readJson<T>(response: Response): Promise<T> {
   return result as T;
 }
 
-export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) => {
+export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings, section }) => {
   const { toast, confirm } = useToast();
-  const [section, setSection] = useState<SettingsSection>('business');
   const [formData, setFormData] = useState<AppSettings>(settings);
   const [logoError, setLogoError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -429,32 +415,7 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
         </button>
       </section>
 
-      <div className="grid items-start gap-5 lg:grid-cols-[230px_minmax(0,1fr)]">
-        <nav aria-label="Bagian pengaturan" className={`${cardClass} space-y-1 p-2`}>
-          {settingsSections.map(item => {
-            const Icon = item.icon;
-            const active = section === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setSection(item.id)}
-                aria-current={active ? 'page' : undefined}
-                className={`flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition ${
-                  active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                }`}
-              >
-                <Icon className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>
-                  <span className="block text-xs font-bold">{item.label}</span>
-                  <span className={`mt-1 block text-[10px] ${active ? 'opacity-80' : ''}`}>{item.description}</span>
-                </span>
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className={`${cardClass} min-w-0 space-y-6`}>
+      <div className={`${cardClass} min-w-0 space-y-6`}>
           {section === 'business' && (
             <>
               <header className="border-b border-border pb-4">
@@ -511,7 +472,18 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
                               <input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleBrandImageChange(field)} className="sr-only" />
                             </label>
                             {formData[field] && (
-                              <button type="button" onClick={() => updateSetting(field, '')} className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-rose-500/30 px-3 text-xs font-semibold text-rose-500 transition hover:bg-rose-500/10">
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (!await confirm(
+                                    `Hapus ${label.toLowerCase()}?`,
+                                    `Gambar ${label.toLowerCase()} akan dihapus dari perubahan pengaturan. Simpan pengaturan untuk menerapkan perubahan.`,
+                                    true,
+                                  )) return;
+                                  updateSetting(field, '');
+                                }}
+                                className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-rose-500/30 px-3 text-xs font-semibold text-rose-500 transition hover:bg-rose-500/10"
+                              >
                                 <Trash2 className="h-3.5 w-3.5" /> Hapus
                               </button>
                             )}
@@ -915,8 +887,6 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings }) =>
             </>
           )}
         </div>
-      </div>
-
       {section !== 'database' && section !== 'security' && (
         <div className="flex justify-end">
           <button

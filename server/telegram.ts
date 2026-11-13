@@ -25,6 +25,24 @@ export interface TelegramNotificationParams {
   createdAt?: string;
 }
 
+export interface TelegramPaymentProofParams {
+  orderId: string;
+  orderType: 'voucher' | 'invoice';
+  paymentCode: string;
+  amount: number;
+  customerName: string;
+  customerPhone: string;
+  itemName: string;
+  image: Buffer;
+  mimeType: 'image/png' | 'image/jpeg';
+  previousMessages: { chatId: string; messageId: number }[];
+}
+
+export interface TelegramMessageReference {
+  chatId: string;
+  messageId: number;
+}
+
 interface TelegramCallbackQuery {
   id: string;
   from: {
@@ -41,6 +59,7 @@ interface TelegramCallbackQuery {
       title?: string;
     };
     text?: string;
+    caption?: string;
   };
   data?: string;
 }
@@ -198,9 +217,9 @@ export class TelegramBotManager {
     };
   }
 
-  public async notifyManualPayment(params: TelegramNotificationParams): Promise<{ sentCount: number; errors: string[] }> {
+  public async notifyManualPayment(params: TelegramNotificationParams): Promise<{ sentCount: number; errors: string[]; messages: TelegramMessageReference[] }> {
     if (!this.config.enabled || !this.config.botToken || !this.config.allowedChatIds.length) {
-      return { sentCount: 0, errors: ['Telegram bot tidak aktif atau chat ID belum diisi'] };
+      return { sentCount: 0, errors: ['Telegram bot tidak aktif atau chat ID belum diisi'], messages: [] };
     }
 
     const orderTitle = params.orderType === 'voucher' ? 'PEMESANAN VOUCHER HOTSPOT' : 'PEMBAYARAN TAGIHAN PPPoE';
@@ -234,15 +253,19 @@ export class TelegramBotManager {
 
     let sentCount = 0;
     const errors: string[] = [];
+    const messages: TelegramMessageReference[] = [];
 
     for (const chatId of this.config.allowedChatIds) {
       try {
-        await this.callApi('sendMessage', {
+        const message = await this.callApi('sendMessage', {
           chat_id: chatId,
           text,
           parse_mode: 'HTML',
           reply_markup: inlineKeyboard,
         });
+        if (typeof message?.message_id === 'number') {
+          messages.push({ chatId, messageId: message.message_id });
+        }
         sentCount++;
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -251,7 +274,93 @@ export class TelegramBotManager {
       }
     }
 
-    return { sentCount, errors };
+    return { sentCount, errors, messages };
+  }
+
+  public async notifyManualPaymentProof(params: TelegramPaymentProofParams): Promise<{ sentCount: number; errors: string[]; messages: TelegramMessageReference[] }> {
+    if (!this.config.enabled || !this.config.botToken || !this.config.allowedChatIds.length) {
+      return { sentCount: 0, errors: ['Telegram bot tidak aktif atau chat ID belum diisi'], messages: [] };
+    }
+
+    const orderTitle = params.orderType === 'voucher' ? 'VOUCHER HOTSPOT' : 'TAGIHAN PPPoE';
+    const caption =
+      `🧾 <b>BUKTI TRANSFER DIUNGGAH</b>\n` +
+      `<b>${orderTitle}</b>\n\n` +
+      `📋 <b>Kode Bayar:</b> <code>${escapeHtml(params.paymentCode)}</code>\n` +
+      `📦 <b>Pesanan:</b> ${escapeHtml(params.itemName)}\n` +
+      `💰 <b>Nominal:</b> Rp ${params.amount.toLocaleString('id-ID')}\n` +
+      `👤 <b>Pelanggan:</b> ${escapeHtml(params.customerName)}\n` +
+      `📱 <b>WhatsApp:</b> <code>${escapeHtml(params.customerPhone)}</code>\n\n` +
+      `<i>Verifikasi bukti dan mutasi sebelum menyetujui pembayaran.</i>`;
+    const inlineKeyboard = {
+      inline_keyboard: [[
+        { text: '✅ SETUJUI', callback_data: `appr:${params.orderType}:${params.orderId}` },
+        { text: '❌ BATALKAN', callback_data: `canc:${params.orderType}:${params.orderId}` },
+      ]],
+    };
+
+    let sentCount = 0;
+    const errors: string[] = [];
+    const previousByChat = new Map<string, TelegramMessageReference[]>();
+    for (const previous of params.previousMessages) {
+      const chatMessages = previousByChat.get(previous.chatId) || [];
+      chatMessages.push(previous);
+      previousByChat.set(previous.chatId, chatMessages);
+    }
+    const messagesByChat = new Map(
+      Array.from(previousByChat, ([chatId, messages]) => [chatId, [...messages]]),
+    );
+    for (const chatId of this.config.allowedChatIds) {
+      try {
+        const form = new FormData();
+        form.set('chat_id', chatId);
+        form.set('caption', caption);
+        form.set('parse_mode', 'HTML');
+        form.set('reply_markup', JSON.stringify(inlineKeyboard));
+        form.set(
+          'photo',
+          new Blob([new Uint8Array(params.image)], { type: params.mimeType }),
+          params.mimeType === 'image/png' ? 'payment-proof.png' : 'payment-proof.jpg',
+        );
+        const response = await fetch(`https://api.telegram.org/bot${this.config.botToken}/sendPhoto`, {
+          method: 'POST',
+          body: form,
+          signal: AbortSignal.timeout(15000),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ok) {
+          throw new Error(result.description || `HTTP ${response.status}`);
+        }
+        const messageId = result.result?.message_id;
+        if (typeof messageId !== 'number') throw new Error('Telegram tidak mengembalikan ID pesan foto');
+        sentCount++;
+
+        const remainingPrevious: TelegramMessageReference[] = [];
+        for (const previous of previousByChat.get(chatId) || []) {
+          try {
+            await this.callApi('deleteMessage', {
+              chat_id: previous.chatId,
+              message_id: previous.messageId,
+            });
+          } catch (deleteError) {
+            const message = deleteError instanceof Error ? deleteError.message : String(deleteError);
+            errors.push(`Chat ${chatId}: pesan notifikasi lama tidak dapat dihapus: ${message}`);
+            console.error(`[Telegram] Gagal menghapus pesan pembayaran lama di ${chatId}:`, message);
+            remainingPrevious.push(previous);
+          }
+        }
+        messagesByChat.set(chatId, [
+          ...remainingPrevious,
+          { chatId, messageId },
+        ]);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`Chat ${chatId}: ${message}`);
+        console.error(`[Telegram] Gagal mengirim bukti pembayaran ke ${chatId}:`, message);
+      }
+    }
+    const messages = Array.from(messagesByChat.values()).flat();
+    return { sentCount, errors, messages };
   }
 
   public startPolling() {
@@ -473,8 +582,8 @@ export class TelegramBotManager {
       }
 
       // Update the original message text and remove inline buttons
-      if (messageId && cb.message?.text) {
-        const originalText = cb.message.text;
+      if (messageId && (cb.message?.text || cb.message?.caption)) {
+        const originalText = cb.message.caption || cb.message.text || '';
         const statusBadge = action === 'approve'
           ? `\n\n━━━━━━━━━━━━━━━━━━━━━━\n✅ <b>STATUS: SUDAH DISETUJUI</b>\n👤 <b>Oleh:</b> ${escapeHtml(adminInfo)}\n🕒 <b>Waktu:</b> ${new Date().toLocaleString('id-ID')}`
           : `\n\n━━━━━━━━━━━━━━━━━━━━━━\n❌ <b>STATUS: DIBATALKAN</b>\n👤 <b>Oleh:</b> ${escapeHtml(adminInfo)}\n🕒 <b>Waktu:</b> ${new Date().toLocaleString('id-ID')}`;
@@ -488,10 +597,10 @@ export class TelegramBotManager {
           .replace(/&lt;\/i&gt;/g, '</i>') + statusBadge;
 
         try {
-          await this.callApi('editMessageText', {
+          await this.callApi(cb.message?.caption ? 'editMessageCaption' : 'editMessageText', {
             chat_id: chatId,
             message_id: messageId,
-            text: updatedHtml,
+            ...(cb.message?.caption ? { caption: updatedHtml } : { text: updatedHtml }),
             parse_mode: 'HTML',
             reply_markup: { inline_keyboard: [] },
           });

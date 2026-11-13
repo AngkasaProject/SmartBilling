@@ -1,9 +1,12 @@
 .git
 .gitignore
+.github
+.vscode
 .env*
 node_modules
 data
 dist
 coverage
 *.log
+README*
 setup.sh

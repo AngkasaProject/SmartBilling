@@ -225,6 +225,9 @@ export interface PaymentTransaction {
   invoiceId?: string;
   expiresAt?: string;
   proofData?: string;
+  telegramMessageRefs?: { chatId: string; messageId: number }[];
+  idempotencyKeyHash?: string;
+  idempotencyFingerprint?: string;
 }
 
 export interface AppDataSnapshot {

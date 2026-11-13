@@ -130,13 +130,13 @@ Backend menyediakan `GET /api/data` untuk memuat snapshot data dan `PUT /api/dat
 
 Gunakan `npm run dev` untuk menjalankan Vite (port `3000`) dan backend Express/SQLite (port `3001`) bersamaan. Permintaan `/api/*` dari Vite otomatis diteruskan ke backend. Jangan jalankan Vite saja (`npm run dev:client`) bila ingin perubahan tersimpan ke SQLite; mode itu hanya menyediakan frontend. Untuk menjalankan API secara terpisah gunakan `npm run dev:server`.
 
-**Runtime dan package manager:** proyek ini memakai **Node.js >=22.12.0** dan **npm** saja. `package-lock.json` adalah lockfile acuan; instal dependensi lokal dengan `npm ci` dan perbarui lockfile setelah perubahan manifest dengan `npm install`. Docker menggunakan Node.js 22 Alpine dan `npm install --include=optional`, karena binary native opsional harus dipilih sesuai platform Linux/musl dan lockfile lokal dapat dibuat di Windows. Node.js 20 tidak didukung.
+**Runtime dan package manager:** proyek ini memakai **Node.js >=22.12.0** dan **npm** saja. `package-lock.json` adalah lockfile acuan; instal dependensi lokal dengan `npm ci` dan perbarui lockfile setelah perubahan manifest dengan `npm install`. Docker membangun dan menjalankan aplikasi pada Node.js 22 Alpine menggunakan `npm ci`, sehingga versi dependensi konsisten dan binary opsional dipilih untuk platform Linux target. Container berjalan sebagai user non-root; data SQLite dan file unggahan persisten di named volume Docker. Node.js 20 tidak didukung.
 
 ---
 
 ## 📋 Prasyarat Sistem
 
-**Runtime aplikasi:** Node.js `>=22.12.0` dan npm untuk instalasi atau menjalankan aplikasi secara langsung. Deployment Docker memakai image Node.js 22 Alpine dan npm.
+**Runtime aplikasi:** Docker Engine dengan plugin Docker Compose v2 pada Ubuntu 20.04 / 22.04 / 24.04 LTS atau Debian 11 / 12. Node.js tidak perlu dipasang pada host untuk deployment Docker. Untuk development lokal diperlukan Node.js `>=22.12.0` dan npm.
 
 1. **VPS Cloud / Server Lokal**:
    - OS: Ubuntu 20.04 / 22.04 / 24.04 LTS atau Debian 11 / 12.
@@ -152,80 +152,75 @@ Gunakan `npm run dev` untuk menjalankan Vite (port `3000`) dan backend Express/S
 
 ## 🐳 Panduan Instalasi Docker (Langkah Cepat)
 
-### Metode 1: Instalasi Otomatis Menggunakan `setup.sh` (Paling Direkomendasikan)
+### Metode 1: Instalasi otomatis menggunakan `setup.sh`
 
-1. Masuk ke terminal VPS Anda melalui SSH:
+1. Masuk ke server Linux melalui SSH, lalu clone repository:
    ```bash
    ssh root@IP_VPS_ANDA
+   git clone https://github.com/AngkasaProject/SmartBilling.git /opt/SmartBilling
+   cd /opt/SmartBilling
    ```
 
-2. Jalankan skrip setup otomatis:
+2. Jalankan installer:
    ```bash
-   bash setup.sh
+   sudo bash setup.sh
    ```
-   *Skrip ini akan memeriksa Docker, membuat file `.env`, mengatur izin direktori, dan menjalankan kontainer di background.*
+   Installer memeriksa Docker Engine dan Compose v2, memasang Docker jika belum tersedia pada distro yang didukung, membuat `.env` dari template bila belum ada, membangun image, dan menunggu health check aplikasi. Tinjau skrip sebelum menjalankannya sebagai root. Jika `.env` baru dibuat, edit dan isi konfigurasi MikroTik atau integrasi yang diperlukan, lalu jalankan `docker compose up -d`.
 
 ---
 
 ### Metode 2: Instalasi Manual dengan Docker Compose
 
-1. **Salin file konfigurasi environment**:
+Clone repository dan masuk ke direktori aplikasi terlebih dahulu:
+
+```bash
+git clone https://github.com/AngkasaProject/SmartBilling.git /opt/SmartBilling
+cd /opt/SmartBilling
+```
+
+1. **Siapkan environment dan konfigurasi awal**:
    ```bash
    cp .env.example .env
-   nano .env
+   chmod 600 .env
+   ${EDITOR:-nano} .env
    ```
-   Sesuaikan parameter berikut:
-   ```env
-   # Koneksi API MikroTik RouterOS
-   MIKROTIK_HOST="IP_ROUTEROS_ANDA"
-   MIKROTIK_PORT=8728
-   MIKROTIK_USER="USER_API_ROUTEROS"
-   MIKROTIK_PASS="PASSWORD_API_ROUTEROS"
-   MIKROTIK_API_TYPE="api"
-   MIKROTIK_TIMEOUT_SEC=10
+   Atur sekurangnya `BILLING_PORT` jika port default `1707` sudah digunakan. Untuk koneksi router, isi `MIKROTIK_HOST`, `MIKROTIK_USER`, dan `MIKROTIK_PASS`. Kredensial admin dapat disediakan melalui `ADMIN_USERNAME` dan `ADMIN_PASSWORD`; biarkan keduanya kosong untuk mendaftarkan admin pertama melalui halaman login. Seluruh variabel yang didukung tercantum di `.env.example`.
 
-   # Opsional: jika dikosongkan, admin pertama dibuat dari halaman login.
-   ADMIN_USERNAME=""
-   ADMIN_PASSWORD=""
+   Untuk produksi, buat HTTPS reverse proxy dan set `APP_URL` ke origin Portal publik serta `PAYMENT_WEBHOOK_URL` ke endpoint webhook publik SmartBilling. Keduanya juga dapat dikonfigurasi melalui dashboard. Jangan masukkan kredensial ke Git atau membagikan file `.env`.
 
-   # Opsional: kunci acak 32 byte dalam base64. Jika kosong, aplikasi membuatnya otomatis.
-   APP_ENCRYPTION_KEY=""
-
-   # Opsional: pilih Fonnte atau OpenWA (service eksternal terpisah)
-   WA_PROVIDER=""
-   OPENWA_BASE_URL=""
-   OPENWA_API_KEY=""
-   OPENWA_SESSION_ID="billing-isp"
-   FONNTE_API_URL="https://api.fonnte.com/send"
-   FONNTE_TOKEN=""
-
-   # Origin publik Portal untuk tautan invoice dan return pembayaran.
-   APP_URL="https://portal.domain-anda"
-   # Endpoint webhook publik SmartBilling API (bukan origin Portal).
-   PAYMENT_WEBHOOK_URL="https://billing.domain-anda/api/payment/webhook"
-   ```
-   Kedua URL juga dapat diatur melalui **Admin > Pembayaran**. Jika variabel terkait di `.env` diisi, nilainya menjadi sumber utama dan kolom UI terkunci. Pilih gateway dan masukkan kredensial akun setelah login.
-
-2. **Jalankan Docker Compose**:
+2. **Validasi konfigurasi dan jalankan aplikasi**:
    ```bash
+   docker compose config --quiet
    docker compose up -d --build
    ```
 
-3. **Periksa status kontainer yang sedang berjalan**:
+3. **Tunggu hingga aplikasi sehat**:
    ```bash
    docker compose ps
+   docker compose logs --tail=100 mikrotik-billing
    ```
-   Periksa status layanan yang sudah dikonfigurasi:
-   ```text
-   NAME                   IMAGE                     STATUS         PORTS
-   mikrotik-billing-app   mikrotik-billing:latest   Up (healthy)   0.0.0.0:1707->1707/tcp
-   ```
+   Status akan berubah menjadi `healthy` setelah backend dan database siap. Endpoint health check internal adalah `/api/health`.
 
 4. **Buka Aplikasi di Browser**:
    - Portal paket pelanggan: `http://IP_VPS:1707`
    - Dashboard admin: `http://IP_VPS:1707/admin`
 
-Docker menggunakan port `1707` untuk aplikasi di dalam container dan sebagai port host default. Port host mengikuti `BILLING_PORT`; bila `1707` sudah dipakai, atur `BILLING_PORT=PORT_PILIHAN` di `.env`. Contohnya `BILLING_PORT=1807` akan menerbitkan `1807:1707`, sehingga port internal aplikasi tidak berubah. Jalankan ulang `docker compose up -d` setelah mengubahnya.
+Container memakai port internal `1707`; port host dapat diubah lewat `BILLING_PORT` (contoh `1807` menerbitkan `1807:1707`). Izinkan port host tersebut pada firewall hanya sesuai kebutuhan. Untuk akses publik, gunakan reverse proxy HTTPS dan hindari mengirim kredensial melalui HTTP biasa.
+
+**Pembaruan dan data persisten:**
+
+```bash
+git pull
+docker compose up -d --build
+docker compose ps
+```
+
+Database, kunci enkripsi otomatis, gambar QRIS, dan bukti pembayaran tersimpan di named volume `billing_data` yang dipasang pada `/app/data` di dalam container. `docker compose down` tidak menghapus volume; jangan gunakan `docker compose down -v` kecuali memang ingin menghapus seluruh data persisten. Buat backup database dari dashboard. Jika `APP_ENCRYPTION_KEY` tidak ditetapkan, salin `router-secrets.key` dari volume ke lokasi backup aman di luar repository dan simpan bersama backup database:
+
+```bash
+docker compose cp mikrotik-billing:/app/data/router-secrets.key /path/backup-aman/router-secrets.key
+chmod 600 /path/backup-aman/router-secrets.key
+```
 
 ### Integrasi RouterOS
 

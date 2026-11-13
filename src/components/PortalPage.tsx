@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -16,9 +16,13 @@ import {
   Check,
   ExternalLink,
   Ticket,
+  Bell,
+  Upload,
+  Trash2,
 } from "lucide-react";
 import { QrCode } from "./common/QrCode";
 import { QrisImage } from "./common/QrisImage";
+import { useToast } from "./ui/toast";
 
 interface PortalStatus {
   connected: boolean;
@@ -77,17 +81,12 @@ interface VoucherProfile {
   dataLimitMb?: number;
 }
 
-interface VoucherOrder {
-  orderId: string;
-  phone: string;
-  status: string;
-  paymentCode?: string;
-  expiresAt?: string;
-  operatorUrl?: string;
-  message?: string;
-  qrString?: string;
-  amount?: number;
-  method?: PaymentMethod;
+interface PppoePortalPackage {
+  id: string;
+  name: string;
+  speedLimit: string;
+  monthlyFee: number;
+  dataLimitMb?: number;
 }
 
 interface VoucherOrderStatus {
@@ -114,6 +113,7 @@ interface RecentVoucher {
   amount: number;
   phone: string;
   createdAt: string;
+  status?: "pending" | "settlement" | "canceled" | "expired";
 }
 
 interface VoucherLookupData {
@@ -183,6 +183,7 @@ interface CustomerDashboard {
 }
 
 interface PaymentResult {
+  checkoutUrl?: string;
   redirectUrl?: string;
   orderId?: string;
   qrString?: string;
@@ -197,6 +198,25 @@ interface PaymentResult {
   method?: PaymentMethod;
 }
 
+interface PortalCheckoutData {
+  orderId: string;
+  paymentCode: string;
+  orderType: "invoice" | "voucher";
+  status: "pending" | "settlement" | "expired" | "canceled";
+  amount: number;
+  itemName: string;
+  invoiceNumber?: string;
+  paymentMethod: string;
+  paymentChannel: string;
+  manualMethod?: PaymentMethod;
+  qrString?: string;
+  paymentUrl?: string;
+  expiresAt?: string;
+  operatorUrl?: string;
+  proofUploaded?: boolean;
+  voucher?: { code: string; password: string; validityDuration: string };
+}
+
 type PaymentSelection = {
   invoice: PortalInvoice;
   lookupValue?: string;
@@ -205,10 +225,10 @@ type PaymentSelection = {
 };
 
 const buttonClass =
-  "inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100";
+  "inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-zinc-300 disabled:text-zinc-700 disabled:opacity-100 disabled:active:scale-100";
 
 const secondaryButtonClass =
-  "inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-5 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50 hover:text-zinc-900 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100";
+  "inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-5 py-2.5 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50 hover:text-zinc-900 active:scale-[0.98] disabled:cursor-not-allowed disabled:border-zinc-300 disabled:bg-zinc-100 disabled:text-zinc-600 disabled:opacity-100 disabled:active:scale-100";
 
 const inputClass =
   "w-full rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-zinc-900 focus:ring-1 focus:ring-zinc-900 transition";
@@ -219,6 +239,13 @@ function rupiah(value: number): string {
     currency: "IDR",
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+function formatDataLimit(value: number): string {
+  if (value >= 1024) {
+    return `${(value / 1024).toLocaleString("id-ID", { maximumFractionDigits: 1 })} GB`;
+  }
+  return `${value.toLocaleString("id-ID")} MB`;
 }
 
 function jsonBody(value: unknown): string {
@@ -297,6 +324,8 @@ function PortalPaymentDialog({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [pendingManualCanceled, setPendingManualCanceled] = useState(false);
+  const submitLock = useRef(false);
+  const idempotencyAttempt = useRef<{ fingerprint: string; key: string } | null>(null);
   const hasAlternativeMethod = Boolean(
     options?.automaticAvailable ||
     options?.manualMethods.some(method => method.id !== invoice.latestPaymentChannel)
@@ -350,6 +379,7 @@ function PortalPaymentDialog({
   }, [result?.qrString, result?.orderId, result?.status, invoice.id, lookupValue, portalToken]);
 
   const submit = async () => {
+    if (submitLock.current) return;
     if (
       invoice.latestPaymentStatus === "pending" &&
       invoice.latestPaymentMethod === "manual" &&
@@ -366,6 +396,15 @@ function PortalPaymentDialog({
       setError("Pilih metode pembayaran yang berbeda dari pesanan sebelumnya.");
       return;
     }
+    const fingerprint = JSON.stringify({
+      invoiceId: invoice.id,
+      paymentMode: mode,
+      methodId: mode === "manual" ? methodId : "",
+    });
+    if (idempotencyAttempt.current?.fingerprint !== fingerprint) {
+      idempotencyAttempt.current = { fingerprint, key: crypto.randomUUID() };
+    }
+    submitLock.current = true;
     setBusy(true);
     setError("");
     try {
@@ -377,9 +416,15 @@ function PortalPaymentDialog({
           ...(lookupValue ? { lookupValue } : {}),
           ...(portalToken ? { portalToken } : {}),
           ...(mode === "manual" ? { methodId } : {}),
+          idempotencyKey: idempotencyAttempt.current.key,
         }),
       });
       setResult(payment);
+      if (payment.checkoutUrl) {
+        idempotencyAttempt.current = null;
+        window.location.assign(payment.checkoutUrl);
+        return;
+      }
       if (payment.redirectUrl) window.location.assign(payment.redirectUrl);
     } catch (requestError) {
       setError(
@@ -388,6 +433,7 @@ function PortalPaymentDialog({
           : "Pembayaran belum dapat diproses",
       );
     } finally {
+      submitLock.current = false;
       setBusy(false);
     }
   };
@@ -561,7 +607,7 @@ function PortalPaymentDialog({
                     type="button"
                     onClick={() => void cancelPendingInvoicePayment()}
                     disabled={busy || !invoice.latestManualOrderId}
-                    className="mt-3 rounded-lg bg-amber-900 px-4 py-2 text-xs font-bold text-white hover:bg-amber-800 disabled:opacity-50"
+                    className="mt-3 rounded-lg bg-amber-900 px-4 py-2 text-xs font-bold text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:bg-amber-100 disabled:text-amber-900 disabled:opacity-100"
                   >
                     {busy ? "Membatalkan..." : "Ganti metode bayar"}
                   </button>
@@ -694,7 +740,6 @@ function PublicVoucherLookup({ onSwitchToBuy }: { onSwitchToBuy?: () => void } =
       return [];
     }
   });
-
   const copyToClipboard = async (text: string, key: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -727,7 +772,8 @@ function PublicVoucherLookup({ onSwitchToBuy }: { onSwitchToBuy?: () => void } =
             amount: data.amount,
             phone: data.customerPhone,
             createdAt: data.createdAt,
-          }, ...filtered].slice(0, 8);
+            status: data.status,
+          }, ...filtered];
           try {
             localStorage.setItem("smartbilling_recent_vouchers", JSON.stringify(next));
           } catch {}
@@ -851,7 +897,7 @@ function PublicVoucherLookup({ onSwitchToBuy }: { onSwitchToBuy?: () => void } =
           <div className="mt-4 pt-3 border-t border-zinc-100">
             <p className="text-[11px] font-semibold text-zinc-400 mb-1.5">Kode Bayar Sebelumnya di Perangkat Ini:</p>
             <div className="flex flex-wrap gap-2">
-              {recentVouchers.map((item) => (
+              {recentVouchers.slice(0, 5).map((item) => (
                 <button
                   key={item.orderId}
                   type="button"
@@ -1135,6 +1181,27 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
     }
   };
 
+  const voucherStatusStyles = voucherResult?.status === "settlement"
+    ? {
+        card: "border-emerald-200 bg-emerald-50 text-emerald-950",
+        divider: "border-emerald-200",
+        muted: "text-emerald-800",
+        panel: "border-emerald-200",
+      }
+    : voucherResult?.status === "canceled" || voucherResult?.status === "expired"
+      ? {
+          card: "border-rose-200 bg-rose-50 text-rose-950",
+          divider: "border-rose-200",
+          muted: "text-rose-800",
+          panel: "border-rose-200",
+        }
+      : {
+          card: "border-amber-200 bg-amber-50 text-amber-950",
+          divider: "border-amber-200",
+          muted: "text-amber-800",
+          panel: "border-amber-200",
+        };
+
   return (
     <section className="mx-auto max-w-3xl space-y-5 sm:space-y-6">
       <form
@@ -1143,7 +1210,7 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
       >
         <div className="mb-5 flex items-center gap-3 sm:mb-6">
           <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-zinc-900 text-white shadow-lg shadow-zinc-900/10 transition-transform duration-300 hover:rotate-3">
-            <ShieldCheck className="w-5 h-5" />
+            <ShieldCheck className="w-5 h-5 text-white" />
           </div>
           <div>
             <h2 className="text-lg font-bold text-zinc-900">
@@ -1177,9 +1244,9 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
           disabled={busy || !lookupValue.trim()}
         >
           {busy ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-4 w-4 animate-spin text-zinc-700" />
           ) : (
-            <RefreshCw className="h-4 w-4" />
+            <RefreshCw className="h-4 w-4 text-zinc-700" />
           )}
           {busy ? "Memeriksa..." : "Cek Tagihan / Status"}
         </button>
@@ -1263,11 +1330,11 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
       )}
 
       {voucherResult && (
-        <div className="portal-enter rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-950 shadow-sm sm:rounded-3xl sm:p-8">
-          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-amber-200 pb-4">
+        <div className={`portal-enter rounded-2xl border p-5 text-sm shadow-sm sm:rounded-3xl sm:p-8 ${voucherStatusStyles.card}`}>
+          <div className={`flex flex-wrap items-start justify-between gap-3 border-b pb-4 ${voucherStatusStyles.divider}`}>
             <div>
               <h2 className="text-xl font-bold tracking-tight">Status Pesanan Voucher</h2>
-              <p className="mt-1 text-xs text-amber-800">Kode bayar {voucherResult.paymentCode}</p>
+              <p className={`mt-1 text-xs ${voucherStatusStyles.muted}`}>Kode bayar {voucherResult.paymentCode}</p>
             </div>
             <button
               type="button"
@@ -1291,7 +1358,7 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
             </div>
           )}
           {voucherResult.voucher && (
-            <div className="mt-4 rounded-xl border border-amber-200 bg-white p-4">
+            <div className={`mt-4 rounded-xl border bg-white p-4 ${voucherStatusStyles.panel}`}>
               <p className="text-xs font-bold uppercase tracking-wider text-emerald-700">Kode Voucher Hotspot</p>
               <p className="mt-1 font-mono text-2xl font-bold">{voucherResult.voucher.code}</p>
               <p className="mt-2 text-xs">Password: <b className="font-mono">{voucherResult.voucher.password || voucherResult.voucher.code}</b></p>
@@ -1299,7 +1366,7 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
             </div>
           )}
           {voucherResult.manualMethod && (
-            <div className="mt-4 rounded-xl border border-amber-200 bg-white p-4 text-xs">
+            <div className={`mt-4 rounded-xl border bg-white p-4 text-xs ${voucherStatusStyles.panel}`}>
               <p className="font-bold">Instruksi pembayaran: {voucherResult.manualMethod.name}</p>
               {(voucherResult.manualMethod.category || 'bank') === 'qris' ? (
                 <div className="mt-2 flex flex-col items-center text-center">
@@ -1334,7 +1401,7 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
                   type="button"
                   onClick={() => void changeVoucherPaymentMethod()}
                   disabled={busy || !replacementMethodId}
-                  className="min-h-10 rounded-lg bg-amber-900 px-4 text-xs font-bold text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="min-h-10 rounded-lg bg-amber-900 px-4 text-xs font-bold text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:bg-amber-100 disabled:text-amber-900 disabled:opacity-100"
                 >
                   {busy ? "Mengganti..." : "Ganti metode bayar"}
                 </button>
@@ -1363,7 +1430,121 @@ function PublicBillingLookup({ options }: { options: PaymentOptions | null }) {
   );
 }
 
+function PppoePackageCatalog({
+  packages,
+  loading,
+  error,
+  operatorWhatsapp,
+  onRetry,
+}: {
+  packages: PppoePortalPackage[];
+  loading: boolean;
+  error: string;
+  operatorWhatsapp?: string;
+  onRetry: () => void;
+}) {
+  return (
+    <section
+      aria-labelledby="pppoe-packages-heading"
+      className="portal-enter mx-auto mt-8 max-w-3xl"
+    >
+      <div className="mb-4">
+        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-zinc-400">
+          Internet bulanan
+        </p>
+        <h2 id="pppoe-packages-heading" className="mt-1 text-xl font-bold tracking-tight text-zinc-900">
+          Paket Internet
+        </h2>
+        <p className="mt-1 text-sm text-zinc-500">
+          Pilih paket yang sesuai untuk berlangganan internet rumah.
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center gap-2 rounded-2xl border border-zinc-200 bg-white p-8 text-sm text-zinc-500">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Memuat paket internet...
+        </div>
+      ) : error ? (
+        <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700">
+          <p>Paket internet belum dapat dimuat: {error}</p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-3 inline-flex min-h-9 items-center gap-2 rounded-lg border border-rose-200 bg-white px-3 text-xs font-semibold text-rose-800 transition hover:bg-rose-100"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Coba lagi
+          </button>
+        </div>
+      ) : packages.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-zinc-300 bg-white/70 p-8 text-center">
+          <Wifi className="mx-auto h-5 w-5 text-zinc-400" />
+          <p className="mt-2 text-sm font-semibold text-zinc-700">Belum ada paket internet tersedia</p>
+          <p className="mt-1 text-xs text-zinc-500">Silakan cek kembali atau hubungi Customer Service.</p>
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {packages.map((plan) => {
+            const message = `Halo, saya tertarik dengan paket internet ${plan.name} (${plan.speedLimit}). Mohon info pendaftaran.`;
+            const contactUrl = operatorWhatsapp
+              ? `https://wa.me/${operatorWhatsapp}?text=${encodeURIComponent(message)}`
+              : "";
+
+            return (
+              <article
+                key={plan.id}
+                className="flex flex-col rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-32px_rgba(24,24,27,0.4)] transition duration-200 hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-[0_18px_48px_-30px_rgba(24,24,27,0.35)]"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-base font-bold text-zinc-900">{plan.name}</h3>
+                    <p className="mt-1 inline-flex items-center gap-1.5 rounded-md bg-zinc-100 px-2 py-1 text-xs font-semibold text-zinc-700">
+                      <Wifi className="h-3.5 w-3.5" />
+                      {plan.speedLimit}
+                    </p>
+                  </div>
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-zinc-100 text-zinc-600">
+                    <CreditCard className="h-4 w-4 text-zinc-600" />
+                  </span>
+                </div>
+
+                <div className="mt-5">
+                  <p className="text-2xl font-bold tracking-tight text-zinc-900">{rupiah(plan.monthlyFee)}</p>
+                  <p className="mt-0.5 text-xs text-zinc-500">per bulan</p>
+                </div>
+                {plan.dataLimitMb !== undefined && plan.dataLimitMb > 0 && (
+                  <p className="mt-3 text-xs text-zinc-600">
+                    Batas data: <b>{formatDataLimit(plan.dataLimitMb)}</b>
+                  </p>
+                )}
+
+                {contactUrl ? (
+                  <a
+                    href={contactUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-5 inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-emerald-700 active:scale-[0.98]"
+                  >
+                    Hubungi CS via WhatsApp
+                    <ArrowUpRight className="h-3.5 w-3.5" />
+                  </a>
+                ) : (
+                  <p className="mt-5 rounded-lg bg-zinc-100 px-3 py-2.5 text-center text-xs font-medium text-zinc-500">
+                    Kontak Customer Service belum tersedia.
+                  </p>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function PortalPage() {
+  const { confirm: confirmAction } = useToast();
   const [portalStatus, setPortalStatus] = useState<PortalStatus>({
     connected: false,
   });
@@ -1371,6 +1552,10 @@ export function PortalPage() {
     null,
   );
   const [hotspotProfiles, setHotspotProfiles] = useState<VoucherProfile[]>([]);
+  const [pppoePackages, setPppoePackages] = useState<PppoePortalPackage[]>([]);
+  const [pppoePackagesLoading, setPppoePackagesLoading] = useState(false);
+  const [pppoePackagesError, setPppoePackagesError] = useState("");
+  const [pppoePackagesRetryKey, setPppoePackagesRetryKey] = useState(0);
   const [selectedInvoice, setSelectedInvoice] =
     useState<PaymentSelection | null>(null);
   const [activeTab, setActiveTab] = useState<"customer" | "voucher" | "check_voucher">(() => {
@@ -1391,17 +1576,8 @@ export function PortalPage() {
     "automatic",
   );
   const [voucherMethodId, setVoucherMethodId] = useState("");
-  const [voucherOrder, setVoucherOrder] = useState<VoucherOrder | null>(() => {
-    try {
-      const stored = sessionStorage.getItem("smartbilling_voucher_order");
-      return stored ? (JSON.parse(stored) as VoucherOrder) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [voucherStatus, setVoucherStatus] = useState<VoucherOrderStatus | null>(
-    null,
-  );
+  const voucherSubmitLock = useRef(false);
+  const voucherIdempotencyAttempt = useRef<{ fingerprint: string; key: string } | null>(null);
   const [lookupQuery, setLookupQuery] = useState("");
   const [lookupBusy, setLookupBusy] = useState(false);
   const [lookupError, setLookupError] = useState("");
@@ -1415,6 +1591,15 @@ export function PortalPage() {
       return [];
     }
   });
+  const [recentVoucherPage, setRecentVoucherPage] = useState(1);
+  const recentVoucherPageCount = Math.ceil(recentVouchers.length / 5);
+  const pagedRecentVouchers = recentVouchers.slice(
+    (recentVoucherPage - 1) * 5,
+    recentVoucherPage * 5,
+  );
+  const latestRecentVoucher = recentVouchers[0];
+  const latestRecentOrderId = latestRecentVoucher?.orderId;
+  const latestRecentPaymentCode = latestRecentVoucher?.paymentCode;
   const [billingLink, setBillingLink] = useState<BillingLink | null>(null);
   const [linkToken, setLinkToken] = useState("");
   const pathname = window.location.pathname;
@@ -1431,7 +1616,6 @@ export function PortalPage() {
   const query = new URLSearchParams(window.location.search);
   const paymentReturn = query.get("payment");
   const returnInvoiceId = query.get("invoiceId");
-  const returnOrderId = query.get("orderId");
   const brandName =
     portalStatus.companyName ||
     portalStatus.brandName ||
@@ -1453,6 +1637,7 @@ export function PortalPage() {
             "Pembayaran dibatalkan atau belum berhasil. Jika saldo sudah terpotong, status akan diperbarui setelah konfirmasi resmi dari server.",
           );
         }
+
         const [status, options, vouchers] = await Promise.all([
           apiRequest<PortalStatus>("/api/portal/status"),
           apiRequest<PaymentOptions>("/api/portal/payment-options"),
@@ -1499,6 +1684,39 @@ export function PortalPage() {
 
   useEffect(() => {
     if (
+      isBillingLink ||
+      isCustomerDashboard ||
+      (activeTab !== "customer" && activeTab !== "check_voucher")
+    ) return;
+
+    let active = true;
+    setPppoePackagesLoading(true);
+    setPppoePackagesError("");
+    void apiRequest<{ packages: PppoePortalPackage[] }>("/api/portal/pppoe-packages")
+      .then(result => {
+        if (!Array.isArray(result.packages)) {
+          throw new Error("Format paket PPPoE tidak valid.");
+        }
+        if (active) setPppoePackages(result.packages);
+      })
+      .catch(loadError => {
+        if (active) {
+          setPppoePackagesError(
+            loadError instanceof Error ? loadError.message : "Paket PPPoE belum dapat dimuat.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setPppoePackagesLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeTab, isBillingLink, isCustomerDashboard, pppoePackagesRetryKey]);
+
+  useEffect(() => {
+    if (
       !isBillingLink ||
       !linkToken ||
       !billingLink?.invoices.some((invoice) => invoice.status === "unpaid")
@@ -1540,59 +1758,12 @@ export function PortalPage() {
       setNotice(
         "Pembayaran terverifikasi. Status tagihan sudah diperbarui oleh Billing.",
       );
-    } else if (
-      returnOrderId &&
-      voucherOrder?.orderId === returnOrderId &&
-      voucherStatus?.status === "settlement"
-    ) {
-      setNotice("Pembayaran terverifikasi. Voucher siap digunakan.");
     }
   }, [
     billingLink,
     paymentReturn,
     returnInvoiceId,
-    returnOrderId,
-    voucherOrder,
-    voucherStatus,
   ]);
-
-  useEffect(() => {
-    if (!voucherOrder) return;
-    sessionStorage.setItem(
-      "smartbilling_voucher_order",
-      JSON.stringify(voucherOrder),
-    );
-    let active = true;
-    const checkStatus = async () => {
-      try {
-        const next = await apiRequest<VoucherOrderStatus>(
-          "/api/portal/voucher-orders/status",
-          {
-            method: "POST",
-            body: jsonBody({
-              orderId: voucherOrder.orderId,
-              phone: voucherOrder.phone,
-            }),
-          },
-        );
-        if (!active) return;
-        setVoucherStatus(next);
-        if (next.status !== "pending") {
-          sessionStorage.removeItem("smartbilling_voucher_order");
-          if (next.status === "settlement")
-            setNotice("Pembayaran terverifikasi. Voucher siap digunakan.");
-        }
-      } catch {
-        if (active) setVoucherStatus(null);
-      }
-    };
-    void checkStatus();
-    const timer = window.setInterval(() => void checkStatus(), 5000);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [voucherOrder]);
 
   const copyToClipboard = async (text: string, key: string) => {
     try {
@@ -1605,15 +1776,70 @@ export function PortalPage() {
   };
 
   const addRecentVoucher = (voucherItem: RecentVoucher) => {
+    setRecentVoucherPage(1);
     setRecentVouchers(current => {
       const filtered = current.filter(v => v.orderId !== voucherItem.orderId && v.paymentCode !== voucherItem.paymentCode);
-      const next = [voucherItem, ...filtered].slice(0, 8);
+      const next = [voucherItem, ...filtered];
       try {
         localStorage.setItem("smartbilling_recent_vouchers", JSON.stringify(next));
       } catch {}
       return next;
     });
   };
+
+  const updateRecentVoucherStatus = (orderId: string, status: RecentVoucher["status"]) => {
+    setRecentVouchers(current => {
+      const next = current.map(voucher =>
+        voucher.orderId === orderId ? { ...voucher, status } : voucher,
+      );
+      if (next.every((voucher, index) => voucher.status === current[index]?.status)) {
+        return current;
+      }
+      try {
+        localStorage.setItem("smartbilling_recent_vouchers", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const clearRecentVouchers = async () => {
+    if (!await confirmAction(
+      "Hapus semua riwayat notifikasi?",
+      `Riwayat ${recentVouchers.length} pesanan pada perangkat ini akan dihapus. Data pesanan dan pembayaran di server tidak terpengaruh.`,
+      true,
+    )) return;
+    try {
+      localStorage.removeItem("smartbilling_recent_vouchers");
+    } catch {}
+    setRecentVouchers([]);
+    setRecentVoucherPage(1);
+  };
+
+  useEffect(() => {
+    if (!latestRecentOrderId || !latestRecentPaymentCode) return;
+    let active = true;
+    let timer: number | undefined;
+    const refreshStatus = async () => {
+      try {
+        const result = await apiRequest<VoucherLookupData>("/api/portal/voucher-lookup", {
+          method: "POST",
+          body: jsonBody({ query: latestRecentPaymentCode }),
+        });
+        if (!active) return;
+        updateRecentVoucherStatus(latestRecentOrderId, result.status);
+        if (result.status === "pending") {
+          timer = window.setTimeout(() => void refreshStatus(), 5000);
+        }
+      } catch {
+        if (active) timer = window.setTimeout(() => void refreshStatus(), 15000);
+      }
+    };
+    void refreshStatus();
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [latestRecentOrderId, latestRecentPaymentCode]);
 
   const handleLookupVoucher = async (queryToUse?: string) => {
     const q = (queryToUse !== undefined ? queryToUse : lookupQuery).trim();
@@ -1637,6 +1863,7 @@ export function PortalPage() {
           amount: result.amount,
           phone: result.customerPhone,
           createdAt: result.createdAt,
+          status: result.status,
         });
       }
     } catch (err: any) {
@@ -1664,11 +1891,24 @@ export function PortalPage() {
 
   const createVoucherOrder = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (voucherSubmitLock.current) return;
+    const fingerprint = JSON.stringify({
+      profileId: voucherProfileId,
+      customerName: voucherName.trim(),
+      phone: voucherPhone.replace(/[^0-9]/g, ""),
+      email: voucherEmail.trim(),
+      paymentMode: voucherMode,
+      methodId: voucherMode === "manual" ? voucherMethodId : "",
+    });
+    if (voucherIdempotencyAttempt.current?.fingerprint !== fingerprint) {
+      voucherIdempotencyAttempt.current = { fingerprint, key: crypto.randomUUID() };
+    }
+    voucherSubmitLock.current = true;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      const result = await apiRequest<VoucherOrder & PaymentResult>(
+      const result = await apiRequest<PaymentResult>(
         "/api/portal/voucher-orders",
         {
           method: "POST",
@@ -1679,33 +1919,11 @@ export function PortalPage() {
             ...(voucherEmail ? { email: voucherEmail } : {}),
             paymentMode: voucherMode,
             ...(voucherMode === "manual" ? { methodId: voucherMethodId } : {}),
+            idempotencyKey: voucherIdempotencyAttempt.current.key,
           }),
         },
       );
-      if (result.redirectUrl) {
-        sessionStorage.setItem(
-          "smartbilling_voucher_order",
-          JSON.stringify({
-            orderId: result.orderId,
-            phone: voucherPhone,
-            status: "pending",
-          }),
-        );
-        window.location.assign(result.redirectUrl);
-        return;
-      }
       if (result.orderId) {
-        setVoucherOrder({
-          orderId: result.orderId,
-          phone: voucherPhone,
-          status: result.status,
-          paymentCode: result.paymentCode,
-          expiresAt: result.expiresAt,
-          qrString: result.qrString,
-          amount: result.amount,
-          operatorUrl: result.operatorUrl,
-          message: result.message,
-        });
         const selectedProf = hotspotProfiles.find(p => p.id === voucherProfileId);
         addRecentVoucher({
           orderId: result.orderId,
@@ -1714,10 +1932,14 @@ export function PortalPage() {
           amount: selectedProf?.price || 0,
           phone: voucherPhone,
           createdAt: new Date().toISOString(),
+          status: "pending",
         });
-        setNotice(
-          result.message || "Pesanan dibuat. Ikuti instruksi pembayaran.",
-        );
+        if (result.checkoutUrl) {
+          voucherIdempotencyAttempt.current = null;
+          window.location.assign(result.checkoutUrl);
+          return;
+        }
+        throw new Error("Tautan checkout belum tersedia. Silakan coba lagi.");
       }
     } catch (requestError) {
       setError(
@@ -1726,6 +1948,7 @@ export function PortalPage() {
           : "Pesanan belum dapat dibuat.",
       );
     } finally {
+      voucherSubmitLock.current = false;
       setBusy(false);
     }
   };
@@ -1836,7 +2059,7 @@ export function PortalPage() {
 
   if (loading) {
     return (
-      <main className="grid min-h-screen place-items-center bg-zinc-50 text-zinc-500">
+      <main className="portal-fixed-theme grid min-h-screen place-items-center bg-zinc-50 text-zinc-500">
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="w-8 h-8 animate-spin text-zinc-900" />
           <p className="text-sm font-medium">Memuat Portal Pelanggan...</p>
@@ -1846,21 +2069,23 @@ export function PortalPage() {
   }
 
   return (
-    <div className="relative flex min-h-screen flex-col overflow-clip bg-gradient-to-b from-white via-zinc-50 to-zinc-100 font-sans text-zinc-900 selection:bg-zinc-200">
+    <div className="portal-fixed-theme relative flex min-h-screen flex-col overflow-clip bg-gradient-to-b from-white via-zinc-50 to-zinc-100 font-sans text-zinc-900 selection:bg-zinc-200">
       <header className="sticky top-0 z-40 border-b border-zinc-200/80 bg-white/90 shadow-[0_4px_20px_-18px_rgba(24,24,27,0.35)] backdrop-blur-xl">
-        <nav className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5 sm:py-4">
-          <a href="/" className="group inline-flex min-w-0 items-center gap-3">
-            {portalStatus.brandMainLogoDataUrl ? (
-              <img src={portalStatus.brandMainLogoDataUrl} alt={brandName} className="h-12 w-48 max-w-[55vw] object-contain transition duration-300 group-hover:scale-[1.02]" />
-            ) : (
-              <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-2xl bg-zinc-900 text-white shadow-md shadow-zinc-900/15 transition duration-300 group-hover:-rotate-3 group-hover:scale-105">
-                <Wifi className="h-4 w-4" />
-              </span>
-            )}
-            {!portalStatus.brandMainLogoDataUrl && (
-              <b className="min-w-0 truncate text-[15px] tracking-tight text-zinc-900">{brandName}</b>
-            )}
-          </a>
+        <nav className="relative mx-auto flex max-w-6xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5 sm:py-4">
+          <div className="flex w-full items-center justify-between sm:w-auto">
+            <a href="/" className="group inline-flex min-w-0 items-center gap-3">
+              {portalStatus.brandMainLogoDataUrl ? (
+                <img src={portalStatus.brandMainLogoDataUrl} alt={brandName} className="h-12 w-48 max-w-[55vw] object-contain transition duration-300 group-hover:scale-[1.02]" />
+              ) : (
+                <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-2xl bg-zinc-900 text-white shadow-md shadow-zinc-900/15 transition duration-300 group-hover:-rotate-3 group-hover:scale-105">
+                  <Wifi className="h-4 w-4" />
+                </span>
+              )}
+              {!portalStatus.brandMainLogoDataUrl && (
+                <b className="min-w-0 truncate text-[15px] tracking-tight text-zinc-900">{brandName}</b>
+              )}
+            </a>
+          </div>
           <div className="flex w-full items-center gap-2 sm:w-auto">
             {isCustomerDashboard ? (
               <>
@@ -1901,6 +2126,98 @@ export function PortalPage() {
               </div>
             )}
           </div>
+          {!isBillingLink && !isCustomerDashboard && recentVouchers.length > 0 && (
+            <details className="group absolute right-4 top-3 sm:static">
+              <summary
+                aria-label="Notifikasi pesanan voucher"
+                className="relative grid h-10 w-10 cursor-pointer list-none place-items-center rounded-xl border border-zinc-200 bg-white text-zinc-700 shadow-sm transition hover:bg-zinc-50 [&::-webkit-details-marker]:hidden"
+              >
+                <Bell className="h-4 w-4" />
+                <span className={`absolute right-2 top-2 h-2 w-2 rounded-full ${
+                  latestRecentVoucher.status === "settlement"
+                    ? "bg-emerald-500"
+                    : latestRecentVoucher.status === "canceled" || latestRecentVoucher.status === "expired"
+                      ? "bg-rose-500"
+                      : "bg-amber-500"
+                }`} />
+              </summary>
+              <div className="absolute right-0 top-full z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-zinc-200 bg-white p-3 shadow-xl">
+                <div className="flex items-center justify-between gap-2 px-1 pb-2">
+                  <p className="text-xs font-bold uppercase tracking-wide text-zinc-500">
+                    Notifikasi <span className="font-medium normal-case">({recentVouchers.length} pesanan)</span>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void clearRecentVouchers()}
+                    className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-semibold text-rose-600 transition hover:bg-rose-50 hover:text-rose-700"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    Hapus semua
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {pagedRecentVouchers.map(voucher => (
+                    <a
+                      key={voucher.orderId}
+                      href={`/?tab=customer&code=${encodeURIComponent(voucher.paymentCode)}`}
+                      className={`block rounded-xl border p-3 text-sm transition hover:brightness-[0.98] ${
+                        voucher.status === "settlement"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-950"
+                          : voucher.status === "canceled" || voucher.status === "expired"
+                            ? "border-rose-200 bg-rose-50 text-rose-950"
+                            : "border-amber-200 bg-amber-50 text-amber-950"
+                      }`}
+                    >
+                      <span className="flex items-start gap-2">
+                        {voucher.status === "settlement" ? (
+                          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
+                        ) : voucher.status === "canceled" || voucher.status === "expired" ? (
+                          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-700" />
+                        ) : (
+                          <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+                        )}
+                        <span className="min-w-0">
+                          <span className="block truncate font-semibold">Pesanan voucher: {voucher.packageName}</span>
+                          <span className="mt-1 block text-xs">
+                            {voucher.status === "settlement"
+                              ? "Pembayaran terverifikasi"
+                              : voucher.status === "canceled" || voucher.status === "expired"
+                                ? "Pembayaran gagal atau kedaluwarsa"
+                                : "Menunggu pembayaran"}
+                          </span>
+                          <span className="mt-1 block truncate font-mono text-xs">{voucher.paymentCode}</span>
+                        </span>
+                      </span>
+                      <span className="mt-2 block text-right text-xs font-semibold underline">Lihat riwayat pesanan</span>
+                    </a>
+                  ))}
+                </div>
+                {recentVoucherPageCount > 1 && (
+                  <div className="mt-3 flex items-center justify-between border-t border-zinc-100 pt-3">
+                    <button
+                      type="button"
+                      onClick={() => setRecentVoucherPage(page => Math.max(1, page - 1))}
+                      disabled={recentVoucherPage === 1}
+                      className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Sebelumnya
+                    </button>
+                    <span className="text-xs font-medium text-zinc-500">
+                      Halaman {recentVoucherPage} dari {recentVoucherPageCount}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setRecentVoucherPage(page => Math.min(recentVoucherPageCount, page + 1))}
+                      disabled={recentVoucherPage === recentVoucherPageCount}
+                      className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-zinc-700 transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Berikutnya
+                    </button>
+                  </div>
+                )}
+              </div>
+            </details>
+          )}
         </nav>
       </header>
 
@@ -1928,32 +2245,6 @@ export function PortalPage() {
             className="mb-6 rounded-xl border border-zinc-200 bg-white p-4 text-sm text-zinc-700 shadow-sm"
           >
             {notice}
-          </div>
-        )}
-
-        {!isBillingLink && !isCustomerDashboard && recentVouchers.length > 0 && activeTab !== "check_voucher" && (
-          <div className="mx-auto mb-4 max-w-5xl">
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-xs text-amber-900 shadow-sm">
-              <div className="flex items-center gap-2">
-                <Ticket className="h-4 w-4 shrink-0 text-amber-700" />
-                <span>
-                  Pesanan voucher terakhir: <b className="font-mono">{recentVouchers[0].paymentCode}</b> ({recentVouchers[0].packageName})
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setLookupQuery(recentVouchers[0].paymentCode);
-                  const url = new URL(window.location.href);
-                  url.searchParams.set("tab", "customer");
-                  url.searchParams.set("code", recentVouchers[0].paymentCode);
-                  window.location.assign(url.toString());
-                }}
-                className="inline-flex items-center gap-1 font-bold text-amber-800 underline hover:text-amber-950"
-              >
-                Cek Status Pesanan <ChevronRight className="h-3 w-3" />
-              </button>
-            </div>
           </div>
         )}
 
@@ -2233,10 +2524,17 @@ export function PortalPage() {
               </a>
             </div>
           </section>
-        ) : activeTab === "customer" ? (
-          <PublicBillingLookup options={paymentOptions} />
-        ) : activeTab === "check_voucher" ? (
-          <PublicBillingLookup options={paymentOptions} />
+        ) : activeTab === "customer" || activeTab === "check_voucher" ? (
+          <>
+            <PublicBillingLookup options={paymentOptions} />
+            <PppoePackageCatalog
+              packages={pppoePackages}
+              loading={pppoePackagesLoading}
+              error={pppoePackagesError}
+              operatorWhatsapp={portalStatus.operatorWhatsapp}
+              onRetry={() => setPppoePackagesRetryKey(value => value + 1)}
+            />
+          </>
         ) : (
           <section className="portal-enter">
             {/* Header Voucher dengan Sub-menu Beli vs Cek Status */}
@@ -2247,25 +2545,8 @@ export function PortalPage() {
                     Voucher Hotspot
                   </h1>
                   <p className="mt-1 text-xs text-zinc-500">
-                    Beli paket voucher hotspot internet atau periksa status pesanan Anda.
+                    Beli paket voucher hotspot internet.
                   </p>
-                </div>
-                <div className="inline-flex rounded-xl bg-zinc-100 p-1 border border-zinc-200 shrink-0 self-start sm:self-auto">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("voucher")}
-                    className="px-3.5 py-1.5 text-xs font-bold rounded-lg bg-white text-zinc-900 shadow-sm ring-1 ring-zinc-200"
-                  >
-                    Beli Voucher Baru
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("customer")}
-                    className="px-3.5 py-1.5 text-xs font-bold rounded-lg text-zinc-600 hover:text-zinc-900 transition flex items-center gap-1.5"
-                  >
-                    <Ticket className="h-3.5 w-3.5 text-amber-600" />
-                    Cek Tagihan / Status
-                  </button>
                 </div>
               </div>
             </div>
@@ -2419,77 +2700,6 @@ export function PortalPage() {
                   )}
                   {busy ? "Membuat pesanan..." : "Buat Pesanan Sekarang"}
                 </button>
-                {voucherOrder && (
-                  <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                    <div className="flex items-center gap-2 font-semibold mb-2">
-                      <Clock3 className="w-4 h-4" />
-                      Kode pesanan: {voucherOrder.paymentCode || voucherOrder.orderId}
-                    </div>
-                    <p>
-                      Status:{" "}
-                      {voucherStatus?.status === "settlement"
-                        ? "Lunas — terverifikasi"
-                        : voucherStatus?.status === "pending"
-                          ? "Menunggu pembayaran"
-                          : voucherStatus?.status || voucherOrder.status}
-                    </p>
-                    {voucherOrder.method && (voucherOrder.method.category || 'bank') === 'qris' && voucherOrder.amount !== undefined && (
-                      <p className="mt-2 font-bold">{rupiah(voucherOrder.amount)}</p>
-                    )}
-                    {voucherOrder.qrString && (voucherStatus?.status || voucherOrder.status) === "pending" && (
-                      <div className="mt-4 flex flex-col items-center rounded-xl border border-amber-200 bg-white p-4">
-                        <p className="mb-3 text-xs font-semibold">Scan QRIS untuk membayar</p>
-                        {voucherOrder.amount !== undefined && (
-                          <p className="mb-3 font-semibold">{rupiah(voucherOrder.amount)}</p>
-                        )}
-                        <QrCode value={voucherOrder.qrString} size={220} />
-                        {voucherOrder.expiresAt && (
-                          <p className="mt-3 text-[11px]">
-                            Berlaku sampai {new Date(voucherOrder.expiresAt).toLocaleString("id-ID")}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                    {voucherOrder.method && (voucherOrder.method.category || 'bank') === 'qris' && (
-                      <div className="mt-4 flex flex-col items-center rounded-xl border border-amber-200 bg-white p-4 text-center">
-                        <p className="mb-2 text-xs font-semibold">Scan QRIS statis dan bayar sesuai nominal pesanan</p>
-                        {voucherOrder.amount !== undefined && <p className="mb-3 font-semibold">{rupiah(voucherOrder.amount)}</p>}
-                        {voucherOrder.method.qrisImageUrl && <QrisImage src={voucherOrder.method.qrisImageUrl} alt={`QRIS ${voucherOrder.method.name}`} className="h-64 w-full max-w-xs" />}
-                        {voucherOrder.method.accountHolder && <p className="mt-2 text-xs">Merchant: {voucherOrder.method.accountHolder}</p>}
-                        {voucherOrder.method.instructions && <p className="mt-2 whitespace-pre-wrap text-xs">{voucherOrder.method.instructions}</p>}
-                      </div>
-                    )}
-                    {voucherOrder.message && (
-                      <p className="mt-2 text-xs">{voucherOrder.message}</p>
-                    )}
-                    {voucherOrder.operatorUrl && (
-                      <a
-                        className="mt-3 inline-flex items-center gap-1 font-semibold underline"
-                        href={voucherOrder.operatorUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Konfirmasi ke operator{" "}
-                        <ChevronRight className="w-3 h-3" />
-                      </a>
-                    )}
-                    {voucherStatus?.voucher && (
-                      <div className="mt-3 rounded-xl bg-white border border-amber-200 p-3 text-amber-900">
-                        <p className="font-bold text-lg font-mono">
-                          {voucherStatus.voucher.code}
-                        </p>
-                        <p className="text-xs mt-1">
-                          Password:{" "}
-                          {voucherStatus.voucher.password ||
-                            voucherStatus.voucher.code}
-                        </p>
-                        <p className="text-xs">
-                          Masa berlaku: {voucherStatus.voucher.validityDuration}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
               </form>
             </div>
           </section>
@@ -2586,5 +2796,311 @@ export function PortalPage() {
         />
       )}
     </div>
+  );
+}
+
+export function PortalCheckoutPage() {
+  const token = window.location.hash.slice(1);
+  const [checkout, setCheckout] = useState<PortalCheckoutData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const [now, setNow] = useState(Date.now());
+  const [copied, setCopied] = useState(false);
+  const [proofUploading, setProofUploading] = useState(false);
+  const proofInputRef = useRef<HTMLInputElement>(null);
+
+  const loadCheckout = useCallback(async () => {
+    if (!token) {
+      setError("Tautan checkout tidak valid atau sudah terpotong.");
+      setLoading(false);
+      return;
+    }
+    setError("");
+    try {
+      const result = await apiRequest<PortalCheckoutData>("/api/portal/checkout/details", {
+        method: "POST",
+        body: jsonBody({ token }),
+      });
+      setCheckout(result);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Detail checkout belum dapat dimuat.");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void loadCheckout();
+  }, [loadCheckout]);
+
+  useEffect(() => {
+    if (checkout?.status !== "pending") return;
+    const timer = window.setInterval(() => void loadCheckout(), 5000);
+    return () => window.clearInterval(timer);
+  }, [checkout?.status, loadCheckout]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const expiresAt = checkout?.expiresAt ? Date.parse(checkout.expiresAt) : NaN;
+  const remainingMs = Number.isFinite(expiresAt) ? Math.max(0, expiresAt - now) : null;
+  const remainingMinutes = remainingMs === null ? null : Math.floor(remainingMs / 60_000);
+  const remainingSeconds = remainingMs === null ? null : Math.floor((remainingMs % 60_000) / 1000);
+  const statusLabel = checkout?.status === "settlement"
+    ? "Pembayaran terverifikasi"
+    : checkout?.status === "pending"
+      ? "Menunggu pembayaran"
+      : checkout?.status === "expired"
+        ? "Pembayaran kedaluwarsa"
+        : checkout?.status === "canceled"
+          ? "Pembayaran dibatalkan"
+          : "";
+
+  const copyPaymentCode = async () => {
+    if (!checkout) return;
+    try {
+      await navigator.clipboard.writeText(checkout.paymentCode);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setError("Kode pembayaran tidak dapat disalin. Silakan salin secara manual.");
+    }
+  };
+
+  const uploadTransferProof = async (file?: File) => {
+    if (!file) return;
+    if (!["image/png", "image/jpeg"].includes(file.type)) {
+      setError("Gunakan gambar bukti transfer PNG atau JPG.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setError("Ukuran gambar bukti transfer maksimal 5 MB.");
+      return;
+    }
+    if (!token) {
+      setError("Tautan checkout tidak valid. Muat ulang halaman checkout.");
+      return;
+    }
+
+    setProofUploading(true);
+    setError("");
+    try {
+      const response = await fetch("/api/portal/checkout/proof", {
+        method: "POST",
+        headers: {
+          "Content-Type": file.type,
+          "X-Checkout-Token": token,
+        },
+        body: file,
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message = typeof payload === "object" && payload !== null &&
+          "error" in payload && typeof payload.error === "string"
+          ? payload.error
+          : `Unggah bukti transfer gagal (HTTP ${response.status})`;
+        throw new Error(message);
+      }
+      setCheckout(current => current ? { ...current, proofUploaded: true } : current);
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "Bukti transfer gagal diunggah.");
+    } finally {
+      setProofUploading(false);
+      if (proofInputRef.current) proofInputRef.current.value = "";
+    }
+  };
+
+  return (
+    <main className="portal-fixed-theme grid min-h-screen place-items-center bg-zinc-50 px-4 py-8 text-zinc-900">
+      <section className="w-full max-w-xl rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm sm:p-8">
+        <div className="mb-6 flex items-start gap-3 border-b border-zinc-100 pb-5">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-zinc-900 text-white">
+            <ShieldCheck className="h-5 w-5" />
+          </span>
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Checkout aman</p>
+            <h1 className="mt-1 text-xl font-bold tracking-tight">Detail pembayaran</h1>
+            <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+              Simpan kode pembayaran ini untuk memeriksa status pesanan Anda.
+            </p>
+          </div>
+        </div>
+
+        {loading && !checkout ? (
+          <div className="flex items-center justify-center gap-2 py-12 text-sm text-zinc-500">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Memuat detail pembayaran...
+          </div>
+        ) : !checkout ? (
+          <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+            <p>{error || "Detail checkout tidak tersedia."}</p>
+            <button type="button" onClick={() => { setRefreshing(true); void loadCheckout(); }} disabled={refreshing} className="mt-3 font-semibold underline">
+              Coba lagi
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="rounded-2xl bg-zinc-50 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs text-zinc-500">{checkout.orderType === "invoice" ? "Tagihan pelanggan" : "Voucher Hotspot"}</p>
+                  <h2 className="mt-1 font-bold">{checkout.itemName}</h2>
+                  {checkout.invoiceNumber && (
+                    <p className="mt-1 text-xs text-zinc-500">Invoice #{checkout.invoiceNumber}</p>
+                  )}
+                </div>
+                <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                  checkout.status === "settlement"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : checkout.status === "pending"
+                      ? "border-amber-200 bg-amber-50 text-amber-800"
+                      : "border-zinc-200 bg-white text-zinc-600"
+                }`}>
+                  {checkout.status === "pending" ? <Clock3 className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                  {statusLabel}
+                </span>
+              </div>
+              <p className="mt-4 text-2xl font-bold tracking-tight">{rupiah(checkout.amount)}</p>
+              <div className="mt-4 flex items-center justify-between gap-2 border-t border-zinc-200 pt-3">
+                <div>
+                  <p className="text-[11px] text-zinc-500">Kode pembayaran</p>
+                  <p className="font-mono text-sm font-bold">{checkout.paymentCode}</p>
+                </div>
+                <button type="button" onClick={() => void copyPaymentCode()} className={secondaryButtonClass + " !px-3 !py-2 text-xs"}>
+                  {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copied ? "Tersalin" : "Salin"}
+                </button>
+              </div>
+            </div>
+
+            {checkout.status === "pending" && checkout.expiresAt && (
+              <div className={`mt-4 flex items-start gap-3 rounded-xl border p-4 ${
+                checkout.status === "pending" && remainingMs === 0
+                  ? "border-rose-200 bg-rose-50 text-rose-800"
+                  : "border-amber-200 bg-amber-50 text-amber-900"
+              }`}>
+                <Clock3 className="mt-0.5 h-4 w-4 shrink-0" />
+                <div className="text-sm">
+                  <p className="font-semibold">
+                    {checkout.status === "pending" && remainingMs !== null && remainingMs > 0
+                      ? `Selesaikan dalam ${Math.floor((remainingMinutes ?? 0) / 60)} jam ${(remainingMinutes ?? 0) % 60} menit ${remainingSeconds ?? 0} detik`
+                      : checkout.status === "pending"
+                        ? "Waktu pembayaran telah habis. Status akan diperiksa kembali oleh server."
+                        : "Batas waktu pembayaran"}
+                  </p>
+                  <p className="mt-1 text-xs">Berlaku sampai {new Date(checkout.expiresAt).toLocaleString("id-ID")}</p>
+                </div>
+              </div>
+            )}
+
+            {checkout.status === "pending" && (
+              <section className="mt-5 rounded-2xl border border-zinc-200 p-4 sm:p-5">
+                <h3 className="font-bold">Cara pembayaran</h3>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Metode: {checkout.manualMethod?.name || checkout.paymentMethod.toUpperCase()}
+                </p>
+                {checkout.qrString && (
+                  <div className="mt-4 flex flex-col items-center rounded-xl bg-zinc-50 p-4">
+                    <p className="mb-3 text-sm font-semibold">Pindai QR untuk membayar</p>
+                    <QrCode value={checkout.qrString} size={220} />
+                    <p className="mt-3 text-sm font-bold">{rupiah(checkout.amount)}</p>
+                  </div>
+                )}
+                {checkout.manualMethod && (checkout.manualMethod.category || "bank") === "qris" && (
+                  <div className="mt-4 flex flex-col items-center rounded-xl bg-zinc-50 p-4 text-center">
+                    <p className="text-sm font-semibold">Pindai QRIS dan bayar sesuai nominal</p>
+                    {checkout.manualMethod.qrisImageUrl && (
+                      <QrisImage src={checkout.manualMethod.qrisImageUrl} alt={`QRIS ${checkout.manualMethod.name}`} className="mt-3 h-64 w-full max-w-xs" />
+                    )}
+                    {checkout.manualMethod.accountHolder && <p className="mt-2 text-sm">Merchant: {checkout.manualMethod.accountHolder}</p>}
+                  </div>
+                )}
+                {checkout.manualMethod && (checkout.manualMethod.category || "bank") !== "qris" && (
+                  <div className="mt-4 rounded-xl bg-zinc-50 p-4 text-sm">
+                    <p className="font-semibold">{checkout.manualMethod.name}</p>
+                    {checkout.manualMethod.accountNumber && <p className="mt-2">Nomor rekening: <b className="font-mono">{checkout.manualMethod.accountNumber}</b></p>}
+                    {(checkout.manualMethod.accountHolder || checkout.manualMethod.serviceName) && (
+                      <p className="mt-1">Atas nama: <b>{checkout.manualMethod.accountHolder || checkout.manualMethod.serviceName}</b></p>
+                    )}
+                  </div>
+                )}
+                {checkout.manualMethod?.instructions && (
+                  <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-zinc-600">{checkout.manualMethod.instructions}</p>
+                )}
+                {checkout.paymentMethod === "manual" && (
+                  <div className="mt-4 rounded-xl border border-zinc-200 bg-white p-4">
+                    {checkout.proofUploaded ? (
+                      <p role="status" className="text-sm font-semibold text-emerald-700">
+                        Bukti transfer sudah diunggah. Admin akan memeriksa pembayaran Anda.
+                      </p>
+                    ) : (
+                      <>
+                        <p className="text-sm text-zinc-600">
+                          Jika sudah membayar tetapi status belum terupdate, unggah bukti transfer agar admin dapat memeriksanya.
+                        </p>
+                        <input
+                          ref={proofInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg"
+                          className="hidden"
+                          aria-label="Pilih gambar bukti transfer"
+                          onChange={event => void uploadTransferProof(event.target.files?.[0])}
+                        />
+                        <button
+                          type="button"
+                          className={`${buttonClass} mt-3 w-full`}
+                          disabled={proofUploading}
+                          onClick={() => proofInputRef.current?.click()}
+                        >
+                          {proofUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                          {proofUploading ? "Mengunggah bukti..." : "Upload bukti transfer jika status tidak terupdate"}
+                        </button>
+                        <p className="mt-2 text-[11px] text-zinc-500">Format PNG/JPG, maksimal 5 MB.</p>
+                      </>
+                    )}
+                  </div>
+                )}
+                {checkout.paymentUrl && (
+                  <a href={checkout.paymentUrl} target="_blank" rel="noopener noreferrer" className={`${buttonClass} mt-4 w-full`}>
+                    <CreditCard className="h-4 w-4" />
+                    Lanjutkan ke pembayaran
+                    <ArrowUpRight className="h-4 w-4" />
+                  </a>
+                )}
+                {checkout.operatorUrl && (
+                  <a href={checkout.operatorUrl} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-zinc-700 underline">
+                    Konfirmasi pembayaran ke operator <ChevronRight className="h-3.5 w-3.5" />
+                  </a>
+                )}
+              </section>
+            )}
+
+            {checkout.voucher && (
+              <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-emerald-950">
+                <p className="text-sm font-bold">Pembayaran berhasil — voucher siap digunakan</p>
+                <p className="mt-3 font-mono text-2xl font-bold">{checkout.voucher.code}</p>
+                <p className="mt-1 text-sm">Password: <b>{checkout.voucher.password}</b></p>
+                <p className="mt-1 text-xs">Masa berlaku: {checkout.voucher.validityDuration}</p>
+              </div>
+            )}
+
+            {error && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+              <a href={checkout.orderType === "voucher" ? "/portal?tab=voucher" : "/portal"} className="text-sm font-semibold text-zinc-600 hover:text-zinc-900">
+                Kembali ke Portal
+              </a>
+              <button type="button" onClick={() => { setRefreshing(true); void loadCheckout(); }} disabled={refreshing} className={secondaryButtonClass + " !px-3 !py-2 text-xs"}>
+                <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+                Perbarui status
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+    </main>
   );
 }

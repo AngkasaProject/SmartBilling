@@ -602,7 +602,7 @@ export const PaymentGatewayTab: React.FC = () => {
               {selectedProvider === 'doku' && <a href="https://dashboard.doku.com/" target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-indigo-300">Dashboard DOKU <ExternalLink className="h-3 w-3" /></a>}
               {selectedProvider === 'xendit' && <p className="mt-2 text-slate-400">Atur callback ini pada Xendit dan salin Verification Token ke kolom konfigurasi.</p>}
               {selectedProvider === 'tripay' && <p className="mt-2 text-slate-400">Daftarkan URL ini sebagai Callback URL pada dashboard Tripay.</p>}
-              {selectedProvider === 'qrisly' && <p className="mt-2 text-slate-400">Daftarkan URL ini pada menu Webhook → QRISLY di dashboard Qrisly. Status tetap diverifikasi langsung ke API Qrisly.</p>}
+              {selectedProvider === 'qrisly' && <p className="mt-2 text-slate-400">Webhook QRISLY opsional. Tanpa webhook, status tetap diperiksa langsung melalui API Qrisly saat pelanggan membuka checkout atau memeriksa status pesanan.</p>}
             </div>
           )}
 
@@ -778,7 +778,18 @@ export const PaymentGatewayTab: React.FC = () => {
                   {methodDraft.qrisImageUrl && (
                     <div className="flex items-start gap-3 rounded-xl border border-slate-700 bg-slate-950 p-3">
                       <QrisImage src={methodDraft.qrisImageUrl} alt="Pratinjau QRIS" className="h-32 w-32 rounded-lg bg-white p-2" />
-                      <button type="button" onClick={() => setMethodDraft(current => ({ ...current, qrisImageUrl: '' }))} className="text-xs font-semibold text-rose-300 hover:text-rose-200">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!await confirm(
+                            'Hapus gambar QRIS?',
+                            'Gambar QRIS akan dihapus dari metode pembayaran yang sedang diedit. Simpan metode untuk menerapkan perubahan.',
+                            true,
+                          )) return;
+                          setMethodDraft(current => ({ ...current, qrisImageUrl: '' }));
+                        }}
+                        className="text-xs font-semibold text-rose-300 hover:text-rose-200"
+                      >
                         Hapus gambar
                       </button>
                     </div>

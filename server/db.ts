@@ -17,6 +17,7 @@ let SQL: SqlJsStatic | null = null;
 let db: Database | null = null;
 let encryptionKeyMaterial: Buffer | null = null;
 let previousEncryptionKeys: Buffer[] = [];
+let lastInterfaceTrafficPruneAt = 0;
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   appName: 'SmartBilling',
@@ -421,6 +422,18 @@ function initSchema(database: Database): void {
       username TEXT NOT NULL,
       expires_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS interface_traffic_samples (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      router_id TEXT NOT NULL,
+      interface_name TEXT NOT NULL,
+      sampled_at TEXT NOT NULL,
+      rx_bits_per_second REAL NOT NULL,
+      tx_bits_per_second REAL NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_interface_traffic_samples_lookup
+      ON interface_traffic_samples (router_id, interface_name, sampled_at);
   `);
 
   // Check if app_settings initialized
@@ -431,6 +444,64 @@ function initSchema(database: Database): void {
       ['app_config', JSON.stringify(DEFAULT_APP_SETTINGS), new Date().toISOString()]
     );
   }
+}
+
+export interface InterfaceTrafficSample {
+  sampledAt: string;
+  rxBitsPerSecond: number;
+  txBitsPerSecond: number;
+}
+
+export async function saveInterfaceTrafficSampleDb(
+  routerId: string,
+  interfaceName: string,
+  sample: InterfaceTrafficSample,
+): Promise<void> {
+  const database = await getDb();
+  const sampledAtMs = Date.parse(sample.sampledAt);
+  if (!Number.isFinite(sampledAtMs)) throw new Error('Waktu sampel trafik tidak valid');
+
+  const latest = database.exec(
+    'SELECT sampled_at FROM interface_traffic_samples WHERE router_id = ? AND interface_name = ? ORDER BY sampled_at DESC LIMIT 1',
+    [routerId, interfaceName],
+  )[0]?.values[0]?.[0];
+  if (typeof latest === 'string' && sampledAtMs - Date.parse(latest) < 10_000) return;
+
+  database.run(
+    'INSERT INTO interface_traffic_samples (router_id, interface_name, sampled_at, rx_bits_per_second, tx_bits_per_second) VALUES (?, ?, ?, ?, ?)',
+    [routerId, interfaceName, sample.sampledAt, sample.rxBitsPerSecond, sample.txBitsPerSecond],
+  );
+
+  const shouldPrune = sampledAtMs - lastInterfaceTrafficPruneAt >= 60 * 60 * 1000;
+  if (shouldPrune) {
+    const cutoff = new Date(sampledAtMs - 7 * 24 * 60 * 60 * 1000).toISOString();
+    database.run('DELETE FROM interface_traffic_samples WHERE sampled_at < ?', [cutoff]);
+  }
+  saveDbToDisk();
+  if (shouldPrune) lastInterfaceTrafficPruneAt = sampledAtMs;
+}
+
+export async function getInterfaceTrafficHistoryDb(
+  routerId: string,
+  interfaceName: string,
+  from: string,
+): Promise<InterfaceTrafficSample[]> {
+  const database = await getDb();
+  const rows = database.exec(
+    `SELECT sampled_at, rx_bits_per_second, tx_bits_per_second
+     FROM interface_traffic_samples
+     WHERE router_id = ? AND interface_name = ? AND sampled_at >= ?
+     ORDER BY sampled_at ASC`,
+    [routerId, interfaceName, from],
+  )[0]?.values ?? [];
+  return rows.map(([sampledAt, rxBitsPerSecond, txBitsPerSecond]) => {
+    if (
+      typeof sampledAt !== 'string' ||
+      typeof rxBitsPerSecond !== 'number' ||
+      typeof txBitsPerSecond !== 'number'
+    ) throw new Error('Data riwayat trafik tidak valid');
+    return { sampledAt, rxBitsPerSecond, txBitsPerSecond };
+  });
 }
 
 const ENCRYPTION_KEY_PLACEHOLDERS = new Set([

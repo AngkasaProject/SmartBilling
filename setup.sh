@@ -55,8 +55,6 @@ if ! docker compose version >/dev/null 2>&1; then
     exit 1
 fi
 
-docker compose config --quiet
-
 if ! docker info >/dev/null 2>&1; then
     if command -v systemctl >/dev/null 2>&1; then
         systemctl enable --now docker
@@ -77,6 +75,8 @@ if [ ! -f .env ]; then
     chmod 600 .env
     echo "File .env dibuat. Sesuaikan MIKROTIK_* dan pengaturan lain sebelum dipakai."
 fi
+
+docker compose config --quiet
 
 echo "🐳 Membangun dan menjalankan container SmartBilling..."
 if ! docker compose up -d --build; then

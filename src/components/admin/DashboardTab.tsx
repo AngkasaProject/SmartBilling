@@ -11,7 +11,6 @@ import {
   Server,
   CheckCircle2,
   AlertCircle,
-  TrendingUp,
   CreditCard,
   Wifi,
   RefreshCw,
@@ -114,12 +113,12 @@ const RouterLogsPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers }) => 
   }, [selectedRouterId]);
 
   return (
-    <section className="rounded-2xl border border-border bg-card p-5 shadow-xl sm:p-6">
+    <section className="rounded-xl border border-border bg-card p-5 text-card-foreground shadow-sm sm:p-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-indigo-400" />
-            <h3 className="text-base font-bold text-foreground">Log Server MikroTik</h3>
+            <Terminal className="w-4 h-4 text-muted-foreground" />
+            <h3 className="text-base font-bold text-foreground">Log router</h3>
             {selectedRouter && (
               <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${selectedRouter.status === 'connected' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'border-border bg-secondary text-muted-foreground'}`}>
                 {selectedRouter.status === 'connected' ? 'ONLINE' : 'OFFLINE'}
@@ -150,10 +149,10 @@ const RouterLogsPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers }) => 
               role="tab"
               aria-selected={selectedRouterId === router.id}
               onClick={() => setSelectedRouterId(router.id)}
-              className={`shrink-0 rounded-lg px-3 py-2 text-xs font-semibold transition ${selectedRouterId === router.id ? 'bg-indigo-500/15 text-indigo-700 ring-1 ring-indigo-400/30 dark:text-indigo-300' : 'bg-secondary text-secondary-foreground hover:bg-muted'}`}
+              className={`shrink-0 rounded-md px-3 py-2 text-xs font-medium transition ${selectedRouterId === router.id ? 'bg-primary text-primary-foreground shadow-sm' : 'bg-secondary text-secondary-foreground hover:bg-muted'}`}
             >
               {router.name}
-              <span className={`ml-2 inline-block h-1.5 w-1.5 rounded-full ${router.status === 'connected' ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-slate-500'}`} />
+              <span className={`ml-2 inline-block h-1.5 w-1.5 rounded-full ${router.status === 'connected' ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-muted-foreground'}`} />
             </button>
           ))}
         </div>
@@ -162,7 +161,7 @@ const RouterLogsPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers }) => 
       ) : null}
 
       {error ? (
-        <p role="alert" className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-700 dark:text-rose-300">{error}</p>
+        <p role="alert" className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">{error}</p>
       ) : null}
       <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
         <div className="rounded-lg border border-border bg-background px-3 py-2">
@@ -171,13 +170,13 @@ const RouterLogsPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers }) => 
         </div>
         <div className="rounded-lg border border-border bg-background px-3 py-2">
           <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Aktivitas hotspot</p>
-          <p className="mt-1 text-lg font-bold text-sky-600 dark:text-sky-400">{hotspotCount}</p>
+          <p className="mt-1 text-lg font-bold text-foreground">{hotspotCount}</p>
         </div>
-        <div className="col-span-2 rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 sm:col-span-1">
+        <div className="col-span-2 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 sm:col-span-1">
           <p className="inline-flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
             <CircleX className="h-3 w-3 text-rose-500" /> Login gagal / error
           </p>
-          <p className="mt-1 text-lg font-bold text-rose-600 dark:text-rose-400">{failedCount}</p>
+          <p className="mt-1 text-lg font-bold text-destructive">{failedCount}</p>
         </div>
       </div>
 
@@ -273,6 +272,15 @@ interface TrafficSample {
   txBitsPerSecond: number;
 }
 
+type TrafficRange = '1h' | '6h' | '24h' | '7d';
+
+const trafficRanges: Array<{ value: TrafficRange; label: string; milliseconds: number }> = [
+  { value: '1h', label: '1 jam', milliseconds: 60 * 60 * 1000 },
+  { value: '6h', label: '6 jam', milliseconds: 6 * 60 * 60 * 1000 },
+  { value: '24h', label: '24 jam', milliseconds: 24 * 60 * 60 * 1000 },
+  { value: '7d', label: '7 hari', milliseconds: 7 * 24 * 60 * 60 * 1000 },
+];
+
 function formatBitrate(bitsPerSecond: number): string {
   if (bitsPerSecond >= 1_000_000_000) return `${(bitsPerSecond / 1_000_000_000).toFixed(2)} Gbps`;
   if (bitsPerSecond >= 1_000_000) return `${(bitsPerSecond / 1_000_000).toFixed(2)} Mbps`;
@@ -280,14 +288,44 @@ function formatBitrate(bitsPerSecond: number): string {
   return `${Math.round(bitsPerSecond)} bps`;
 }
 
+function getNiceRateScale(maximum: number): number {
+  const rawScale = Math.max(maximum * 1.1, 1);
+  const exponent = Math.floor(Math.log10(rawScale));
+  const magnitude = 10 ** exponent;
+  const fraction = rawScale / magnitude;
+  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+  return niceFraction * magnitude;
+}
+
+function isTrafficSample(value: unknown): value is TrafficSample {
+  if (typeof value !== 'object' || value === null) return false;
+  return (
+    'sampledAt' in value &&
+    typeof value.sampledAt === 'string' &&
+    Number.isFinite(Date.parse(value.sampledAt)) &&
+    'rxBitsPerSecond' in value &&
+    typeof value.rxBitsPerSecond === 'number' &&
+    Number.isFinite(value.rxBitsPerSecond) &&
+    value.rxBitsPerSecond >= 0 &&
+    'txBitsPerSecond' in value &&
+    typeof value.txBitsPerSecond === 'number' &&
+    Number.isFinite(value.txBitsPerSecond) &&
+    value.txBitsPerSecond >= 0
+  );
+}
+
 const InterfaceTrafficPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers }) => {
   const connectedRouters = routers.filter(router => router.status === 'connected');
   const [selectedRouterId, setSelectedRouterId] = useState('');
   const [interfaces, setInterfaces] = useState<string[]>([]);
   const [selectedInterface, setSelectedInterface] = useState('');
-  const [samples, setSamples] = useState<TrafficSample[]>([]);
+  const [liveSamples, setLiveSamples] = useState<TrafficSample[]>([]);
+  const [historySamples, setHistorySamples] = useState<TrafficSample[]>([]);
   const [error, setError] = useState('');
+  const [historyError, setHistoryError] = useState('');
   const [loadingInterfaces, setLoadingInterfaces] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [selectedRange, setSelectedRange] = useState<TrafficRange>('1h');
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -300,13 +338,13 @@ const InterfaceTrafficPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers 
     if (!selectedRouterId) {
       setInterfaces([]);
       setSelectedInterface('');
-      setSamples([]);
+      setLiveSamples([]);
       return;
     }
     let active = true;
     setLoadingInterfaces(true);
     setError('');
-    setSamples([]);
+    setLiveSamples([]);
     fetch(`/api/mikrotik/interfaces?routerId=${encodeURIComponent(selectedRouterId)}`)
       .then(async response => {
         const result = await response.json();
@@ -327,6 +365,42 @@ const InterfaceTrafficPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers 
   }, [selectedRouterId]);
 
   useEffect(() => {
+    if (!selectedRouterId || !selectedInterface) {
+      setHistorySamples([]);
+      setHistoryError('');
+      return;
+    }
+    let active = true;
+    setLoadingHistory(true);
+    setHistoryError('');
+    setHistorySamples([]);
+    const query = new URLSearchParams({
+      routerId: selectedRouterId,
+      interface: selectedInterface,
+      range: selectedRange,
+    });
+    fetch(`/api/mikrotik/interface-traffic/history?${query}`, { cache: 'no-store' })
+      .then(async response => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (!Array.isArray(result.samples) || !result.samples.every(isTrafficSample)) {
+          throw new Error('Format riwayat trafik tidak valid');
+        }
+        if (active) setHistorySamples(result.samples as TrafficSample[]);
+      })
+      .catch(fetchError => {
+        if (active) {
+          setHistorySamples([]);
+          setHistoryError(fetchError instanceof Error ? fetchError.message : String(fetchError));
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingHistory(false);
+      });
+    return () => { active = false; };
+  }, [selectedRouterId, selectedInterface, selectedRange]);
+
+  useEffect(() => {
     if (!selectedRouterId || !selectedInterface) return;
     let active = true;
     let timer: number | undefined;
@@ -336,21 +410,17 @@ const InterfaceTrafficPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers 
         const response = await fetch(`/api/mikrotik/interface-traffic?${query}`);
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-        if (
-          typeof result.sampledAt !== 'string' ||
-          typeof result.rxBitsPerSecond !== 'number' ||
-          typeof result.txBitsPerSecond !== 'number'
-        ) throw new Error('Data trafik router tidak valid');
+        if (!isTrafficSample(result)) throw new Error('Data trafik router tidak valid');
         if (!active) return;
         setError('');
-        setSamples(current => [...current, result as TrafficSample].slice(-30));
+        setLiveSamples(current => [...current, result].slice(-30));
       } catch (fetchError) {
         if (active) setError(fetchError instanceof Error ? fetchError.message : String(fetchError));
       } finally {
         if (active) timer = window.setTimeout(() => void sample(), 2000);
       }
     };
-    setSamples([]);
+    setLiveSamples([]);
     void sample();
     return () => {
       active = false;
@@ -358,28 +428,59 @@ const InterfaceTrafficPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers 
     };
   }, [selectedRouterId, selectedInterface, refreshKey]);
 
-  const latest = samples[samples.length - 1];
-  const maxRate = Math.max(1, ...samples.flatMap(sample => [sample.rxBitsPerSecond, sample.txBitsPerSecond])) * 1.15;
-  const chartWidth = 640;
-  const chartHeight = 164;
+  const selectedRangeMilliseconds = trafficRanges.find(range => range.value === selectedRange)?.milliseconds ?? trafficRanges[0].milliseconds;
+  const rangeStart = Date.now() - selectedRangeMilliseconds;
+  const chartSamples = [...historySamples, ...liveSamples]
+    .filter(sample => Date.parse(sample.sampledAt) >= rangeStart)
+    .reduce<TrafficSample[]>((unique, sample) => {
+      if (!unique.some(item => item.sampledAt === sample.sampledAt)) unique.push(sample);
+      return unique;
+    }, [])
+    .sort((left, right) => left.sampledAt.localeCompare(right.sampledAt));
+  const latest = liveSamples[liveSamples.length - 1] || chartSamples[chartSamples.length - 1];
+  const maxRate = getNiceRateScale(Math.max(0, ...chartSamples.flatMap(sample => [sample.rxBitsPerSecond, sample.txBitsPerSecond])));
+  const rateUnit = maxRate >= 1_000_000_000
+    ? { divisor: 1_000_000_000, label: 'Gbps' }
+    : maxRate >= 1_000_000
+      ? { divisor: 1_000_000, label: 'Mbps' }
+      : maxRate >= 1_000
+        ? { divisor: 1_000, label: 'Kbps' }
+        : { divisor: 1, label: 'bps' };
+  const formatAxisRate = (bitsPerSecond: number) => {
+    const value = bitsPerSecond / rateUnit.divisor;
+    return `${Number(value.toFixed(value < 10 ? 1 : 0))} ${rateUnit.label}`;
+  };
+  const chartWidth = 700;
+  const chartHeight = 220;
+  const plotLeft = 82;
+  const plotRight = 690;
+  const plotTop = 14;
+  const plotBottom = 180;
+  const plotHeight = plotBottom - plotTop;
+  const plotWidth = plotRight - plotLeft;
   const pointFor = (value: number, index: number) => {
-    const x = samples.length < 2 ? chartWidth : (index / (samples.length - 1)) * chartWidth;
-    const y = chartHeight - (value / maxRate) * (chartHeight - 12) - 6;
+    const timestamp = Date.parse(chartSamples[index].sampledAt);
+    const x = plotLeft + Math.max(0, Math.min(1, (timestamp - rangeStart) / selectedRangeMilliseconds)) * plotWidth;
+    const y = plotBottom - (value / maxRate) * plotHeight;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   };
-  const rxPoints = samples.map((sample, index) => pointFor(sample.rxBitsPerSecond, index)).join(' ');
-  const txPoints = samples.map((sample, index) => pointFor(sample.txBitsPerSecond, index)).join(' ');
+  const rxPoints = chartSamples.map((sample, index) => pointFor(sample.rxBitsPerSecond, index)).join(' ');
+  const txPoints = chartSamples.map((sample, index) => pointFor(sample.txBitsPerSecond, index)).join(' ');
+  const rangeEnd = new Date(rangeStart + selectedRangeMilliseconds);
+  const formatAxisTime = (time: number) => new Date(time).toLocaleString('id-ID', selectedRangeMilliseconds > 24 * 60 * 60 * 1000
+    ? { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }
+    : { hour: '2-digit', minute: '2-digit' });
 
   return (
-    <section className="lg:col-span-2 bg-slate-900/90 border border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xl">
+    <section className="lg:col-span-2 rounded-xl border border-border bg-card p-5 text-card-foreground shadow-sm sm:p-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <Activity className="w-4 h-4 text-indigo-400" />
-            <h3 className="text-base font-bold text-foreground">Pemantauan Trafik Interface</h3>
+            <Activity className="w-4 h-4 text-muted-foreground" />
+            <h3 className="text-base font-bold text-foreground">Lalu lintas interface</h3>
             {latest && <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" aria-label="Live" />}
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">Kecepatan Rx/Tx aktual dari RouterOS, diperbarui setiap 2 detik.</p>
+          <p className="mt-1 text-xs text-muted-foreground">Data Rx/Tx RouterOS diperbarui setiap 2 detik.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <label className="sr-only" htmlFor="traffic-router">Pilih router</label>
@@ -406,6 +507,17 @@ const InterfaceTrafficPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers 
               ? interfaces.map(name => <option key={name} value={name}>{name}</option>)
               : <option value="">{loadingInterfaces ? 'Memuat interface...' : 'Pilih interface'}</option>}
           </select>
+          <label className="sr-only" htmlFor="traffic-range">Rentang riwayat trafik</label>
+          <select
+            id="traffic-range"
+            value={selectedRange}
+            onChange={event => setSelectedRange(event.target.value as TrafficRange)}
+            className="rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground"
+          >
+            {trafficRanges.map(range => (
+              <option key={range.value} value={range.value}>{range.label}</option>
+            ))}
+          </select>
           <button
             type="button"
             onClick={() => setRefreshKey(current => current + 1)}
@@ -415,52 +527,79 @@ const InterfaceTrafficPanel: React.FC<{ routers: RouterConfig[] }> = ({ routers 
         </div>
       </div>
 
-      {error && <p role="alert" className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">{error}</p>}
+      {(error || historyError) && (
+        <p role="alert" className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+          {error || historyError}
+        </p>
+      )}
 
       {latest ? (
         <>
           <div className="mt-5 grid grid-cols-2 gap-3">
             <div className="rounded-xl border border-border bg-background p-3">
               <div className="text-[11px] text-muted-foreground">Download · Rx</div>
-              <div className="mt-1 text-lg font-bold text-emerald-400">{formatBitrate(latest.rxBitsPerSecond)}</div>
+              <div className="mt-1 text-lg font-semibold text-foreground">{formatBitrate(latest.rxBitsPerSecond)}</div>
             </div>
             <div className="rounded-xl border border-border bg-background p-3">
               <div className="text-[11px] text-muted-foreground">Upload · Tx</div>
-              <div className="mt-1 text-lg font-bold text-blue-400">{formatBitrate(latest.txBitsPerSecond)}</div>
+              <div className="mt-1 text-lg font-semibold text-muted-foreground">{formatBitrate(latest.txBitsPerSecond)}</div>
             </div>
           </div>
           <div className="mt-4 rounded-xl border border-border bg-background p-3">
-            <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label={`Grafik trafik ${selectedInterface}`} className="h-40 w-full overflow-visible">
-              {[0, 1, 2, 3].map(line => {
-                const y = (chartHeight / 3) * line;
-                return <line key={line} x1="0" x2={chartWidth} y1={y} y2={y} className="stroke-slate-700" strokeWidth="1" strokeDasharray="4 5" />;
+            <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label={`Grafik lalu lintas ${selectedInterface} dalam ${rateUnit.label}`} className="h-52 w-full">
+              {[0, 1, 2, 3, 4].map(tick => {
+                const y = plotTop + (plotHeight / 4) * tick;
+                const value = maxRate * (1 - tick / 4);
+                return (
+                  <g key={tick}>
+                    <line x1={plotLeft} x2={plotRight} y1={y} y2={y} className="stroke-border" strokeWidth="1" strokeDasharray="4 5" />
+                    <text x="0" y={y + 4} className="fill-muted-foreground" fontSize="10">{formatAxisRate(value)}</text>
+                  </g>
+                );
               })}
-              {samples.length > 1 && (
+              {chartSamples.length > 1 && (
                 <>
-                  <polyline points={rxPoints} fill="none" className="stroke-emerald-500" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                  <polyline points={txPoints} fill="none" className="stroke-blue-500" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                  <polyline points={rxPoints} fill="none" className="stroke-primary" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                  <polyline points={txPoints} fill="none" className="stroke-muted-foreground" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
                 </>
               )}
-              {samples.length === 1 && (
+              {chartSamples.length === 1 && (
                 <>
-                  <circle cx={chartWidth} cy={pointFor(latest.rxBitsPerSecond, 0).split(',')[1]} r="5" className="fill-emerald-500" />
-                  <circle cx={chartWidth} cy={pointFor(latest.txBitsPerSecond, 0).split(',')[1]} r="5" className="fill-blue-500" />
+                  <circle cx={pointFor(latest.rxBitsPerSecond, 0).split(',')[0]} cy={pointFor(latest.rxBitsPerSecond, 0).split(',')[1]} r="5" className="fill-primary" />
+                  <circle cx={pointFor(latest.txBitsPerSecond, 0).split(',')[0]} cy={pointFor(latest.txBitsPerSecond, 0).split(',')[1]} r="5" className="fill-muted-foreground" />
                 </>
               )}
+              {[rangeStart, rangeStart + selectedRangeMilliseconds / 2, rangeEnd.getTime()].map((time, index) => {
+                const x = plotLeft + (plotWidth / 2) * index;
+                return (
+                  <text
+                    key={time}
+                    x={x}
+                    y={chartHeight - 3}
+                    textAnchor={index === 0 ? 'start' : index === 2 ? 'end' : 'middle'}
+                    className="fill-muted-foreground"
+                    fontSize="10"
+                  >
+                    {formatAxisTime(time)}
+                  </text>
+                );
+              })}
             </svg>
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-muted-foreground">
               <div className="flex items-center gap-4">
-                <span className="flex items-center gap-1.5"><i className="h-2 w-2 rounded-full bg-emerald-500" /> Download</span>
-                <span className="flex items-center gap-1.5"><i className="h-2 w-2 rounded-full bg-blue-500" /> Upload</span>
+                <span className="flex items-center gap-1.5"><i className="h-2 w-2 rounded-full bg-primary" /> Download</span>
+                <span className="flex items-center gap-1.5"><i className="h-2 w-2 rounded-full bg-muted-foreground" /> Upload</span>
               </div>
-              <span>Terakhir diperbarui {new Date(latest.sampledAt).toLocaleTimeString('id-ID')}</span>
+              <span>
+                {loadingHistory ? 'Memuat riwayat...' : `Diperbarui ${new Date(latest.sampledAt).toLocaleTimeString('id-ID')}`}
+              </span>
             </div>
           </div>
         </>
       ) : (
         <div className="mt-5 grid min-h-48 place-items-center rounded-xl border border-dashed border-border bg-background p-6 text-center">
           {connectedRouters.length && selectedInterface
-            ? <p className="text-sm text-muted-foreground">Mengambil sampel trafik dari {selectedInterface}...</p>
+            ? <p className="text-sm text-muted-foreground">{loadingHistory ? 'Memuat riwayat dan menunggu sampel live...' : 'Menunggu sampel trafik dari RouterOS...'}</p>
             : <p className="text-sm text-muted-foreground">Pilih router yang online dan interface untuk mulai memantau trafik.</p>}
         </div>
       )}
@@ -527,6 +666,7 @@ export const DashboardTab: React.FC<Props> = ({
   const activeCustomers = customers.filter(c => c.status === 'active').length;
   const isolatedCustomers = customers.filter(c => c.status === 'isolated' || c.status === 'disabled').length;
   const expiringCustomers = customers.filter(c => c.status === 'expiring').length;
+  const issuedVouchers = vouchers.filter(v => v.status !== 'pending').length;
 
   const urgentCustomers = customers.filter(c => c.status === 'isolated' || c.status === 'disabled' || c.status === 'expiring');
 
@@ -534,93 +674,84 @@ export const DashboardTab: React.FC<Props> = ({
 
   return (
     <div className="space-y-6">
-      {/* KPI Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Total Omset */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <button
           type="button"
           onClick={() => onNavigateTab('revenue')}
-          aria-label="Buka dashboard pendapatan"
-          className="w-full rounded-2xl text-left bg-slate-900/90 border border-slate-800/80 p-5 shadow-lg backdrop-blur hover:border-emerald-500/40 hover:bg-slate-900 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+          aria-label="Buka riwayat pendapatan"
+          className="w-full rounded-xl border border-border bg-card p-5 text-left text-card-foreground transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring xl:col-span-2"
         >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-400">Total Pendapatan Tercatat · Buka riwayat</span>
-            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-              <CreditCard className="w-4 h-4" />
-            </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs font-medium text-muted-foreground">Pendapatan tercatat</span>
+            <CreditCard className="h-4 w-4 shrink-0 text-muted-foreground" />
           </div>
-          <div className="mt-3">
-            <div className="text-2xl font-black text-white tracking-tight">
+          <div className="mt-4">
+            <div className="text-3xl font-semibold tracking-tight text-foreground">
               Rp {(reportedRevenue ?? totalRevenue).toLocaleString('id-ID')}
             </div>
-            <div className="flex items-center gap-1.5 mt-2 text-[11px] text-emerald-400 font-medium">
-              <TrendingUp className="w-3 h-3" />
+            <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
               <span>{reportedInvoiceCount ?? invoices.filter(invoice => invoice.status === 'paid').length} invoice lunas</span>
+              <span className="font-medium text-foreground">Buka riwayat <ArrowUpRight className="ml-1 inline h-3.5 w-3.5" /></span>
             </div>
-            {revenueError && <span className="mt-2 block text-[10px] text-amber-400">Statistik laporan belum dimuat dari server.</span>}
+            {revenueError && <span className="mt-2 block text-[11px] text-amber-700 dark:text-amber-400">Statistik laporan belum dimuat dari server.</span>}
           </div>
         </button>
 
-        {/* Pelanggan PPPoE */}
-        <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-5 shadow-lg backdrop-blur hover:border-slate-700 transition">
+        <article className="rounded-xl border border-border bg-card p-5 text-card-foreground">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-400">Pelanggan PPPoE</span>
-            <div className="w-9 h-9 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-              <Users className="w-4 h-4" />
-            </div>
+            <span className="text-xs font-medium text-muted-foreground">Pelanggan PPPoE</span>
+            <Users className="h-4 w-4 shrink-0 text-muted-foreground" />
           </div>
           <div className="mt-3">
-            <div className="text-2xl font-black text-white tracking-tight">
-              {activeCustomers} <span className="text-sm font-normal text-slate-400">/ {customers.length} Aktif</span>
+            <div className="text-2xl font-semibold tracking-tight text-foreground">
+              {activeCustomers} <span className="text-sm font-normal text-muted-foreground">aktif</span>
             </div>
-            <div className="flex items-center gap-2 mt-2 text-[11px]">
-              <span className="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 font-semibold border border-rose-500/20">
-                {isolatedCustomers} Billing Ter-isolir
+            <p className="mt-1 text-[11px] text-muted-foreground">dari {customers.length} pelanggan</p>
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+              <span className="inline-flex items-center gap-1.5 text-rose-700 dark:text-rose-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                {isolatedCustomers} isolir / nonaktif
               </span>
-              <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 font-semibold border border-amber-500/20">
-                {expiringCustomers} H-1/H-3
+              <span className="inline-flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                {expiringCustomers} segera berakhir
               </span>
             </div>
           </div>
-        </div>
+        </article>
 
-        {/* Voucher Hotspot */}
-        <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-5 shadow-lg backdrop-blur hover:border-slate-700 transition">
+        <article className="rounded-xl border border-border bg-card p-5 text-card-foreground">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-400">Voucher Hotspot Terjual</span>
-            <div className="w-9 h-9 rounded-xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center text-violet-400">
-              <Ticket className="w-4 h-4" />
-            </div>
+            <span className="text-xs font-medium text-muted-foreground">Voucher diterbitkan</span>
+            <Ticket className="h-4 w-4 shrink-0 text-muted-foreground" />
           </div>
           <div className="mt-3">
-            <div className="text-2xl font-black text-white tracking-tight">
-              {vouchers.filter(v => v.status !== 'unused').length} <span className="text-sm font-normal text-slate-400">Voucher</span>
+            <div className="text-2xl font-semibold tracking-tight text-foreground">
+              {issuedVouchers} <span className="text-sm font-normal text-muted-foreground">voucher</span>
             </div>
-            <div className="flex items-center gap-1.5 mt-2 text-[11px] text-violet-400 font-medium">
+            <div className="mt-2 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
               <Wifi className="w-3 h-3" />
-              <span>{mainRouter?.activeHotspot ?? '—'} user hotspot aktif</span>
+              <span>{mainRouter?.activeHotspot ?? '—'} pengguna Hotspot aktif</span>
             </div>
           </div>
-        </div>
+        </article>
 
-        {/* Router Health */}
-        <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-5 shadow-lg backdrop-blur hover:border-slate-700 transition">
+        <article className="rounded-xl border border-border bg-card p-5 text-card-foreground">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-400">MikroTik Router Load</span>
-            <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
-              <Server className="w-4 h-4" />
-            </div>
+            <span className="text-xs font-medium text-muted-foreground">Kondisi router</span>
+            <Server className="h-4 w-4 shrink-0 text-muted-foreground" />
           </div>
           <div className="mt-3">
-            <div className="text-2xl font-black text-white tracking-tight">
-              {mainRouter ? `${mainRouter.cpuLoad}%` : '—'} <span className="text-xs font-normal text-slate-400">CPU Usage</span>
+            <div className="text-2xl font-semibold tracking-tight text-foreground">
+              {mainRouter ? `${mainRouter.cpuLoad}%` : '—'} <span className="text-xs font-normal text-muted-foreground">CPU</span>
             </div>
-            <div className="flex items-center justify-between mt-2 text-[11px] text-slate-400 font-mono">
-              <span>Free RAM: {mainRouter?.memoryFreeMb ?? '—'} MB</span>
-              <span className="text-slate-400 font-semibold">Uptime: {mainRouter?.uptime ?? '—'}</span>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+              <span>RAM bebas: {mainRouter?.memoryFreeMb ?? '—'} MB</span>
+              <span className="font-medium">Waktu aktif: {mainRouter?.uptime ?? '—'}</span>
             </div>
+            <p className="mt-1 truncate text-[10px] text-muted-foreground">{mainRouter?.name ?? 'Tidak ada router online'}</p>
           </div>
-        </div>
+        </article>
       </div>
 
       {/* Router telemetry */}
@@ -630,69 +761,130 @@ export const DashboardTab: React.FC<Props> = ({
       </div>
 
       {/* Urgent Attention Table (Expiring & Isolated Customers) */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
+      <div className="rounded-xl border border-border bg-card p-5 text-card-foreground shadow-sm sm:p-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
           <div>
-            <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <ShieldAlert className="w-4 h-4 text-rose-400" />
-              <span>Perhatian Khusus: Pelanggan Menjelang Expired & Billing Ter-isolir ({urgentCustomers.length})</span>
+            <h3 className="flex items-center gap-2 text-base font-semibold text-foreground">
+              <ShieldAlert className="h-4 w-4 text-muted-foreground" />
+              <span>Perlu tindak lanjut</span>
+              <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">{urgentCustomers.length}</span>
             </h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Daftar pelanggan yang membutuhkan tindak lanjut pengingat WhatsApp atau penanganan isolir
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Pelanggan yang masa aktifnya segera berakhir, terisolir, atau nonaktif.
             </p>
           </div>
           <button
+            type="button"
             onClick={() => onNavigateTab('customers')}
-            className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1"
+            className="inline-flex min-h-11 items-center gap-1 self-start text-xs font-medium text-primary hover:underline sm:self-auto"
           >
-            <span>Lihat Semua Pelanggan</span>
+            <span>Lihat semua pelanggan</span>
             <ArrowUpRight className="w-3.5 h-3.5" />
           </button>
         </div>
 
         {urgentCustomers.length === 0 ? (
-          <div className="p-8 text-center text-slate-500 bg-slate-950/50 rounded-xl border border-slate-800/80">
-            <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
-            <p className="text-sm font-semibold text-slate-300">Semua Pelanggan Berstatus Normal</p>
-            <p className="text-xs text-slate-500 mt-1">Tidak ada pelanggan yang tertunggak atau ter-isolir saat ini.</p>
+          <div className="rounded-lg border border-dashed border-border bg-muted/30 p-8 text-center">
+            <CheckCircle2 className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
+            <p className="text-sm font-medium text-foreground">Tidak ada pelanggan yang perlu ditindaklanjuti</p>
+            <p className="mt-1 text-xs text-muted-foreground">Pelanggan mendekati masa berakhir atau terisolir akan muncul di sini.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+          <>
+            <div className="space-y-3 lg:hidden">
+              {urgentCustomers.map(cust => {
+                const isIsolated = cust.status === 'isolated' || cust.status === 'disabled';
+                return (
+                  <article key={cust.id} className="space-y-3 rounded-lg border border-border bg-background p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-foreground">{cust.name}</p>
+                        <p className="mt-0.5 break-all font-mono text-[11px] text-muted-foreground">
+                          {cust.pppoeUsername}{cust.phone ? ` · ${cust.phone}` : ''}
+                        </p>
+                      </div>
+                      <span className={`shrink-0 rounded-md px-2 py-1 text-[10px] font-medium ${
+                        isIsolated
+                          ? 'bg-rose-500/10 text-rose-700 dark:text-rose-400'
+                          : 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
+                      }`}>
+                        {isIsolated ? 'Isolir / nonaktif' : 'Segera berakhir'}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div className="min-w-0">
+                        <p className="text-muted-foreground">Paket</p>
+                        <p className="mt-0.5 truncate font-medium text-foreground">{cust.servicePackageName || cust.profileName}</p>
+                        <p className="mt-0.5 text-muted-foreground">Rp {cust.monthlyFee.toLocaleString('id-ID')} / bulan</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Masa aktif</p>
+                        <p className="mt-0.5 font-medium text-foreground">{cust.expiredDate}</p>
+                        <p className="mt-0.5 text-muted-foreground">Tanggal {cust.billingDate}</p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onSendWaNotification(cust, 'reminder')}
+                        className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border border-border bg-secondary px-2 text-xs font-medium text-secondary-foreground transition hover:bg-muted"
+                      >
+                        <Send className="h-3.5 w-3.5" />
+                        Kirim WA
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onToggleIsolir(cust)}
+                        className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium transition ${
+                          isIsolated
+                            ? 'bg-primary text-primary-foreground hover:opacity-90'
+                            : 'border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20'
+                        }`}
+                      >
+                        {isIsolated ? <CheckCircle2 className="h-3.5 w-3.5" /> : <ShieldAlert className="h-3.5 w-3.5" />}
+                        {isIsolated ? 'Aktifkan billing' : 'Isolir billing'}
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+            <div className="hidden overflow-x-auto lg:block">
+            <table className="w-full min-w-[760px] text-left text-xs">
               <thead>
-                <tr className="border-b border-slate-800 text-[11px] uppercase tracking-wider text-slate-400">
+                <tr className="border-b border-border text-[11px] uppercase tracking-wider text-muted-foreground">
                   <th className="pb-3 font-semibold">Pelanggan</th>
-                  <th className="pb-3 font-semibold">Paket & Biaya</th>
-                  <th className="pb-3 font-semibold">Jatuh Tempo</th>
-                  <th className="pb-3 font-semibold">Status Billing</th>
+                  <th className="pb-3 font-semibold">Paket & biaya</th>
+                  <th className="pb-3 font-semibold">Masa aktif</th>
+                  <th className="pb-3 font-semibold">Status</th>
                   <th className="pb-3 font-semibold text-right">Tindakan Cepat</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/70">
+              <tbody className="divide-y divide-border">
                 {urgentCustomers.map(cust => (
-                  <tr key={cust.id} className="hover:bg-slate-800/40 transition">
+                  <tr key={cust.id} className="transition-colors hover:bg-muted/50">
                     <td className="py-3.5">
-                      <div className="font-bold text-white">{cust.name}</div>
-                      <div className="text-[11px] text-slate-400 font-mono">{cust.pppoeUsername} • {cust.phone}</div>
+                      <div className="font-medium text-foreground">{cust.name}</div>
+                      <div className="font-mono text-[11px] text-muted-foreground">{cust.pppoeUsername}{cust.phone ? ` · ${cust.phone}` : ''}</div>
                     </td>
                     <td className="py-3.5">
-                      <div className="text-slate-300">{cust.servicePackageName || cust.profileName}</div>
-                      {cust.servicePackageName && <div className="text-[10px] text-slate-500">PPP profile: {cust.profileName}</div>}
-                      <div className="text-[11px] font-semibold text-indigo-400">
+                      <div className="text-foreground">{cust.servicePackageName || cust.profileName}</div>
+                      {cust.servicePackageName && <div className="text-[10px] text-muted-foreground">PPP profile: {cust.profileName}</div>}
+                      <div className="text-[11px] font-medium text-muted-foreground">
                         Rp {cust.monthlyFee.toLocaleString('id-ID')}
                       </div>
                     </td>
                     <td className="py-3.5">
-                      <div className="font-medium text-slate-300">{cust.expiredDate}</div>
-                      <div className="text-[10px] text-slate-500">Tgl {cust.billingDate} per bulan</div>
+                      <div className="font-medium text-foreground">{cust.expiredDate}</div>
+                      <div className="text-[10px] text-muted-foreground">Tanggal billing {cust.billingDate}</div>
                     </td>
                     <td className="py-3.5">
                       {cust.status === 'isolated' || cust.status === 'disabled' ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                        <span className="inline-flex items-center gap-1 rounded-md border border-rose-500/20 bg-rose-500/10 px-2.5 py-1 text-[10px] font-medium text-rose-700 dark:text-rose-400">
                           <AlertCircle className="w-3 h-3" /> TER-ISOLIR
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                        <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-700 dark:text-amber-400">
                           MENJELANG EXPIRED
                         </span>
                       )}
@@ -700,8 +892,9 @@ export const DashboardTab: React.FC<Props> = ({
                     <td className="py-3.5 text-right">
                       <div className="inline-flex items-center gap-2">
                         <button
+                          type="button"
                           onClick={() => onSendWaNotification(cust, 'reminder')}
-                          className="px-2.5 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 rounded-lg text-[11px] font-semibold transition flex items-center gap-1"
+                          className="flex min-h-9 items-center gap-1 rounded-md border border-border bg-secondary px-2.5 py-1.5 text-[11px] font-medium text-secondary-foreground transition hover:bg-muted"
                           title="Kirim pengingat via WhatsApp"
                         >
                           <Send className="w-3 h-3" />
@@ -709,12 +902,13 @@ export const DashboardTab: React.FC<Props> = ({
                         </button>
 
                         <button
+                          type="button"
                           onClick={() => onToggleIsolir(cust)}
                           title="Ubah status billing; perubahan akses RouterOS dikonfirmasi terpisah"
                           className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition flex items-center gap-1 ${
                             cust.status === 'isolated' || cust.status === 'disabled'
-                              ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                              : 'bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-300'
+                              ? 'bg-primary text-primary-foreground hover:opacity-90'
+                              : 'border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20'
                           }`}
                         >
                           {cust.status === 'isolated' || cust.status === 'disabled' ? (
@@ -735,7 +929,8 @@ export const DashboardTab: React.FC<Props> = ({
                 ))}
               </tbody>
             </table>
-          </div>
+            </div>
+          </>
         )}
       </div>
     </div>

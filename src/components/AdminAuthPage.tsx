@@ -1,16 +1,15 @@
 import React, { useState } from 'react';
-import { KeyRound, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, KeyRound, LockKeyhole, ShieldCheck } from 'lucide-react';
+import { Button } from './ui/button';
 
 interface Props {
   registrationRequired: boolean;
-  envLoginConfigured: boolean;
   envLoginIncomplete: boolean;
   onAuthenticated: (username: string) => void;
 }
 
 export const AdminAuthPage: React.FC<Props> = ({
   registrationRequired,
-  envLoginConfigured,
   envLoginIncomplete,
   onAuthenticated,
 }) => {
@@ -41,72 +40,88 @@ export const AdminAuthPage: React.FC<Props> = ({
   };
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
-      <section className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-7 shadow-2xl">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-11 h-11 rounded-xl bg-indigo-600 flex items-center justify-center">
-            {registrationRequired ? <ShieldCheck className="w-6 h-6" /> : <KeyRound className="w-6 h-6" />}
+    <main className="flex min-h-screen items-center justify-center bg-background px-4 py-10 text-foreground sm:px-6">
+      <section className="w-full max-w-sm">
+        <div className="mb-8 flex flex-col items-center text-center">
+          <div className="mb-4 grid h-11 w-11 place-items-center rounded-xl border border-border bg-card shadow-sm">
+            {registrationRequired ? <ShieldCheck className="h-5 w-5" /> : <KeyRound className="h-5 w-5" />}
           </div>
-          <div>
-            <h1 className="text-xl font-black">{registrationRequired ? 'Buat Admin Pertama' : 'Login Admin'}</h1>
-            <p className="text-xs text-slate-400">SmartBilling • akses panel administrasi</p>
+          <p className="text-sm font-semibold tracking-tight">SmartBilling</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight">
+            {registrationRequired ? 'Buat akun administrator' : 'Selamat datang kembali'}
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {registrationRequired
+              ? 'Buat akun admin pertama untuk mengamankan workspace Anda.'
+              : 'Masuk untuk melanjutkan ke dashboard billing.'}
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-border bg-card p-6 shadow-sm sm:p-7">
+          {registrationRequired && (
+            <p className="mb-5 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-700 dark:text-amber-300">
+              Pendaftaran ini hanya untuk admin pertama dan akan ditutup otomatis setelah akun dibuat.
+            </p>
+          )}
+          {envLoginIncomplete && (
+            <p className="mb-5 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-700 dark:text-amber-300">
+              ADMIN_USERNAME dan ADMIN_PASSWORD harus diisi berpasangan di .env, atau gunakan pendaftaran admin pertama.
+            </p>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <label className="block space-y-2 text-sm font-medium">
+              Username
+              <input
+                required
+                minLength={3}
+                maxLength={64}
+                autoComplete="username"
+                value={username}
+                onChange={event => setUsername(event.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              />
+            </label>
+            <label className="block space-y-2 text-sm font-medium">
+              Password
+              <input
+                required
+                minLength={registrationRequired ? 12 : 1}
+                maxLength={256}
+                type="password"
+                autoComplete={registrationRequired ? 'new-password' : 'current-password'}
+                value={password}
+                onChange={event => setPassword(event.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              />
+              {registrationRequired && <span className="block text-xs font-normal text-muted-foreground">Minimal 12 karakter.</span>}
+            </label>
+            {error && (
+              <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            <Button type="submit" disabled={isSubmitting} className="w-full">
+              {isSubmitting ? (
+                'Memproses...'
+              ) : (
+                <>
+                  <LockKeyhole className="h-4 w-4" />
+                  {registrationRequired ? 'Buat akun admin' : 'Masuk'}
+                </>
+              )}
+            </Button>
+          </form>
+
+          <div className="mt-5 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Akses aman ke panel administrasi
           </div>
         </div>
 
-        {registrationRequired && (
-          <p className="mb-5 p-3 rounded-xl bg-amber-950/50 border border-amber-500/30 text-amber-200 text-xs">
-            Belum ada akun admin. Pendaftaran ini hanya untuk admin pertama dan akan ditutup otomatis setelah akun dibuat.
-          </p>
-        )}
-        {envLoginConfigured && (
-          <p className="mb-5 p-3 rounded-xl bg-indigo-950/50 border border-indigo-500/30 text-indigo-200 text-xs">
-            Login dikelola oleh ADMIN_USERNAME dan ADMIN_PASSWORD dari environment server.
-          </p>
-        )}
-        {envLoginIncomplete && (
-          <p className="mb-5 p-3 rounded-xl bg-amber-950/50 border border-amber-500/30 text-amber-200 text-xs">
-            ADMIN_USERNAME/ADMIN_PASSWORD belum terisi berpasangan. Lengkapi keduanya di .env atau gunakan pendaftaran admin pertama.
-          </p>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <label className="block text-xs font-semibold text-slate-300">
-            Username
-            <input
-              required
-              minLength={3}
-              maxLength={64}
-              autoComplete="username"
-              value={username}
-              onChange={event => setUsername(event.target.value)}
-              className="mt-1.5 w-full px-3 py-2.5 bg-slate-950 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-indigo-500"
-            />
-          </label>
-          <label className="block text-xs font-semibold text-slate-300">
-            Password
-            <input
-              required
-              minLength={registrationRequired ? 12 : 1}
-              maxLength={256}
-              type="password"
-              autoComplete={registrationRequired ? 'new-password' : 'current-password'}
-              value={password}
-              onChange={event => setPassword(event.target.value)}
-              className="mt-1.5 w-full px-3 py-2.5 bg-slate-950 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-indigo-500"
-            />
-            {registrationRequired && <span className="mt-1 block text-[11px] text-slate-500">Minimal 12 karakter.</span>}
-          </label>
-          {error && <p role="alert" className="p-3 rounded-lg bg-rose-950/50 border border-rose-500/30 text-rose-200 text-xs">{error}</p>}
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-sm rounded-lg"
-          >
-            {isSubmitting ? 'Memproses...' : registrationRequired ? 'Buat akun admin' : 'Login'}
-          </button>
-        </form>
-        <a href="/" className="mt-5 block text-center text-sm text-indigo-300 hover:text-indigo-200">
-          Kembali ke halaman pelanggan
+        <a href="/" className="mx-auto mt-6 inline-flex items-center justify-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" />
+          Kembali ke Portal
         </a>
       </section>
     </main>
