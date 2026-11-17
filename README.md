@@ -248,6 +248,7 @@ SmartBilling tidak menjalankan atau membundel server WhatsApp. Instalasi/akun pr
 - **OpenWA:** jalankan instalasi OpenWA secara terpisah, lalu set `OPENWA_BASE_URL`, `OPENWA_API_KEY`, dan `OPENWA_SESSION_ID`.
 - Pilih provider di menu **WhatsApp API** dashboard. `WA_PROVIDER` opsional; jika diisi di `.env`, pilihan panel dikunci.
 - Token/API key hanya disimpan di environment server. Tes pesan tersedia melalui provider aktif; cek status sesi hanya berlaku untuk OpenWA.
+- `WA_BULK_DELAY_MS` mengatur jeda minimum antar pesan pengingat tagihan otomatis dan pemberitahuan pembatalan invoice (default `3000`, rentang `0`-`60000` ms). Atur di environment server lalu restart/redeploy; ini pengaturan SmartBilling, terpisah dari dashboard Fonnte.
 
 ---
 

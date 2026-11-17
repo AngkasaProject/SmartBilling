@@ -493,6 +493,10 @@ async function startServer() {
   const OPENWA_SESSION_ID = process.env.OPENWA_SESSION_ID || 'billing-isp';
   const FONNTE_API_URL = process.env.FONNTE_API_URL || 'https://api.fonnte.com/send';
   const FONNTE_TOKEN = process.env.FONNTE_TOKEN || '';
+  const WA_BULK_DELAY_MS = Number(process.env.WA_BULK_DELAY_MS ?? '3000');
+  if (!Number.isSafeInteger(WA_BULK_DELAY_MS) || WA_BULK_DELAY_MS < 0 || WA_BULK_DELAY_MS > 60000) {
+    throw new Error('WA_BULK_DELAY_MS must be an integer between 0 and 60000');
+  }
 
   async function getWhatsAppConfig() {
     const settings = await getAppSettingsDb();
@@ -554,7 +558,13 @@ async function startServer() {
       }
     }
     if (config.provider === 'fonnte' && isRecord(data) && data.status === false) {
-      throw new Error('Fonnte did not accept the message');
+      const detail = ['detail', 'reason', 'message', 'error']
+        .map(key => data[key])
+        .find((value): value is string => typeof value === 'string' && Boolean(value.trim()));
+      const safeDetail = detail?.replaceAll(FONNTE_TOKEN, '[redacted]').slice(0, 300);
+      throw new Error(safeDetail
+        ? `Fonnte rejected the message: ${safeDetail}`
+        : 'Fonnte rejected the message without a reason');
     }
     return { provider: config.provider, data };
   }
@@ -7005,6 +7015,13 @@ async function startServer() {
         invoice.cancellationReason === 'grace_period' &&
         invoice.canceledAt
       );
+      let bulkWhatsAppMessagesAttempted = 0;
+      const waitForBulkWhatsAppSlot = async () => {
+        if (bulkWhatsAppMessagesAttempted > 0 && WA_BULK_DELAY_MS > 0) {
+          await new Promise<void>(resolve => setTimeout(resolve, WA_BULK_DELAY_MS));
+        }
+        bulkWhatsAppMessagesAttempted += 1;
+      };
       for (const invoice of cancellationNoticeInvoices) {
         const marker = `invoice-canceled:${invoice.id}`;
         const attempts = cancellationLogs
@@ -7032,6 +7049,7 @@ async function startServer() {
         ].filter(Boolean).join('\n');
         try {
           if (!appUrl) throw new Error('APP_URL tidak dikonfigurasi; tautan portal tidak dapat dibuat');
+          await waitForBulkWhatsAppSlot();
           const sent = await sendWhatsAppMessage(customer.phone, message);
           await recordWhatsAppLog(customer.phone, customer.name, 'invoice_canceled', message, 'sent', `${marker}:${sent.provider}`);
           cancellationLogs.unshift({
@@ -7090,6 +7108,7 @@ async function startServer() {
           await paymentGatewayReady(await paymentGatewayCredentials())
         );
         try {
+          await waitForBulkWhatsAppSlot();
           const sent = await sendWhatsAppMessage(customer.phone, message);
           await recordWhatsAppLog(customer.phone, customer.name, 'reminder_h1', message, 'sent', `${marker}:${sent.provider}`);
         } catch (error) {

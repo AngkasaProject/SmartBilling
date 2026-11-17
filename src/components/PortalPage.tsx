@@ -1581,6 +1581,7 @@ export function PortalPage() {
     "automatic",
   );
   const [voucherMethodId, setVoucherMethodId] = useState("");
+  const [voucherCheckoutPreview, setVoucherCheckoutPreview] = useState(false);
   const voucherSubmitLock = useRef(false);
   const voucherIdempotencyAttempt = useRef<{ fingerprint: string; key: string } | null>(null);
   const [lookupQuery, setLookupQuery] = useState("");
@@ -1894,8 +1895,19 @@ export function PortalPage() {
     return () => window.clearInterval(interval);
   }, [activeTab, lookupResult]);
 
-  const createVoucherOrder = async (event: React.FormEvent) => {
+  const openVoucherCheckout = (event: React.FormEvent) => {
     event.preventDefault();
+    setError("");
+    setVoucherCheckoutPreview(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const selectedVoucherPaymentMethod = paymentOptions?.manualMethods.find(
+    method => method.id === voucherMethodId,
+  );
+  const selectedVoucherProfile = hotspotProfiles.find(profile => profile.id === voucherProfileId);
+
+  const createVoucherOrder = async () => {
     if (voucherSubmitLock.current) return;
     const fingerprint = JSON.stringify({
       profileId: voucherProfileId,
@@ -2547,14 +2559,133 @@ export function PortalPage() {
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-zinc-200 pb-4">
                 <div>
                   <h1 className="text-2xl font-bold tracking-tight text-zinc-900 sm:text-3xl">
-                    Voucher Hotspot
+                    {voucherCheckoutPreview ? "Checkout Voucher Hotspot" : "Voucher Hotspot"}
                   </h1>
                   <p className="mt-1 text-xs text-zinc-500">
-                    Beli paket voucher hotspot internet.
+                    {voucherCheckoutPreview
+                      ? "Periksa pesanan dan panduan pembayaran sebelum membuat transaksi."
+                      : "Beli paket voucher hotspot internet."}
                   </p>
                 </div>
               </div>
             </div>
+            {voucherCheckoutPreview ? (
+              <section className="portal-enter mx-auto max-w-xl rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-28px_rgba(24,24,27,0.35)] sm:rounded-3xl sm:p-8">
+                <div className="mb-5">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Langkah 3</p>
+                  <h2 className="mt-1 text-xl font-bold text-zinc-900">Checkout</h2>
+                  <p className="mt-1 text-sm text-zinc-500">Periksa pesanan dan cara pembayaran sebelum melanjutkan.</p>
+                </div>
+
+                <div className="space-y-3 rounded-xl bg-zinc-50 p-4 text-sm">
+                  <div className="flex justify-between gap-4">
+                    <span className="text-zinc-500">Paket</span>
+                    <b className="text-right text-zinc-900">{selectedVoucherProfile?.name || "Voucher Hotspot"}</b>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <span className="text-zinc-500">Nama</span>
+                    <b className="text-right text-zinc-900">{voucherName}</b>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <span className="text-zinc-500">WhatsApp</span>
+                    <b className="text-right text-zinc-900">{voucherPhone}</b>
+                  </div>
+                  <div className="flex justify-between gap-4 border-t border-zinc-200 pt-3">
+                    <span className="text-zinc-500">Metode</span>
+                    <b className="text-right text-zinc-900">
+                      {voucherMode === "automatic"
+                        ? `Otomatis (${paymentOptions?.provider.toUpperCase() || "Gateway"})`
+                        : paymentOptions?.manualMethods.find(method => method.id === voucherMethodId)?.name || "Manual"}
+                    </b>
+                  </div>
+                  <div className="flex justify-between gap-4 border-t border-zinc-200 pt-3">
+                    <span className="text-zinc-500">Total</span>
+                    <b className="text-lg text-zinc-900">{rupiah(selectedVoucherProfile?.price || 0)}</b>
+                  </div>
+                </div>
+
+                {voucherMode === "manual" && selectedVoucherPaymentMethod && (
+                  <div className="mt-5 rounded-xl border border-zinc-200 p-4">
+                    <h3 className="font-bold text-zinc-900">Detail pembayaran</h3>
+                    {selectedVoucherPaymentMethod.category === "qris" ? (
+                      <div className="mt-3 flex flex-col items-center text-center">
+                        <p className="text-sm font-semibold text-zinc-800">{selectedVoucherPaymentMethod.name}</p>
+                        <p className="text-sm text-zinc-600">Pindai QRIS dan bayar sesuai total pesanan.</p>
+                        <p className="mt-2 text-lg font-bold text-zinc-900">{rupiah(selectedVoucherProfile?.price || 0)}</p>
+                        {selectedVoucherPaymentMethod.qrisImageUrl && (
+                          <QrisImage
+                            src={selectedVoucherPaymentMethod.qrisImageUrl}
+                            alt={`QRIS ${selectedVoucherPaymentMethod.name}`}
+                            className="mt-3 h-64 w-full max-w-xs"
+                          />
+                        )}
+                        {selectedVoucherPaymentMethod.accountHolder && (
+                          <p className="mt-2 text-sm text-zinc-600">Merchant: <b>{selectedVoucherPaymentMethod.accountHolder}</b></p>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mt-3 rounded-xl bg-zinc-50 p-3 text-sm text-zinc-700">
+                        <p className="font-semibold">{selectedVoucherPaymentMethod.name}</p>
+                        {selectedVoucherPaymentMethod.accountNumber && (
+                          <p className="mt-2">
+                            {selectedVoucherPaymentMethod.category === "ewallet" ? "Nomor akun" : selectedVoucherPaymentMethod.category === "other" ? "Nomor tujuan" : "Nomor rekening"}:{" "}
+                            <b className="font-mono">{selectedVoucherPaymentMethod.accountNumber}</b>
+                          </p>
+                        )}
+                        {selectedVoucherPaymentMethod.serviceName && (
+                          <p className="mt-1">Bank/layanan: <b>{selectedVoucherPaymentMethod.serviceName}</b></p>
+                        )}
+                        {selectedVoucherPaymentMethod.accountHolder && (
+                          <p className="mt-1">Atas nama: <b>{selectedVoucherPaymentMethod.accountHolder}</b></p>
+                        )}
+                        <p className="mt-2 font-semibold">Total: {rupiah(selectedVoucherProfile?.price || 0)}</p>
+                      </div>
+                    )}
+                    {selectedVoucherPaymentMethod.instructions && (
+                      <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-zinc-600">{selectedVoucherPaymentMethod.instructions}</p>
+                    )}
+                  </div>
+                )}
+
+                <div className="mt-5 rounded-xl border border-zinc-200 p-4">
+                  <h3 className="font-bold text-zinc-900">Cara pembayaran</h3>
+                  {voucherMode === "manual" ? (
+                    <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm leading-relaxed text-zinc-600">
+                      <li>Catat detail rekening atau QRIS dan nominal pembayaran di atas.</li>
+                      <li>Tekan <b>Bayar Sekarang</b> untuk membuat pesanan dan membuka halaman status pembayaran.</li>
+                      <li>Selesaikan pembayaran sesuai detail yang sudah dicatat.</li>
+                    </ol>
+                  ) : (
+                    <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm leading-relaxed text-zinc-600">
+                      <li>Tekan <b>Bayar Sekarang</b> untuk membuat transaksi.</li>
+                      <li>Anda akan diarahkan ke halaman pembayaran otomatis untuk memilih atau menyelesaikan metode yang tersedia.</li>
+                      <li>Selesaikan pembayaran sampai status transaksi terkonfirmasi.</li>
+                    </ol>
+                  )}
+                </div>
+
+                <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
+                  <button type="button" className={secondaryButtonClass} disabled={busy} onClick={() => { setError(""); setVoucherCheckoutPreview(false); }}>
+                    Kembali
+                  </button>
+                  <button
+                    type="button"
+                    className={`${buttonClass} min-h-11`}
+                    disabled={
+                      busy ||
+                      !voucherProfileId ||
+                      !paymentOptions ||
+                      (!paymentOptions.automaticAvailable && !paymentOptions.manualMethods.length) ||
+                      (voucherMode === "manual" && !voucherMethodId)
+                    }
+                    onClick={() => void createVoucherOrder()}
+                  >
+                    {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
+                    {busy ? "Membuat pesanan..." : "Bayar Sekarang"}
+                  </button>
+                </div>
+              </section>
+            ) : (
             <div className="mx-auto grid max-w-5xl gap-4 sm:gap-6 lg:grid-cols-[1.2fr_0.8fr]">
               <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-28px_rgba(24,24,27,0.35)] sm:rounded-3xl sm:p-8">
                 <div className="mb-5 flex items-center justify-between gap-3">
@@ -2606,7 +2737,7 @@ export function PortalPage() {
 
               <form
                 className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-[0_12px_40px_-28px_rgba(24,24,27,0.35)] sm:sticky sm:top-36 sm:rounded-3xl sm:p-8"
-                onSubmit={(event) => void createVoucherOrder(event)}
+                onSubmit={openVoucherCheckout}
               >
                 <div className="mb-5 flex items-center justify-between gap-3">
                   <div>
@@ -2641,56 +2772,47 @@ export function PortalPage() {
                     maxLength={254}
                   />
                 </div>
-                <div className="mt-5 space-y-2">
+                <div className="mt-5 space-y-4">
                   {paymentOptions?.automaticAvailable && (
-                    <label
-                      className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition ${voucherMode === "automatic" ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-900" : "border-zinc-200"}`}
-                    >
-                      <input
-                        type="radio"
-                        className="accent-zinc-900"
-                        checked={voucherMode === "automatic"}
-                        onChange={() => setVoucherMode("automatic")}
-                      />
-                      <span className="text-sm font-medium text-zinc-900">
-                        Otomatis ({paymentOptions.provider.toUpperCase()})
-                      </span>
-                    </label>
+                    <fieldset className="space-y-2">
+                      <legend className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Pembayaran Otomatis</legend>
+                      <label className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition ${voucherMode === "automatic" ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-900" : "border-zinc-200"}`}>
+                        <input
+                          type="radio"
+                          name="voucher-payment-method"
+                          className="accent-zinc-900"
+                          checked={voucherMode === "automatic"}
+                          onChange={() => setVoucherMode("automatic")}
+                        />
+                        <span className="text-sm font-medium text-zinc-900">Otomatis ({paymentOptions.provider.toUpperCase()})</span>
+                      </label>
+                    </fieldset>
                   )}
-                  {paymentOptions?.manualMethods.map((method) => (
-                    <label
-                      key={method.id}
-                      className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${voucherMode === "manual" && voucherMethodId === method.id ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-900" : "border-zinc-200"}`}
-                    >
-                      <input
-                        type="radio"
-                        className="mt-0.5 accent-zinc-900"
-                        checked={
-                          voucherMode === "manual" &&
-                          voucherMethodId === method.id
-                        }
-                        onChange={() => {
-                          setVoucherMode("manual");
-                          setVoucherMethodId(method.id);
-                        }}
-                      />
-                      <span className="text-sm font-medium text-zinc-900">
-                        {method.name}
-                      </span>
-                    </label>
-                  ))}
-                  {voucherMode === "manual" && paymentOptions?.manualMethods.find(method => method.id === voucherMethodId)?.qrisImageUrl && (
-                    <div className="flex flex-col items-center rounded-xl border border-zinc-200 bg-white p-4 text-center">
-                      <p className="mb-2 text-xs font-semibold text-zinc-700">QRIS statis — scan dan bayar sesuai nominal paket</p>
-                      {hotspotProfiles.find(profile => profile.id === voucherProfileId) && (
-                        <p className="mb-3 text-sm font-bold text-zinc-800">{rupiah(hotspotProfiles.find(profile => profile.id === voucherProfileId)?.price ?? 0)}</p>
-                      )}
-                      <QrisImage
-                        src={paymentOptions.manualMethods.find(method => method.id === voucherMethodId)?.qrisImageUrl || ''}
-                        alt={`QRIS ${paymentOptions.manualMethods.find(method => method.id === voucherMethodId)?.name || ''}`}
-                        className="h-48 w-full max-w-xs"
-                      />
-                    </div>
+                  {!!paymentOptions?.manualMethods.length && (
+                    <fieldset className="space-y-2">
+                      <legend className="mb-2 text-[10px] font-bold uppercase tracking-wider text-zinc-400">Pembayaran Manual</legend>
+                      {paymentOptions.manualMethods.map(method => (
+                        <label
+                          key={method.id}
+                          className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${voucherMode === "manual" && voucherMethodId === method.id ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-900" : "border-zinc-200"}`}
+                        >
+                          <input
+                            type="radio"
+                            name="voucher-payment-method"
+                            className="mt-0.5 accent-zinc-900"
+                            checked={voucherMode === "manual" && voucherMethodId === method.id}
+                            onChange={() => {
+                              setVoucherMode("manual");
+                              setVoucherMethodId(method.id);
+                            }}
+                          />
+                          <span className="text-sm font-medium text-zinc-900">{method.name}</span>
+                        </label>
+                      ))}
+                    </fieldset>
+                  )}
+                  {paymentOptions && !paymentOptions.automaticAvailable && !paymentOptions.manualMethods.length && (
+                    <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">Metode pembayaran belum tersedia. Silakan hubungi operator.</p>
                   )}
                 </div>
                 <button
@@ -2698,18 +2820,14 @@ export function PortalPage() {
                   disabled={
                     busy ||
                     !voucherProfileId ||
+                    !paymentOptions ||
+                    (!paymentOptions.automaticAvailable && !paymentOptions.manualMethods.length) ||
                     (voucherMode === "manual" && !voucherMethodId)
                   }
-                >
-                  {busy ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <CreditCard className="w-4 h-4" />
-                  )}
-                  {busy ? "Membuat pesanan..." : "Buat Pesanan Sekarang"}
-                </button>
+                ><CreditCard className="w-4 h-4" />Lanjut ke Checkout</button>
               </form>
             </div>
+            )}
           </section>
         )}
       </main>
@@ -2867,6 +2985,7 @@ export function PortalCheckoutPage() {
         : checkout?.status === "canceled"
           ? "Pembayaran dibatalkan"
           : "";
+  const isManualVoucherStatus = checkout?.orderType === "voucher" && checkout.paymentMethod === "manual";
 
   const copyPaymentCode = async () => {
     if (!checkout) return;
@@ -2930,10 +3049,14 @@ export function PortalCheckoutPage() {
             <ShieldCheck className="h-5 w-5" />
           </span>
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Checkout aman</p>
-            <h1 className="mt-1 text-xl font-bold tracking-tight">Detail pembayaran</h1>
+            <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+              {isManualVoucherStatus ? "Status pesanan" : "Checkout aman"}
+            </p>
+            <h1 className="mt-1 text-xl font-bold tracking-tight">{isManualVoucherStatus ? "Status pembayaran" : "Detail pembayaran"}</h1>
             <p className="mt-1 text-xs leading-relaxed text-zinc-500">
-              Simpan kode pembayaran ini untuk memeriksa status pesanan Anda.
+              {isManualVoucherStatus
+                ? "Status pesanan diperbarui otomatis setelah pembayaran terkonfirmasi."
+                : "Simpan kode pembayaran ini untuk memeriksa status pesanan Anda."}
             </p>
           </div>
         </div>
@@ -3005,7 +3128,7 @@ export function PortalCheckoutPage() {
               </div>
             )}
 
-            {checkout.status === "pending" && (
+            {checkout.status === "pending" && !isManualVoucherStatus && (
               <section className="mt-5 rounded-2xl border border-zinc-200 p-4 sm:p-5">
                 <h3 className="font-bold">Cara pembayaran</h3>
                 <p className="mt-1 text-xs text-zinc-500">
@@ -3083,6 +3206,41 @@ export function PortalCheckoutPage() {
                   <a href={checkout.operatorUrl} target="_blank" rel="noopener noreferrer" className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-zinc-700 underline">
                     Konfirmasi pembayaran ke operator <ChevronRight className="h-3.5 w-3.5" />
                   </a>
+                )}
+              </section>
+            )}
+
+            {isManualVoucherStatus && checkout.status === "pending" && (
+              <section className="mt-5 rounded-2xl border border-zinc-200 p-4 sm:p-5">
+                <h3 className="font-bold">Kirim bukti transfer</h3>
+                {checkout.proofUploaded ? (
+                  <p role="status" className="mt-2 text-sm font-semibold text-emerald-700">
+                    Bukti transfer sudah diunggah. Admin akan memeriksa pembayaran Anda.
+                  </p>
+                ) : (
+                  <>
+                    <p className="mt-1 text-sm text-zinc-600">
+                      Sudah membayar? Unggah bukti transfer agar admin dapat memeriksanya.
+                    </p>
+                    <input
+                      ref={proofInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg"
+                      className="hidden"
+                      aria-label="Pilih gambar bukti transfer"
+                      onChange={event => void uploadTransferProof(event.target.files?.[0])}
+                    />
+                    <button
+                      type="button"
+                      className={`${buttonClass} mt-3 w-full`}
+                      disabled={proofUploading}
+                      onClick={() => proofInputRef.current?.click()}
+                    >
+                      {proofUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                      {proofUploading ? "Mengunggah bukti..." : "Upload bukti transfer"}
+                    </button>
+                    <p className="mt-2 text-[11px] text-zinc-500">Format PNG/JPG, maksimal 5 MB.</p>
+                  </>
                 )}
               </section>
             )}
