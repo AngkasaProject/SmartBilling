@@ -124,7 +124,7 @@ Backend menyediakan `GET /api/data` untuk memuat snapshot dari SQLite dan `PUT /
 
 ### Login admin dan portal pelanggan
 
-- Buka `/admin` pertama kali tanpa `ADMIN_USERNAME`/`ADMIN_PASSWORD` untuk mendaftarkan admin pertama. Buat password minimal 12 karakter; pendaftaran awal otomatis ditutup setelah admin dibuat.
+- Buka `/admin` pertama kali tanpa `ADMIN_USERNAME`/`ADMIN_PASSWORD` untuk mendaftarkan admin pertama. Buat password minimal 8 karakter; pendaftaran awal otomatis ditutup setelah admin dibuat.
 - Jika kedua variabel admin diisi di `.env`, login memakai kredensial tersebut dan perubahan kredensial harus dilakukan lewat environment server. Jangan hanya mengisi salah satunya.
 - Halaman utama `/` adalah Portal publik pelanggan dengan tombol Cek tagihan, Beli voucher, dan Login Admin (`/admin`). Pelanggan dapat mengecek tagihan menggunakan ID pelanggan atau nomor WhatsApp terdaftar tanpa login; status pembayaran diambil dari Billing dan diperbarui berkala.
 - Tautan invoice bertanda tangan untuk pelanggan/admin tetap tersedia di `/portal/billing`. Token tautan baru memakai format ringkas, dan token lama tetap diterima sampai kedaluwarsa.

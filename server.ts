@@ -1241,7 +1241,7 @@ async function startServer() {
     return typeof username === 'string' &&
       /^[A-Za-z0-9_.@-]{3,64}$/.test(username.trim()) &&
       typeof password === 'string' &&
-      password.length >= 12 &&
+      password.length >= 8 &&
       password.length <= 256;
   }
 
@@ -1284,7 +1284,7 @@ async function startServer() {
     if (envAdminConfigured) return res.status(403).json({ error: 'Admin login is managed by ADMIN_USERNAME and ADMIN_PASSWORD in .env' });
     const { username, password } = req.body || {};
     if (!validCredentials(username, password) || typeof password !== 'string') {
-      return res.status(400).json({ error: 'Username must be 3-64 characters; password must be 12-256 characters' });
+      return res.status(400).json({ error: 'Username must be 3-64 characters; password must be 8-256 characters' });
     }
     const userId = randomUUID();
     try {
@@ -1348,7 +1348,7 @@ async function startServer() {
   app.post('/api/admin/users', requireAdminSession, async (req, res) => {
     const { username, password } = req.body || {};
     if (!validCredentials(username, password) || typeof password !== 'string') {
-      return res.status(400).json({ error: 'Username must be 3-64 characters; password must be 12-256 characters' });
+      return res.status(400).json({ error: 'Username must be 3-64 characters; password must be 8-256 characters' });
     }
     try {
       await createAdminUserDb(randomUUID(), username.trim(), passwordHash(password));

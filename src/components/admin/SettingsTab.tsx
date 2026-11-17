@@ -552,56 +552,6 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings, sect
                 <p className="text-xs font-semibold text-muted-foreground">Contoh kode yang akan diterbitkan</p>
                 <code className="mt-2 block text-lg font-bold tracking-wider text-primary">{sampleVoucherCode}</code>
               </div>
-              <section className="space-y-3 border-t border-border pt-5">
-                <div>
-                  <h3 className="flex items-center gap-2 text-sm font-bold"><KeyRound className="h-4 w-4 text-primary" /> Secret sesi SmartBilling Portal</h3>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Secret terenkripsi ini digunakan untuk menandatangani sesi Portal internal. Salin ke <code>PORTAL_SESSION_SECRET</code> hanya jika aplikasi Portal terpisah masih digunakan.
-                  </p>
-                </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <input
-                    type={showPortalSessionSecret ? 'text' : 'password'}
-                    readOnly
-                    value={portalSessionSecret}
-                    placeholder={portalSessionSecretConfigured ? 'Secret tersimpan secara aman' : 'Secret belum dibuat'}
-                    aria-label="Secret sesi portal"
-                    className={`${inputClass} min-w-0 flex-1 font-mono`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => showPortalSessionSecret ? setShowPortalSessionSecret(false) : void revealPortalSessionSecret()}
-                    disabled={!portalSessionSecretConfigured || loadingPortalSessionSecret}
-                    className="rounded-xl border border-border bg-secondary px-4 py-2 text-xs font-bold hover:bg-muted disabled:opacity-50"
-                  >
-                    {loadingPortalSessionSecret ? 'Memuat...' : showPortalSessionSecret ? 'Sembunyikan' : 'Tampilkan'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void copyPortalSessionSecret()}
-                    disabled={!portalSessionSecretConfigured || loadingPortalSessionSecret}
-                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-secondary px-4 py-2 text-xs font-bold hover:bg-muted disabled:opacity-50"
-                  >
-                    <Copy className="h-4 w-4" /> Salin
-                  </button>
-                </div>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-xs text-muted-foreground">
-                    Status: {portalSessionSecretConfigured ? 'secret sudah dibuat' : 'belum dikonfigurasi'}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => void generatePortalSessionSecret()}
-                    disabled={loadingPortalSessionSecret}
-                    className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-300 hover:bg-amber-500/20 disabled:opacity-50"
-                  >
-                    {portalSessionSecretConfigured ? 'Buat ulang secret' : 'Generate secret'}
-                  </button>
-                </div>
-                <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
-                  Secret ini berbeda dari secret tautan pembayaran. Jangan bagikan atau masukkan ke variabel <code>NEXT_PUBLIC_*</code>. Jika dibuat ulang, samakan nilainya di Billing dan Portal.
-                </p>
-              </section>
             </>
           )}
 
@@ -848,8 +798,8 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings, sect
                 <h3 className="flex items-center gap-2 text-sm font-bold"><Users className="h-4 w-4 text-primary" /> Akun admin tambahan</h3>
                 <form onSubmit={addAdmin} className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
                   <input required minLength={3} maxLength={64} value={newAdminUsername} onChange={event => setNewAdminUsername(event.target.value)} placeholder="Username" className={inputClass} />
-                  <input required type="password" minLength={12} maxLength={256} value={newAdminPassword} onChange={event => setNewAdminPassword(event.target.value)} placeholder="Password (minimal 12 karakter)" className={inputClass} />
-                  <button type="submit" disabled={newAdminUsername.trim().length < 3 || newAdminPassword.length < 12} className="rounded-xl bg-primary px-4 py-2 text-xs font-bold text-primary-foreground hover:opacity-90 disabled:opacity-50">Tambah admin</button>
+                  <input required type="password" minLength={8} maxLength={256} value={newAdminPassword} onChange={event => setNewAdminPassword(event.target.value)} placeholder="Password (minimal 8 karakter)" className={inputClass} />
+                  <button type="submit" disabled={newAdminUsername.trim().length < 3 || newAdminPassword.length < 8} className="rounded-xl bg-primary px-4 py-2 text-xs font-bold text-primary-foreground hover:opacity-90 disabled:opacity-50">Tambah admin</button>
                 </form>
                 {loadingSecurity ? <p className="text-xs text-muted-foreground">Memuat daftar admin...</p> : (
                   <div className="space-y-2">
@@ -883,6 +833,56 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings, sect
                     Buat ulang kunci
                   </button>
                 </div>
+              </section>
+              <section className="space-y-3 border-t border-border pt-5">
+                <div>
+                  <h3 className="flex items-center gap-2 text-sm font-bold"><KeyRound className="h-4 w-4 text-primary" /> Secret sesi SmartBilling Portal</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Secret terenkripsi ini digunakan untuk menandatangani sesi Portal internal. Salin ke <code>PORTAL_SESSION_SECRET</code> hanya jika aplikasi Portal terpisah masih digunakan.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    type={showPortalSessionSecret ? 'text' : 'password'}
+                    readOnly
+                    value={portalSessionSecret}
+                    placeholder={portalSessionSecretConfigured ? 'Secret tersimpan secara aman' : 'Secret belum dibuat'}
+                    aria-label="Secret sesi portal"
+                    className={`${inputClass} min-w-0 flex-1 font-mono`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => showPortalSessionSecret ? setShowPortalSessionSecret(false) : void revealPortalSessionSecret()}
+                    disabled={!portalSessionSecretConfigured || loadingPortalSessionSecret}
+                    className="rounded-xl border border-border bg-secondary px-4 py-2 text-xs font-bold hover:bg-muted disabled:opacity-50"
+                  >
+                    {loadingPortalSessionSecret ? 'Memuat...' : showPortalSessionSecret ? 'Sembunyikan' : 'Tampilkan'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void copyPortalSessionSecret()}
+                    disabled={!portalSessionSecretConfigured || loadingPortalSessionSecret}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-secondary px-4 py-2 text-xs font-bold hover:bg-muted disabled:opacity-50"
+                  >
+                    <Copy className="h-4 w-4" /> Salin
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-xs text-muted-foreground">
+                    Status: {portalSessionSecretConfigured ? 'secret sudah dibuat' : 'belum dikonfigurasi'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void generatePortalSessionSecret()}
+                    disabled={loadingPortalSessionSecret}
+                    className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs font-bold text-amber-300 hover:bg-amber-500/20 disabled:opacity-50"
+                  >
+                    {portalSessionSecretConfigured ? 'Buat ulang secret' : 'Generate secret'}
+                  </button>
+                </div>
+                <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+                  Secret ini berbeda dari secret tautan pembayaran. Jangan bagikan atau masukkan ke variabel <code>NEXT_PUBLIC_*</code>. Jika dibuat ulang, samakan nilainya di Billing dan Portal.
+                </p>
               </section>
             </>
           )}

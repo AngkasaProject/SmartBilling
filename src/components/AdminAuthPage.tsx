@@ -86,7 +86,7 @@ export const AdminAuthPage: React.FC<Props> = ({
               Password
               <input
                 required
-                minLength={registrationRequired ? 12 : 1}
+                minLength={registrationRequired ? 8 : 1}
                 maxLength={256}
                 type="password"
                 autoComplete={registrationRequired ? 'new-password' : 'current-password'}
@@ -94,7 +94,7 @@ export const AdminAuthPage: React.FC<Props> = ({
                 onChange={event => setPassword(event.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               />
-              {registrationRequired && <span className="block text-xs font-normal text-muted-foreground">Minimal 12 karakter.</span>}
+              {registrationRequired && <span className="block text-xs font-normal text-muted-foreground">Minimal 8 karakter.</span>}
             </label>
             {error && (
               <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
