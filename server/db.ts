@@ -69,6 +69,21 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   updatedAt: new Date().toISOString(),
 };
 
+export interface WhatsAppGatewayCredentials {
+  openwaBaseUrl: string;
+  openwaApiKey: string;
+  openwaSessionId: string;
+  fonnteApiUrl: string;
+  fonnteToken: string;
+}
+
+function isWhatsAppGatewayCredentials(value: unknown): value is WhatsAppGatewayCredentials {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const credentials = value as Record<string, unknown>;
+  return ['openwaBaseUrl', 'openwaApiKey', 'openwaSessionId', 'fonnteApiUrl', 'fonnteToken']
+    .every(key => typeof credentials[key] === 'string');
+}
+
 // Initialize SQLite database
 export async function getDb(): Promise<Database> {
   if (db) return db;
@@ -146,6 +161,7 @@ export async function restoreDbFromBackup(backup: Buffer): Promise<string> {
     if (appSettings[0]?.values[0]?.[0]) {
       JSON.parse(String(appSettings[0].values[0][0]));
     }
+    initSchema(restored);
   } catch (error) {
     restored?.close();
     if (error instanceof Error) throw new Error(`Backup tidak dapat dipulihkan: ${error.message}`);
@@ -256,7 +272,7 @@ export async function resetAllBusinessDataDb(): Promise<string> {
     for (const table of ['customers', 'invoices', 'hotspot_profiles', 'vouchers', 'whatsapp_logs', 'payment_transactions']) {
       database.run(`DELETE FROM ${table}`);
     }
-    for (const table of ['router_credentials', 'payment_gateway_credentials', 'admin_sessions', 'portal_otp_challenges']) {
+    for (const table of ['router_credentials', 'payment_gateway_credentials', 'whatsapp_gateway_credentials', 'admin_sessions', 'portal_otp_challenges']) {
       database.run(`DELETE FROM ${table}`);
     }
     database.run(
@@ -293,6 +309,12 @@ function initSchema(database: Database): void {
     );
 
     CREATE TABLE IF NOT EXISTS payment_gateway_credentials (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      secret TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS whatsapp_gateway_credentials (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       secret TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -659,6 +681,37 @@ export async function getPaymentGatewayCredentialsDb(): Promise<PaymentGatewayCr
   return credentials;
 }
 
+export async function saveWhatsAppGatewayCredentialsDb(
+  credentials: WhatsAppGatewayCredentials
+): Promise<void> {
+  const database = await getDb();
+  database.run(
+    'INSERT OR REPLACE INTO whatsapp_gateway_credentials (id, secret, updated_at) VALUES (1, ?, ?)',
+    [encryptRouterSecret(JSON.stringify(credentials)), new Date().toISOString()]
+  );
+  saveDbToDisk();
+}
+
+export async function getWhatsAppGatewayCredentialsDb(): Promise<WhatsAppGatewayCredentials | null> {
+  const database = await getDb();
+  const result = database.exec('SELECT secret FROM whatsapp_gateway_credentials WHERE id = 1');
+  const secret = result[0]?.values[0]?.[0];
+  if (typeof secret !== 'string') return null;
+  const compatibilityKeys = ENCRYPTION_KEY_PLACEHOLDERS.has(process.env.APP_ENCRYPTION_KEY?.trim() || '')
+    ? [Buffer.from(process.env.APP_ENCRYPTION_KEY!.trim(), 'utf8')]
+    : [];
+  const decoded = decryptRouterSecret(secret, [
+    loadEncryptionKeyMaterial(),
+    ...previousEncryptionKeys,
+    ...compatibilityKeys,
+  ]);
+  const credentials: unknown = JSON.parse(decoded);
+  if (!isWhatsAppGatewayCredentials(credentials)) {
+    throw new Error('Stored WhatsApp gateway credentials are invalid');
+  }
+  return credentials;
+}
+
 function writeEncryptionKeyring(active: Buffer, previous: Buffer[] = []): void {
   const keyPath = encryptionKeyPath();
   const temporaryPath = `${keyPath}.${randomBytes(6).toString('hex')}.tmp`;
@@ -695,6 +748,8 @@ export async function rotateEncryptionKeyDb(): Promise<{ key: string }> {
   const rows = result[0]?.values ?? [];
   const paymentResult = database.exec('SELECT secret FROM payment_gateway_credentials WHERE id = 1');
   const paymentSecret = paymentResult[0]?.values[0]?.[0];
+  const whatsappResult = database.exec('SELECT secret FROM whatsapp_gateway_credentials WHERE id = 1');
+  const whatsappSecret = whatsappResult[0]?.values[0]?.[0];
   const portalSessionResult = database.exec('SELECT value FROM app_settings WHERE key = ?', ['portal_session_secret']);
   const portalSessionSecret = portalSessionResult[0]?.values[0]?.[0];
   database.run('BEGIN TRANSACTION');
@@ -710,6 +765,13 @@ export async function rotateEncryptionKeyDb(): Promise<{ key: string }> {
       const credentials = decryptRouterSecret(paymentSecret, [oldMaterial, ...previous]);
       database.run(
         'UPDATE payment_gateway_credentials SET secret = ?, updated_at = ? WHERE id = 1',
+        [encryptRouterSecret(credentials, newMaterial), new Date().toISOString()]
+      );
+    }
+    if (typeof whatsappSecret === 'string') {
+      const credentials = decryptRouterSecret(whatsappSecret, [oldMaterial, ...previous]);
+      database.run(
+        'UPDATE whatsapp_gateway_credentials SET secret = ?, updated_at = ? WHERE id = 1',
         [encryptRouterSecret(credentials, newMaterial), new Date().toISOString()]
       );
     }
@@ -847,9 +909,12 @@ export async function saveAppDataCollectionDb<K extends keyof AppDataSnapshot>(
   value: AppDataSnapshot[K]
 ): Promise<void> {
   const database = await getDb();
+  const storedValue = collection === 'whatsappConfig'
+    ? { ...(value as AppDataSnapshot['whatsappConfig']), apiKey: '', token: '' }
+    : value;
   database.run(
     'INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)',
-    [collection, JSON.stringify(value), new Date().toISOString()]
+    [collection, JSON.stringify(storedValue), new Date().toISOString()]
   );
   saveDbToDisk();
 }
@@ -1157,6 +1222,23 @@ export async function getAppDataDb(): Promise<{
       throw new Error(`Stored app data for "${String(collection)}" is invalid JSON`, { cause: err });
     }
   }
+  const legacyWhatsAppConfig = data.whatsappConfig;
+  if (legacyWhatsAppConfig && (legacyWhatsAppConfig.apiKey || legacyWhatsAppConfig.token)) {
+    const storedCredentials = await getWhatsAppGatewayCredentialsDb();
+    await saveWhatsAppGatewayCredentialsDb({
+      openwaBaseUrl: storedCredentials?.openwaBaseUrl || legacyWhatsAppConfig.openwaUrl || '',
+      openwaApiKey: legacyWhatsAppConfig.apiKey || storedCredentials?.openwaApiKey || '',
+      openwaSessionId: storedCredentials?.openwaSessionId || legacyWhatsAppConfig.sessionId || 'billing-isp',
+      fonnteApiUrl: storedCredentials?.fonnteApiUrl || legacyWhatsAppConfig.endpointUrl || '',
+      fonnteToken: legacyWhatsAppConfig.token || storedCredentials?.fonnteToken || '',
+    });
+    data.whatsappConfig = { ...legacyWhatsAppConfig, apiKey: '', token: '' };
+    database.run(
+      'UPDATE app_data SET value = ?, updated_at = ? WHERE collection = ?',
+      [JSON.stringify(data.whatsappConfig), new Date().toISOString(), 'whatsappConfig']
+    );
+    saveDbToDisk();
+  }
   if (!Array.isArray(data.hotspotServiceProfiles)) data.hotspotServiceProfiles = [];
   if (!Array.isArray(data.pppoePackages)) data.pppoePackages = [];
 
@@ -1169,12 +1251,16 @@ export async function getAppDataDb(): Promise<{
 export async function saveAppDataDb(data: AppDataSnapshot): Promise<void> {
   const database = await getDb();
   const updatedAt = new Date().toISOString();
+  const safeData: AppDataSnapshot = {
+    ...data,
+    whatsappConfig: { ...data.whatsappConfig, apiKey: '', token: '' },
+  };
   database.run('BEGIN TRANSACTION');
   try {
     for (const collection of APP_DATA_COLLECTIONS) {
       database.run(
         `INSERT OR REPLACE INTO app_data (collection, value, updated_at) VALUES (?, ?, ?)`,
-        [collection, JSON.stringify(data[collection]), updatedAt]
+        [collection, JSON.stringify(safeData[collection]), updatedAt]
       );
     }
     database.run('COMMIT');

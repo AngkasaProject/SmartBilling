@@ -53,6 +53,9 @@ import {
   getPaymentGatewayCredentialsDb,
   savePaymentGatewayCredentialsDb,
   PaymentGatewayCredentials,
+  getWhatsAppGatewayCredentialsDb,
+  saveWhatsAppGatewayCredentialsDb,
+  WhatsAppGatewayCredentials,
 } from './server/db.js';
 import {
   addPppoeSecret,
@@ -488,18 +491,31 @@ async function startServer() {
   // Initialize SQLite database
   await getDb();
 
-  const OPENWA_BASE_URL = process.env.OPENWA_BASE_URL || '';
-  const OPENWA_API_KEY = process.env.OPENWA_API_KEY || '';
-  const OPENWA_SESSION_ID = process.env.OPENWA_SESSION_ID || 'billing-isp';
-  const FONNTE_API_URL = process.env.FONNTE_API_URL || 'https://api.fonnte.com/send';
-  const FONNTE_TOKEN = process.env.FONNTE_TOKEN || '';
+  const OPENWA_BASE_URL_ENV = process.env.OPENWA_BASE_URL?.trim() || '';
+  const OPENWA_API_KEY_ENV = process.env.OPENWA_API_KEY?.trim() || '';
+  const OPENWA_SESSION_ID_ENV = process.env.OPENWA_SESSION_ID?.trim() || '';
+  const FONNTE_API_URL_ENV = process.env.FONNTE_API_URL?.trim() || '';
+  const FONNTE_TOKEN_ENV = process.env.FONNTE_TOKEN?.trim() || '';
   const WA_BULK_DELAY_MS = Number(process.env.WA_BULK_DELAY_MS ?? '3000');
   if (!Number.isSafeInteger(WA_BULK_DELAY_MS) || WA_BULK_DELAY_MS < 0 || WA_BULK_DELAY_MS > 60000) {
     throw new Error('WA_BULK_DELAY_MS must be an integer between 0 and 60000');
   }
 
-  async function getWhatsAppConfig() {
+  async function getWhatsAppRuntimeConfig() {
     const settings = await getAppSettingsDb();
+    let storedCredentials = await getWhatsAppGatewayCredentialsDb();
+    if (settings.openwaApiKey && !storedCredentials?.openwaApiKey) {
+      storedCredentials = {
+        openwaBaseUrl: storedCredentials?.openwaBaseUrl || settings.openwaUrl || '',
+        openwaApiKey: settings.openwaApiKey,
+        openwaSessionId: storedCredentials?.openwaSessionId || settings.openwaSessionId || 'billing-isp',
+        fonnteApiUrl: storedCredentials?.fonnteApiUrl || '',
+        fonnteToken: storedCredentials?.fonnteToken || '',
+      };
+      await saveWhatsAppGatewayCredentialsDb(storedCredentials);
+      await saveAppSettingsDb({ openwaApiKey: '' });
+    }
+
     const environmentProvider = process.env.WA_PROVIDER?.trim().toLowerCase();
     const provider = environmentProvider || settings.waProvider || 'openwa';
     if (provider !== 'openwa' && provider !== 'fonnte') {
@@ -508,12 +524,83 @@ async function startServer() {
     return {
       provider,
       managedByEnvironment: Boolean(environmentProvider),
-      baseUrl: OPENWA_BASE_URL,
-      sessionId: OPENWA_SESSION_ID,
-      apiKeyConfigured: Boolean(OPENWA_API_KEY),
-      fonnteApiUrl: FONNTE_API_URL,
-      tokenConfigured: provider === 'openwa' ? Boolean(OPENWA_API_KEY && OPENWA_BASE_URL) : Boolean(FONNTE_TOKEN),
+      baseUrl: OPENWA_BASE_URL_ENV || storedCredentials?.openwaBaseUrl || settings.openwaUrl || '',
+      apiKey: OPENWA_API_KEY_ENV || storedCredentials?.openwaApiKey || '',
+      apiKeyStoredInDashboard: Boolean(storedCredentials?.openwaApiKey),
+      sessionId: OPENWA_SESSION_ID_ENV || storedCredentials?.openwaSessionId || settings.openwaSessionId || 'billing-isp',
+      fonnteApiUrl: FONNTE_API_URL_ENV || storedCredentials?.fonnteApiUrl || 'https://api.fonnte.com/send',
+      fonnteToken: FONNTE_TOKEN_ENV || storedCredentials?.fonnteToken || '',
+      fonnteTokenStoredInDashboard: Boolean(storedCredentials?.fonnteToken),
+      baseUrlManagedByEnvironment: Boolean(OPENWA_BASE_URL_ENV),
+      apiKeyManagedByEnvironment: Boolean(OPENWA_API_KEY_ENV),
+      sessionIdManagedByEnvironment: Boolean(OPENWA_SESSION_ID_ENV),
+      fonnteApiUrlManagedByEnvironment: Boolean(FONNTE_API_URL_ENV),
+      fonnteTokenManagedByEnvironment: Boolean(FONNTE_TOKEN_ENV),
     };
+  }
+
+  async function getWhatsAppConfig() {
+    const config = await getWhatsAppRuntimeConfig();
+    return {
+      provider: config.provider,
+      managedByEnvironment: config.managedByEnvironment,
+      baseUrl: config.baseUrl,
+      sessionId: config.sessionId,
+      apiKeyConfigured: Boolean(config.apiKey),
+      apiKeyManagedByEnvironment: config.apiKeyManagedByEnvironment,
+      apiKeyStoredInDashboard: config.apiKeyStoredInDashboard,
+      fonnteApiUrl: config.fonnteApiUrl,
+      fonnteApiUrlManagedByEnvironment: config.fonnteApiUrlManagedByEnvironment,
+      fonnteTokenConfigured: Boolean(config.fonnteToken),
+      fonnteTokenManagedByEnvironment: config.fonnteTokenManagedByEnvironment,
+      fonnteTokenStoredInDashboard: config.fonnteTokenStoredInDashboard,
+      tokenConfigured: config.provider === 'openwa'
+        ? Boolean(config.apiKey && config.baseUrl)
+        : Boolean(config.fonnteToken),
+      tokenManagedByEnvironment: config.provider === 'openwa'
+        ? config.apiKeyManagedByEnvironment
+        : config.fonnteTokenManagedByEnvironment,
+    };
+  }
+
+  class WhatsAppConfigValidationError extends Error {}
+
+  function normalizeWhatsAppEndpoint(value: string, label: string, httpsOnly = false): string {
+    if (value.length > 2048) throw new WhatsAppConfigValidationError(`${label} maksimal 2048 karakter`);
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new WhatsAppConfigValidationError(`${label} harus berupa URL yang valid`);
+    }
+    if (
+      (url.protocol !== 'https:' && url.protocol !== 'http:') ||
+      (httpsOnly && url.protocol !== 'https:') ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    ) {
+      throw new WhatsAppConfigValidationError(`${label} harus menggunakan ${httpsOnly ? 'HTTPS' : 'HTTP/HTTPS'} tanpa kredensial, query, atau fragment`);
+    }
+    return url.toString().replace(/\/+$/, '');
+  }
+
+  function redactWhatsAppSecrets(value: string, config: Awaited<ReturnType<typeof getWhatsAppRuntimeConfig>>): string {
+    return [config.apiKey, config.fonnteToken]
+      .filter(Boolean)
+      .reduce((text, secret) => text.replaceAll(secret, '[redacted]'), value);
+  }
+
+  function redactWhatsAppResponse(value: unknown, config: Awaited<ReturnType<typeof getWhatsAppRuntimeConfig>>): unknown {
+    if (typeof value === 'string') return redactWhatsAppSecrets(value, config);
+    if (Array.isArray(value)) return value.map(item => redactWhatsAppResponse(item, config));
+    if (isRecord(value)) {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [key, redactWhatsAppResponse(item, config)])
+      );
+    }
+    return value;
   }
 
   async function sendWhatsAppMessage(phone: string, message: string): Promise<{ provider: string; data: unknown }> {
@@ -521,34 +608,37 @@ async function startServer() {
     if (clean.length < 8 || clean.length > 15) throw new Error('Nomor WhatsApp tidak valid');
     if (clean.startsWith('0')) clean = `62${clean.substring(1)}`;
     else if (!clean.startsWith('62')) clean = `62${clean}`;
-    const config = await getWhatsAppConfig();
-    if (!config.tokenConfigured) {
+    const config = await getWhatsAppRuntimeConfig();
+    const tokenConfigured = config.provider === 'openwa'
+      ? Boolean(config.apiKey && config.baseUrl)
+      : Boolean(config.fonnteToken);
+    if (!tokenConfigured) {
       throw new Error(config.provider === 'fonnte'
-        ? 'FONNTE_TOKEN belum dikonfigurasi di environment server'
-        : 'OPENWA_BASE_URL dan OPENWA_API_KEY belum dikonfigurasi di environment server');
+        ? 'Kredensial Fonnte belum dikonfigurasi di dashboard atau environment server'
+        : 'Base URL/API key OpenWA belum dikonfigurasi di dashboard atau environment server');
     }
     const response = config.provider === 'fonnte'
-      ? await fetch(FONNTE_API_URL, {
+      ? await fetch(config.fonnteApiUrl, {
         method: 'POST',
         headers: {
-          Authorization: FONNTE_TOKEN,
+          Authorization: config.fonnteToken,
           'Content-Type': 'application/x-www-form-urlencoded',
           Accept: 'application/json',
         },
         body: new URLSearchParams({ target: clean, message }),
         signal: AbortSignal.timeout(15000),
       })
-      : await fetch(`${OPENWA_BASE_URL.replace(/\/+$/, '')}/api/sessions/${encodeURIComponent(OPENWA_SESSION_ID)}/messages/send-text`, {
+      : await fetch(`${config.baseUrl.replace(/\/+$/, '')}/api/sessions/${encodeURIComponent(config.sessionId)}/messages/send-text`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': OPENWA_API_KEY,
+          'X-API-Key': config.apiKey,
         },
         body: JSON.stringify({ chatId: `${clean}@c.us`, text: message }),
         signal: AbortSignal.timeout(15000),
       });
     const responseText = await response.text();
-    if (!response.ok) throw new Error(`${config.provider} returned ${response.status}: ${responseText.slice(0, 300)}`);
+    if (!response.ok) throw new Error(`${config.provider} returned ${response.status}: ${redactWhatsAppSecrets(responseText, config).slice(0, 300)}`);
     let data: unknown = {};
     if (responseText) {
       try {
@@ -561,12 +651,12 @@ async function startServer() {
       const detail = ['detail', 'reason', 'message', 'error']
         .map(key => data[key])
         .find((value): value is string => typeof value === 'string' && Boolean(value.trim()));
-      const safeDetail = detail?.replaceAll(FONNTE_TOKEN, '[redacted]').slice(0, 300);
+      const safeDetail = detail ? redactWhatsAppSecrets(detail, config).slice(0, 300) : undefined;
       throw new Error(safeDetail
         ? `Fonnte rejected the message: ${safeDetail}`
         : 'Fonnte rejected the message without a reason');
     }
-    return { provider: config.provider, data };
+    return { provider: config.provider, data: redactWhatsAppResponse(data, config) };
   }
 
   async function recordWhatsAppLog(
@@ -5424,6 +5514,7 @@ async function startServer() {
   app.get('/api/settings', requireAdminSession, async (_req, res) => {
     try {
       const settings = await getAppSettingsDb();
+      const whatsAppConfig = await getWhatsAppRuntimeConfig();
       const envRouter = envRouterConnection();
       res.json({
         ...settings,
@@ -5439,9 +5530,9 @@ async function startServer() {
           ? { paymentIsProduction: process.env.MIDTRANS_IS_PRODUCTION === 'true' }
           : {}),
         ...(process.env.MIDTRANS_CLIENT_KEY ? { paymentClientKey: process.env.MIDTRANS_CLIENT_KEY } : {}),
-        ...(process.env.WA_PROVIDER ? { waProvider: process.env.WA_PROVIDER } : {}),
-        openwaUrl: OPENWA_BASE_URL,
-        openwaSessionId: OPENWA_SESSION_ID,
+        waProvider: whatsAppConfig.provider,
+        openwaUrl: whatsAppConfig.baseUrl,
+        openwaSessionId: whatsAppConfig.sessionId,
         ...(process.env.WA_SENDER_NUMBER ? { openwaSenderNumber: process.env.WA_SENDER_NUMBER } : {}),
         mikrotikPass: '',
         openwaApiKey: '',
@@ -6675,6 +6766,7 @@ async function startServer() {
 
   app.get('/api/wa/config', requireAdminSession, async (_req, res) => {
     try {
+      res.setHeader('Cache-Control', 'no-store, private');
       res.json(await getWhatsAppConfig());
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -6682,17 +6774,78 @@ async function startServer() {
   });
 
   app.post('/api/wa/config', requireAdminSession, async (req, res) => {
-    if (req.body?.provider !== 'openwa' && req.body?.provider !== 'fonnte') {
+    res.setHeader('Cache-Control', 'no-store, private');
+    if (!isRecord(req.body) || (req.body.provider !== 'openwa' && req.body.provider !== 'fonnte')) {
       return res.status(400).json({ error: 'Provider must be openwa or fonnte' });
     }
-    if (process.env.WA_PROVIDER?.trim()) {
+    const environmentProvider = process.env.WA_PROVIDER?.trim().toLowerCase();
+    if (environmentProvider && environmentProvider !== req.body.provider) {
       return res.status(409).json({ error: 'WhatsApp provider selection is managed by WA_PROVIDER in the server environment' });
     }
     try {
-      await saveAppSettingsDb({ waProvider: req.body.provider });
+      const current = await getWhatsAppGatewayCredentialsDb();
+      const credentials: WhatsAppGatewayCredentials = current || {
+        openwaBaseUrl: '',
+        openwaApiKey: '',
+        openwaSessionId: '',
+        fonnteApiUrl: '',
+        fonnteToken: '',
+      };
+      const body = req.body;
+
+      if (body.openwaBaseUrl !== undefined && !OPENWA_BASE_URL_ENV) {
+        if (typeof body.openwaBaseUrl !== 'string') return res.status(400).json({ error: 'OpenWA Base URL tidak valid' });
+        credentials.openwaBaseUrl = body.openwaBaseUrl.trim()
+          ? normalizeWhatsAppEndpoint(body.openwaBaseUrl.trim(), 'OpenWA Base URL')
+          : '';
+      }
+      if (body.openwaSessionId !== undefined && !OPENWA_SESSION_ID_ENV) {
+        if (
+          typeof body.openwaSessionId !== 'string' ||
+          body.openwaSessionId.length > 128 ||
+          (body.openwaSessionId.trim() && !/^[A-Za-z0-9._-]+$/.test(body.openwaSessionId.trim()))
+        ) {
+          return res.status(400).json({ error: 'OpenWA Session ID tidak valid' });
+        }
+        credentials.openwaSessionId = body.openwaSessionId.trim();
+      }
+      if (body.fonnteApiUrl !== undefined && !FONNTE_API_URL_ENV) {
+        if (typeof body.fonnteApiUrl !== 'string') return res.status(400).json({ error: 'Fonnte API URL tidak valid' });
+        credentials.fonnteApiUrl = body.fonnteApiUrl.trim()
+          ? normalizeWhatsAppEndpoint(body.fonnteApiUrl.trim(), 'Fonnte API URL', true)
+          : '';
+      }
+      if (body.openwaApiKey !== undefined) {
+        if (
+          typeof body.openwaApiKey !== 'string' ||
+          body.openwaApiKey.length > 2048 ||
+          /[\u0000-\u001F\u007F]/.test(body.openwaApiKey)
+        ) {
+          return res.status(400).json({ error: 'OpenWA API key tidak valid' });
+        }
+        if (body.openwaApiKey.trim()) credentials.openwaApiKey = body.openwaApiKey.trim();
+      }
+      if (body.fonnteToken !== undefined) {
+        if (
+          typeof body.fonnteToken !== 'string' ||
+          body.fonnteToken.length > 2048 ||
+          /[\u0000-\u001F\u007F]/.test(body.fonnteToken)
+        ) {
+          return res.status(400).json({ error: 'Fonnte token tidak valid' });
+        }
+        if (body.fonnteToken.trim()) credentials.fonnteToken = body.fonnteToken.trim();
+      }
+      if (body.clearOpenwaApiKey === true) credentials.openwaApiKey = '';
+      if (body.clearFonnteToken === true) credentials.fonnteToken = '';
+
+      await saveWhatsAppGatewayCredentialsDb(credentials);
+      if (!environmentProvider) await saveAppSettingsDb({ waProvider: req.body.provider });
+      res.setHeader('Cache-Control', 'no-store, private');
       res.json(await getWhatsAppConfig());
     } catch (error) {
-      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+      res.status(error instanceof WhatsAppConfigValidationError ? 400 : 500).json({
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   });
 
@@ -7130,28 +7283,28 @@ async function startServer() {
 
   app.get('/api/wa/session/status', requireAdminSession, async (_req, res) => {
     try {
-      const config = await getWhatsAppConfig();
+      const config = await getWhatsAppRuntimeConfig();
       if (config.provider !== 'openwa') {
         return res.status(409).json({ error: 'Session status is only available when OpenWA is selected' });
       }
-      if (!config.tokenConfigured) {
-        return res.status(503).json({ error: 'OPENWA_BASE_URL and OPENWA_API_KEY are not configured' });
+      if (!config.apiKey || !config.baseUrl) {
+        return res.status(503).json({ error: 'OpenWA belum dikonfigurasi di dashboard atau environment server' });
       }
-      const baseUrl = OPENWA_BASE_URL.replace(/\/+$/, '');
-      const headers = { 'X-API-Key': OPENWA_API_KEY };
-      const statusResponse = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(OPENWA_SESSION_ID)}/status`, {
+      const baseUrl = config.baseUrl.replace(/\/+$/, '');
+      const headers = { 'X-API-Key': config.apiKey };
+      const statusResponse = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(config.sessionId)}/status`, {
         headers,
         signal: AbortSignal.timeout(5000),
       });
       const statusText = await statusResponse.text();
       if (!statusResponse.ok) {
-        return res.status(502).json({ error: `OpenWA returned ${statusResponse.status}: ${statusText.slice(0, 300)}` });
+        return res.status(502).json({ error: `OpenWA returned ${statusResponse.status}: ${redactWhatsAppSecrets(statusText, config).slice(0, 300)}` });
       }
       const statusData: unknown = statusText ? JSON.parse(statusText) : {};
       let normalized = normalizeOpenWaSessionStatus(statusData);
 
       if (!normalized.status) {
-        const sessionResponse = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(OPENWA_SESSION_ID)}`, {
+        const sessionResponse = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(config.sessionId)}`, {
           headers,
           signal: AbortSignal.timeout(5000),
         });

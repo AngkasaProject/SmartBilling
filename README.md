@@ -242,12 +242,12 @@ chmod 600 /path/backup-aman/router-secrets.key
 
 ## 📱 Konfigurasi WhatsApp Gateway (Fonnte/OpenWA)
 
-SmartBilling tidak menjalankan atau membundel server WhatsApp. Instalasi/akun provider dikelola terpisah; aplikasi hanya mengirim request REST API dari server.
+SmartBilling tidak menjalankan atau membundel server WhatsApp. Instalasi/akun provider dikelola terpisah; aplikasi hanya mengirim request REST API dari server. Provider dan kredensial dapat diatur di menu **WhatsApp API** dashboard.
 
-- **Fonnte:** set `FONNTE_TOKEN` (dan opsional `FONNTE_API_URL`) memakai token dari akun Fonnte.
-- **OpenWA:** jalankan instalasi OpenWA secara terpisah, lalu set `OPENWA_BASE_URL`, `OPENWA_API_KEY`, dan `OPENWA_SESSION_ID`.
-- Pilih provider di menu **WhatsApp API** dashboard. `WA_PROVIDER` opsional; jika diisi di `.env`, pilihan panel dikunci.
-- Token/API key hanya disimpan di environment server. Tes pesan tersedia melalui provider aktif; cek status sesi hanya berlaku untuk OpenWA.
+- **Fonnte:** masukkan token dan, bila perlu, URL API di dashboard. URL bawaan adalah `https://api.fonnte.com/send`.
+- **OpenWA:** jalankan instalasi OpenWA secara terpisah, lalu masukkan Base URL, Session ID, dan API key di dashboard.
+- Nilai environment yang diisi (`FONNTE_TOKEN`, `FONNTE_API_URL`, `OPENWA_BASE_URL`, `OPENWA_API_KEY`, `OPENWA_SESSION_ID`) mengesampingkan nilai dashboard. `WA_PROVIDER` opsional; jika diisi, provider dikunci ke nilai tersebut. Kosongkan variabel override yang ingin dikelola lewat dashboard.
+- Token/API key disimpan terenkripsi di database server menggunakan kunci enkripsi aplikasi, tidak dikirim kembali ke browser, dan kolom rahasia yang dibiarkan kosong tidak menghapus kredensial tersimpan. Simpan backup database dan kunci enkripsi di tempat aman; jangan masukkan kredensial ke Git. Tes pesan tersedia melalui provider aktif; cek status sesi hanya berlaku untuk OpenWA.
 - `WA_BULK_DELAY_MS` mengatur jeda minimum antar pesan pengingat tagihan otomatis dan pemberitahuan pembatalan invoice (default `3000`, rentang `0`-`60000` ms). Atur di environment server lalu restart/redeploy; ini pengaturan SmartBilling, terpisah dari dashboard Fonnte.
 
 ---

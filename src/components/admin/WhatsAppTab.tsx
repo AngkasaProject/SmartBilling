@@ -29,6 +29,25 @@ interface Props {
   onRefreshData: () => void;
 }
 
+interface WhatsAppEnvironmentConfig {
+  provider: 'openwa' | 'fonnte';
+  managedByEnvironment: boolean;
+  baseUrl: string;
+  baseUrlManagedByEnvironment: boolean;
+  sessionId: string;
+  sessionIdManagedByEnvironment: boolean;
+  apiKeyConfigured: boolean;
+  apiKeyManagedByEnvironment: boolean;
+  apiKeyStoredInDashboard: boolean;
+  fonnteApiUrl: string;
+  fonnteApiUrlManagedByEnvironment: boolean;
+  fonnteTokenConfigured: boolean;
+  fonnteTokenManagedByEnvironment: boolean;
+  fonnteTokenStoredInDashboard: boolean;
+  tokenConfigured: boolean;
+  tokenManagedByEnvironment: boolean;
+}
+
 function formatOpenWaChatId(phone: string): string {
   let digits = phone.replace(/\D/g, '');
   if (digits.startsWith('0')) digits = `62${digits.slice(1)}`;
@@ -37,17 +56,13 @@ function formatOpenWaChatId(phone: string): string {
 }
 
 export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }) => {
-  const { toast } = useToast();
+  const { toast, confirm: confirmAction } = useToast();
   const [config, setConfig] = useState<WhatsAppGatewayConfig>(waConfig);
-  const [waEnvironment, setWaEnvironment] = useState<{
-    provider: 'openwa' | 'fonnte';
-    managedByEnvironment: boolean;
-    baseUrl: string;
-    sessionId: string;
-    apiKeyConfigured: boolean;
-    fonnteApiUrl: string;
-    tokenConfigured: boolean;
-  } | null>(null);
+  const [waEnvironment, setWaEnvironment] = useState<WhatsAppEnvironmentConfig | null>(null);
+  const [fonnteApiUrl, setFonnteApiUrl] = useState('https://api.fonnte.com/send');
+  const [openwaApiKey, setOpenwaApiKey] = useState('');
+  const [fonnteToken, setFonnteToken] = useState('');
+  const [savingGatewayConfig, setSavingGatewayConfig] = useState(false);
   const [waConfigError, setWaConfigError] = useState('');
   const [checkingSession, setCheckingSession] = useState(false);
 
@@ -79,9 +94,10 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
 
   const loadWhatsAppConfig = async () => {
     const response = await fetch('/api/wa/config');
-    const result = await response.json();
+    const result = await response.json() as WhatsAppEnvironmentConfig & { error?: string };
     if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
     setWaEnvironment(result);
+    setFonnteApiUrl(result.fonnteApiUrl);
     setConfig(current => ({
       ...current,
       provider: result.provider,
@@ -105,10 +121,57 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-      setWaEnvironment(result);
+      setWaEnvironment(result as WhatsAppEnvironmentConfig);
+      setFonnteApiUrl(result.fonnteApiUrl);
       setConfig(current => ({ ...current, provider: result.provider, sessionStatus: 'disconnected', sessionPhone: undefined }));
     } catch (error) {
       setWaConfigError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const handleSaveGatewayConfig = async (clearCredential?: 'openwa' | 'fonnte') => {
+    if (clearCredential && !await confirmAction(
+      'Hapus kredensial WhatsApp tersimpan?',
+      `Kredensial ${clearCredential === 'openwa' ? 'OpenWA API key' : 'Fonnte token'} yang disimpan di database server akan dihapus.`,
+      true,
+    )) return;
+
+    setSavingGatewayConfig(true);
+    setWaConfigError('');
+    try {
+      const payload: Record<string, unknown> = {
+        provider: config.provider,
+        openwaBaseUrl: config.openwaUrl,
+        openwaSessionId: config.sessionId,
+        fonnteApiUrl,
+      };
+      if (openwaApiKey.trim()) payload.openwaApiKey = openwaApiKey;
+      if (fonnteToken.trim()) payload.fonnteToken = fonnteToken;
+      if (clearCredential === 'openwa') payload.clearOpenwaApiKey = true;
+      if (clearCredential === 'fonnte') payload.clearFonnteToken = true;
+
+      const response = await fetch('/api/wa/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json() as WhatsAppEnvironmentConfig & { error?: string };
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      setWaEnvironment(result);
+      setFonnteApiUrl(result.fonnteApiUrl);
+      setConfig(current => ({
+        ...current,
+        provider: result.provider,
+        openwaUrl: result.baseUrl,
+        sessionId: result.sessionId,
+      }));
+      setOpenwaApiKey('');
+      setFonnteToken('');
+      toast('Konfigurasi WhatsApp disimpan', 'success', 'Kredensial hanya disimpan di server dan tidak ditampilkan kembali.');
+    } catch (error) {
+      setWaConfigError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingGatewayConfig(false);
     }
   };
 
@@ -320,24 +383,119 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
                 <option value="fonnte">Fonnte (REST API eksternal)</option>
               </select>
             </label>
+            {config.provider === 'openwa' ? (
+              <>
+                <label className="block text-slate-300 font-semibold">
+                  OpenWA Base URL
+                  <input
+                    type="url"
+                    value={config.openwaUrl}
+                    onChange={event => setConfig(current => ({ ...current, openwaUrl: event.target.value }))}
+                    disabled={waEnvironment?.baseUrlManagedByEnvironment}
+                    placeholder="http://openwa:2785"
+                    className="mt-1.5 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-white disabled:opacity-50"
+                  />
+                </label>
+                <label className="block text-slate-300 font-semibold">
+                  OpenWA Session ID
+                  <input
+                    type="text"
+                    value={config.sessionId}
+                    onChange={event => setConfig(current => ({ ...current, sessionId: event.target.value }))}
+                    disabled={waEnvironment?.sessionIdManagedByEnvironment}
+                    placeholder="billing-isp"
+                    maxLength={128}
+                    className="mt-1.5 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-white disabled:opacity-50"
+                  />
+                </label>
+                <label className="block text-slate-300 font-semibold">
+                  OpenWA API key
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={openwaApiKey}
+                    onChange={event => setOpenwaApiKey(event.target.value)}
+                    disabled={waEnvironment?.apiKeyManagedByEnvironment}
+                    placeholder={waEnvironment?.apiKeyConfigured ? 'Kosongkan untuk mempertahankan API key' : 'Masukkan API key'}
+                    maxLength={2048}
+                    className="mt-1.5 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-white disabled:opacity-50"
+                  />
+                </label>
+                <p className={waEnvironment?.apiKeyConfigured ? 'text-emerald-400' : 'text-rose-300'}>
+                  {waEnvironment?.apiKeyManagedByEnvironment
+                    ? 'API key dikelola oleh environment server.'
+                    : waEnvironment?.apiKeyConfigured
+                      ? 'API key tersimpan aman di server.'
+                      : 'API key belum dikonfigurasi.'}
+                </p>
+                {waEnvironment?.apiKeyStoredInDashboard && (
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveGatewayConfig('openwa')}
+                    disabled={savingGatewayConfig}
+                    className="text-rose-300 underline disabled:opacity-50"
+                  >
+                    Hapus API key tersimpan
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <label className="block text-slate-300 font-semibold">
+                  Fonnte API URL
+                  <input
+                    type="url"
+                    value={fonnteApiUrl}
+                    onChange={event => setFonnteApiUrl(event.target.value)}
+                    disabled={waEnvironment?.fonnteApiUrlManagedByEnvironment}
+                    placeholder="https://api.fonnte.com/send"
+                    className="mt-1.5 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-white disabled:opacity-50"
+                  />
+                </label>
+                <label className="block text-slate-300 font-semibold">
+                  Fonnte token
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={fonnteToken}
+                    onChange={event => setFonnteToken(event.target.value)}
+                    disabled={waEnvironment?.fonnteTokenManagedByEnvironment}
+                    placeholder={waEnvironment?.fonnteTokenConfigured ? 'Kosongkan untuk mempertahankan token' : 'Masukkan token Fonnte'}
+                    maxLength={2048}
+                    className="mt-1.5 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-white disabled:opacity-50"
+                  />
+                </label>
+                <p className={waEnvironment?.fonnteTokenConfigured ? 'text-emerald-400' : 'text-rose-300'}>
+                  {waEnvironment?.fonnteTokenManagedByEnvironment
+                    ? 'Token dikelola oleh environment server.'
+                    : waEnvironment?.fonnteTokenConfigured
+                      ? 'Token tersimpan aman di server.'
+                      : 'Token belum dikonfigurasi.'}
+                </p>
+                {waEnvironment?.fonnteTokenStoredInDashboard && (
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveGatewayConfig('fonnte')}
+                    disabled={savingGatewayConfig}
+                    className="text-rose-300 underline disabled:opacity-50"
+                  >
+                    Hapus token tersimpan
+                  </button>
+                )}
+              </>
+            )}
             <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
               {config.provider === 'openwa' ? (
                 <>
-                  <p className="text-slate-400">OpenWA Base URL</p>
-                  <p className="text-white font-mono break-all">{config.openwaUrl || 'Belum dikonfigurasi'}</p>
-                  <p className="text-slate-400 mt-2">Session ID: <span className="text-white">{config.sessionId || 'Belum dikonfigurasi'}</span></p>
-                  <p className="text-slate-400 mt-2">API key</p>
+                  <p className="text-slate-400">Status koneksi API</p>
                   <p className={waEnvironment?.tokenConfigured ? 'text-emerald-400' : 'text-rose-300'}>
-                    {waEnvironment?.tokenConfigured ? 'Tersetel di environment server' : 'OPENWA_BASE_URL/OPENWA_API_KEY belum lengkap'}
+                    {waEnvironment?.tokenConfigured ? 'OpenWA siap digunakan.' : 'Lengkapi Base URL dan API key.'}
                   </p>
                 </>
               ) : (
                 <>
-                  <p className="text-slate-400">Fonnte REST API</p>
-                  <p className="text-white font-mono break-all">{waEnvironment?.fonnteApiUrl || 'https://api.fonnte.com/send'}</p>
-                  <p className="text-slate-400 mt-2">Token API</p>
                   <p className={waEnvironment?.tokenConfigured ? 'text-emerald-400' : 'text-rose-300'}>
-                    {waEnvironment?.tokenConfigured ? 'Tersetel di environment server' : 'FONNTE_TOKEN belum disetel'}
+                    {waEnvironment?.tokenConfigured ? 'Fonnte siap digunakan.' : 'Lengkapi URL API dan token.'}
                   </p>
                 </>
               )}
@@ -345,9 +503,18 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
             <p className="text-[11px] text-slate-400">
               {waEnvironment?.managedByEnvironment
                 ? 'Provider dikunci oleh WA_PROVIDER di environment server.'
-                : 'Pilih provider di sini; token/API key dan alamat endpoint disetel di environment server.'}
-              {' '}Pengingat terjadwal belum tersedia.
+                : 'Pilih provider di sini. Nilai environment server selalu diutamakan jika disetel.'}
+              {' '}Kredensial baru disimpan terenkripsi di database server, tidak dikirim kembali ke browser, dan kolom rahasia kosong mempertahankan nilai tersimpan.
             </p>
+            <button
+              type="button"
+              onClick={() => void handleSaveGatewayConfig()}
+              disabled={savingGatewayConfig}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3.5 py-2 font-bold text-white transition hover:bg-emerald-500 disabled:opacity-50"
+            >
+              <Save className="h-3.5 w-3.5" />
+              {savingGatewayConfig ? 'Menyimpan...' : 'Simpan konfigurasi'}
+            </button>
           </div>
         </div>
 

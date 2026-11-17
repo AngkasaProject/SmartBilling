@@ -422,7 +422,7 @@ export const StorageService = {
     }
     try {
       const parsed = JSON.parse(raw) as WhatsAppGatewayConfig;
-      const safeConfig = { ...parsed, apiKey: '' };
+      const safeConfig = { ...parsed, apiKey: '', token: '' };
       if (JSON.stringify(parsed) !== JSON.stringify(safeConfig)) {
         localStorage.setItem(STORAGE_KEYS.WA_CONFIG, JSON.stringify(safeConfig));
       }
@@ -433,7 +433,7 @@ export const StorageService = {
   },
 
   saveWaConfig(cfg: WhatsAppGatewayConfig): void {
-    localStorage.setItem(STORAGE_KEYS.WA_CONFIG, JSON.stringify({ ...cfg, apiKey: '' }));
+    localStorage.setItem(STORAGE_KEYS.WA_CONFIG, JSON.stringify({ ...cfg, apiKey: '', token: '' }));
   },
 
   getTransactions(): PaymentTransaction[] {

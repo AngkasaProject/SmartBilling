@@ -3247,10 +3247,18 @@ export function PortalCheckoutPage() {
 
             {checkout.voucher && (
               <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-emerald-950">
-                <p className="text-sm font-bold">Pembayaran berhasil — voucher siap digunakan</p>
-                <p className="mt-3 font-mono text-2xl font-bold">{checkout.voucher.code}</p>
-                <p className="mt-1 text-sm">Password: <b>{checkout.voucher.password}</b></p>
-                <p className="mt-1 text-xs">Masa berlaku: {checkout.voucher.validityDuration}</p>
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold">Pembayaran berhasil — voucher siap digunakan</p>
+                    <p className="mt-3 break-all font-mono text-2xl font-bold">{checkout.voucher.code}</p>
+                    <p className="mt-1 text-sm">Password: <b>{checkout.voucher.password}</b></p>
+                    <p className="mt-1 text-xs">Masa berlaku: {checkout.voucher.validityDuration}</p>
+                  </div>
+                  <div className="flex shrink-0 flex-col items-center self-center rounded-xl bg-white/70 p-2 sm:self-auto">
+                    <QrCode value={checkout.voucher.code} size={192} />
+                    <span className="mt-1 text-[11px] font-medium text-emerald-900">Scan kode voucher</span>
+                  </div>
+                </div>
               </div>
             )}
 
