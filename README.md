@@ -91,6 +91,7 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 - **💾 Persistensi Data Aplikasi**:
   - Pengaturan dan data pelanggan, invoice, profil hotspot, voucher, router, log WhatsApp, konfigurasi gateway, serta transaksi disimpan di SQLite server.
   - Data aplikasi disimpan secara persisten di SQLite server. Identitas perusahaan dan kredensial tidak diisi dengan nilai contoh.
+  - Frontend hanya menyimpan cache kerja di memori; data bisnis dan preferensi tidak ditulis ke `localStorage`. Dashboard memuat data dari server, lalu membersihkan data browser lama setelah sinkronisasi berhasil. Riwayat pesanan voucher pada portal hanya tersedia selama halaman masih terbuka.
 
 ---
 
@@ -119,7 +120,7 @@ Platform billing MikroTik berbasis Docker untuk pengelolaan pelanggan PPPoE, inv
 └── src/                     # Frontend React 19 + Tailwind CSS v4 + Dashboard Admin
 ```
 
-Backend menyediakan `GET /api/data` untuk memuat snapshot data dan `PUT /api/data` untuk menyimpannya ke SQLite. Jika backend tidak tersedia, perubahan tidak dianggap tersimpan ke server.
+Backend menyediakan `GET /api/data` untuk memuat snapshot dari SQLite dan `PUT /api/data` untuk menyimpannya ke SQLite. Browser tidak menjadi sumber cadangan; jika backend tidak tersedia, perubahan tidak dianggap tersimpan dan harus dicoba lagi setelah koneksi pulih. Data browser lama dibersihkan setelah dashboard berhasil memuat data dari server.
 
 ### Login admin dan portal pelanggan
 

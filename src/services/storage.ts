@@ -15,7 +15,7 @@ import {
 } from '../types';
 import { DEFAULT_WHATSAPP_TEMPLATES } from '../utils/whatsappTemplates';
 
-const STORAGE_KEYS = {
+const LEGACY_STORAGE_KEYS = {
   APP_SETTINGS: 'mikrotik_billing_app_settings_v1',
   CUSTOMERS: 'mikrotik_billing_customers_v1',
   INVOICES: 'mikrotik_billing_invoices_v1',
@@ -47,26 +47,6 @@ async function readApiJson<T>(response: Response, endpoint: string): Promise<T> 
     return JSON.parse(body) as T;
   } catch (error) {
     throw new Error(`${endpoint} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-function readStoredList<T>(storageKey: string, demoIds: string[] = []): T[] {
-  const raw = localStorage.getItem(storageKey);
-  if (!raw) {
-    localStorage.setItem(storageKey, '[]');
-    return [];
-  }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error('Expected a list');
-    const filtered = parsed.filter(item => !demoIds.includes(item?.id));
-    if (filtered.length !== parsed.length) {
-      localStorage.setItem(storageKey, JSON.stringify(filtered));
-    }
-    return filtered as T[];
-  } catch (error) {
-    console.error(`Invalid local application data in ${storageKey}`, error);
-    throw error;
   }
 }
 
@@ -142,28 +122,46 @@ export const INITIAL_SETTINGS: AppSettings = {
   updatedAt: new Date().toISOString(),
 };
 
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function createEmptyAppData(): AppDataSnapshot {
+  return {
+    customers: [],
+    invoices: [],
+    pppoePackages: [],
+    hotspotProfiles: [],
+    hotspotServiceProfiles: [],
+    vouchers: [],
+    routers: [],
+    whatsappLogs: [],
+    paymentConfig: clone(INITIAL_PAYMENT_CONFIG),
+    whatsappConfig: clone(INITIAL_WA_CONFIG),
+    transactions: [],
+  };
+}
+
+let appData = createEmptyAppData();
+let appSettings = clone(INITIAL_SETTINGS);
+
+function clearLegacyBrowserData(): void {
+  try {
+    for (const key of Object.values(LEGACY_STORAGE_KEYS)) localStorage.removeItem(key);
+    localStorage.removeItem('smartbilling_recent_vouchers');
+    localStorage.removeItem('smartbilling-theme');
+  } catch (error) {
+    console.error('Unable to clear legacy browser-stored application data', error);
+  }
+}
+
 // Storage helper functions
 export const StorageService = {
   getSettings(): AppSettings {
-    const raw = localStorage.getItem(STORAGE_KEYS.APP_SETTINGS);
-    if (!raw) {
-      localStorage.setItem(STORAGE_KEYS.APP_SETTINGS, JSON.stringify(INITIAL_SETTINGS));
-      return INITIAL_SETTINGS;
-    }
-    try {
-      return { ...INITIAL_SETTINGS, ...JSON.parse(raw) };
-    } catch {
-      return INITIAL_SETTINGS;
-    }
+    return clone(appSettings);
   },
 
   async saveSettings(partial: Partial<AppSettings>): Promise<AppSettings> {
-    const current = this.getSettings();
-    const updated: AppSettings = {
-      ...current,
-      ...partial,
-      updatedAt: new Date().toISOString(),
-    };
     const response = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -171,26 +169,17 @@ export const StorageService = {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `Settings API returned ${response.status}`);
-    const persisted = result.settings
-      ? { ...updated, ...result.settings }
-      : updated;
-    localStorage.setItem(STORAGE_KEYS.APP_SETTINGS, JSON.stringify(persisted));
-    return persisted;
+    appSettings = { ...appSettings, ...result.settings, ...partial };
+    return clone(appSettings);
   },
 
   async syncFromSqlite(): Promise<AppSettings> {
-    try {
-      const res = await fetch('/api/settings');
-      if (res.ok) {
-        const fromDb = await res.json();
-        const merged = { ...INITIAL_SETTINGS, ...fromDb };
-        localStorage.setItem(STORAGE_KEYS.APP_SETTINGS, JSON.stringify(merged));
-        return merged;
-      }
-    } catch {
-      // Fallback to localStorage
-    }
-    return this.getSettings();
+    const response = await fetch('/api/settings');
+    const result = await readApiJson<Partial<AppSettings> & { error?: string }>(response, '/api/settings');
+    if (!response.ok) throw new Error(result.error || `Settings API returned ${response.status}`);
+    appSettings = { ...INITIAL_SETTINGS, ...result };
+    clearLegacyBrowserData();
+    return clone(appSettings);
   },
 
   async syncDataFromSqlite(): Promise<void> {
@@ -201,64 +190,21 @@ export const StorageService = {
       throw new Error(result.error || `Data API returned ${response.status}`);
     }
 
+    appData = { ...createEmptyAppData(), ...result.data };
+    appData.whatsappConfig = {
+      ...INITIAL_WA_CONFIG,
+      ...result.data.whatsappConfig,
+      apiKey: '',
+      token: '',
+    };
     if (!result.initialized) {
       await this.syncDataToSqlite();
-      return;
     }
-
-    const mappings: Array<[keyof AppDataSnapshot, string]> = [
-      ['customers', STORAGE_KEYS.CUSTOMERS],
-      ['invoices', STORAGE_KEYS.INVOICES],
-      ['pppoePackages', STORAGE_KEYS.PPPOE_PACKAGES],
-      ['hotspotProfiles', STORAGE_KEYS.HOTSPOT_PROFILES],
-      ['hotspotServiceProfiles', STORAGE_KEYS.HOTSPOT_SERVICE_PROFILES],
-      ['vouchers', STORAGE_KEYS.VOUCHERS],
-      ['routers', STORAGE_KEYS.ROUTERS],
-      ['whatsappLogs', STORAGE_KEYS.WA_LOGS],
-      ['paymentConfig', STORAGE_KEYS.PAYMENT_CONFIG],
-      ['whatsappConfig', STORAGE_KEYS.WA_CONFIG],
-      ['transactions', STORAGE_KEYS.TRANSACTIONS],
-    ];
-
-    let removedDemoData = false;
-    for (const [collection, storageKey] of mappings) {
-      const value = result.data[collection];
-      if (value !== undefined) {
-        const demoIds: Partial<Record<keyof AppDataSnapshot, string[]>> = {
-          customers: ['cust-1', 'cust-2', 'cust-3', 'cust-4', 'cust-5', 'cust-6'],
-          invoices: ['inv-1', 'inv-2', 'inv-3', 'inv-4', 'inv-5'],
-          hotspotProfiles: ['hp-1', 'hp-2', 'hp-3', 'hp-4'],
-          vouchers: ['vch-1', 'vch-2', 'vch-3', 'vch-4', 'vch-5'],
-          routers: ['rtr-1', 'rtr-2'],
-          whatsappLogs: ['wa-1', 'wa-2', 'wa-3'],
-        };
-        const blockedIds = demoIds[collection] || [];
-        if (Array.isArray(value)) {
-          const cleaned = value.filter((item: { id?: string }) => !item?.id || !blockedIds.includes(item.id));
-          removedDemoData ||= cleaned.length !== value.length;
-          localStorage.setItem(storageKey, JSON.stringify(cleaned));
-        } else {
-          localStorage.setItem(storageKey, JSON.stringify(value));
-        }
-      }
-    }
-    if (removedDemoData) await this.syncDataToSqlite();
+    clearLegacyBrowserData();
   },
 
   async syncDataToSqlite(): Promise<void> {
-    const snapshot: AppDataSnapshot = {
-      customers: this.getCustomers(),
-      invoices: this.getInvoices(),
-      pppoePackages: this.getPppoePackages(),
-      hotspotProfiles: this.getHotspotProfiles(),
-      hotspotServiceProfiles: this.getHotspotServiceProfiles(),
-      vouchers: this.getVouchers(),
-      routers: this.getRouters(),
-      whatsappLogs: this.getWaLogs(),
-      paymentConfig: this.getPaymentConfig(),
-      whatsappConfig: this.getWaConfig(),
-      transactions: this.getTransactions(),
-    };
+    const snapshot = clone(appData);
 
     const pendingSync = dataSyncQueue.catch(() => undefined).then(async () => {
       const response = await fetch('/api/data', {
@@ -290,7 +236,7 @@ export const StorageService = {
   },
 
   getCustomers(): Customer[] {
-    return readStoredList<Customer>(STORAGE_KEYS.CUSTOMERS, ['cust-1', 'cust-2', 'cust-3', 'cust-4', 'cust-5', 'cust-6']);
+    return clone(appData.customers);
   },
 
   saveCustomer(customer: Customer): Customer[] {
@@ -301,27 +247,27 @@ export const StorageService = {
     } else {
       list.unshift(customer);
     }
-    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(list));
+    appData.customers = list;
     return list;
   },
 
   deleteCustomer(id: string): Customer[] {
     const list = this.getCustomers().filter(c => c.id !== id);
-    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(list));
+    appData.customers = list;
     return list;
   },
 
   getInvoices(): Invoice[] {
-    return readStoredList<Invoice>(STORAGE_KEYS.INVOICES, ['inv-1', 'inv-2', 'inv-3', 'inv-4', 'inv-5']);
+    return clone(appData.invoices);
   },
 
   getPppoePackages(): PppoePackage[] {
-    return readStoredList<PppoePackage>(STORAGE_KEYS.PPPOE_PACKAGES);
+    return clone(appData.pppoePackages);
   },
 
   savePppoePackages(packages: PppoePackage[]): PppoePackage[] {
-    localStorage.setItem(STORAGE_KEYS.PPPOE_PACKAGES, JSON.stringify(packages));
-    return packages;
+    appData.pppoePackages = clone(packages);
+    return clone(appData.pppoePackages);
   },
 
   saveInvoice(inv: Invoice): Invoice[] {
@@ -332,46 +278,46 @@ export const StorageService = {
     } else {
       list.unshift(inv);
     }
-    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify(list));
-    return list;
+    appData.invoices = list;
+    return clone(list);
   },
 
   deleteInvoices(ids: string[]): Invoice[] {
     const deletedIds = new Set(ids);
     const list = this.getInvoices().filter(invoice => !deletedIds.has(invoice.id));
-    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify(list));
-    return list;
+    appData.invoices = list;
+    return clone(list);
   },
 
   getHotspotProfiles(): HotspotProfile[] {
-    return readStoredList<HotspotProfile>(STORAGE_KEYS.HOTSPOT_PROFILES, ['hp-1', 'hp-2', 'hp-3', 'hp-4']);
+    return clone(appData.hotspotProfiles);
   },
 
   getHotspotServiceProfiles(): HotspotServiceProfile[] {
-    return readStoredList<HotspotServiceProfile>(STORAGE_KEYS.HOTSPOT_SERVICE_PROFILES);
+    return clone(appData.hotspotServiceProfiles);
   },
 
   getVouchers(): Voucher[] {
-    return readStoredList<Voucher>(STORAGE_KEYS.VOUCHERS, ['vch-1', 'vch-2', 'vch-3', 'vch-4', 'vch-5']);
+    return clone(appData.vouchers);
   },
 
   saveVouchers(vouchers: Voucher[]): Voucher[] {
     const list = this.getVouchers();
     const combined = [...vouchers, ...list];
-    localStorage.setItem(STORAGE_KEYS.VOUCHERS, JSON.stringify(combined));
-    return combined;
+    appData.vouchers = combined;
+    return clone(combined);
   },
 
   getRouters(): RouterConfig[] {
-    return readStoredList<RouterConfig>(STORAGE_KEYS.ROUTERS, ['rtr-1', 'rtr-2']);
+    return clone(appData.routers);
   },
 
   saveRouters(routers: RouterConfig[]): void {
-    localStorage.setItem(STORAGE_KEYS.ROUTERS, JSON.stringify(routers));
+    appData.routers = clone(routers);
   },
 
   getWaLogs(): WhatsAppLog[] {
-    return readStoredList<WhatsAppLog>(STORAGE_KEYS.WA_LOGS, ['wa-1', 'wa-2', 'wa-3']);
+    return clone(appData.whatsappLogs);
   },
 
   addWaLog(log: Omit<WhatsAppLog, 'id' | 'timestamp'>): WhatsAppLog {
@@ -383,67 +329,38 @@ export const StorageService = {
       timestamp,
     };
     const list = [newEntry, ...this.getWaLogs()];
-    localStorage.setItem(STORAGE_KEYS.WA_LOGS, JSON.stringify(list));
+    appData.whatsappLogs = list;
     return newEntry;
   },
 
   getPaymentConfig(): PaymentGatewayConfig {
-    const raw = localStorage.getItem(STORAGE_KEYS.PAYMENT_CONFIG);
-    if (!raw) {
-      localStorage.setItem(STORAGE_KEYS.PAYMENT_CONFIG, JSON.stringify(INITIAL_PAYMENT_CONFIG));
-      return INITIAL_PAYMENT_CONFIG;
-    }
-    try {
-      const parsed = JSON.parse(raw) as PaymentGatewayConfig;
-      const safeConfig = { ...parsed, serverKey: '', clientKey: '', webhookSecret: '' };
-      if (JSON.stringify(parsed) !== JSON.stringify(safeConfig)) {
-        localStorage.setItem(STORAGE_KEYS.PAYMENT_CONFIG, JSON.stringify(safeConfig));
-      }
-      return safeConfig;
-    } catch {
-      return INITIAL_PAYMENT_CONFIG;
-    }
+    return {
+      ...clone(appData.paymentConfig),
+      serverKey: '',
+      clientKey: '',
+      webhookSecret: '',
+    };
   },
 
   savePaymentConfig(cfg: PaymentGatewayConfig): void {
-    localStorage.setItem(STORAGE_KEYS.PAYMENT_CONFIG, JSON.stringify({
+    appData.paymentConfig = clone({
       ...cfg,
       serverKey: '',
       clientKey: '',
       webhookSecret: '',
-    }));
+    });
   },
 
   getWaConfig(): WhatsAppGatewayConfig {
-    const raw = localStorage.getItem(STORAGE_KEYS.WA_CONFIG);
-    if (!raw) {
-      localStorage.setItem(STORAGE_KEYS.WA_CONFIG, JSON.stringify(INITIAL_WA_CONFIG));
-      return INITIAL_WA_CONFIG;
-    }
-    try {
-      const parsed = JSON.parse(raw) as WhatsAppGatewayConfig;
-      const safeConfig = { ...parsed, apiKey: '', token: '' };
-      if (JSON.stringify(parsed) !== JSON.stringify(safeConfig)) {
-        localStorage.setItem(STORAGE_KEYS.WA_CONFIG, JSON.stringify(safeConfig));
-      }
-      return safeConfig;
-    } catch {
-      return INITIAL_WA_CONFIG;
-    }
+    return { ...clone(appData.whatsappConfig), apiKey: '', token: '' };
   },
 
   saveWaConfig(cfg: WhatsAppGatewayConfig): void {
-    localStorage.setItem(STORAGE_KEYS.WA_CONFIG, JSON.stringify({ ...cfg, apiKey: '', token: '' }));
+    appData.whatsappConfig = clone({ ...cfg, apiKey: '', token: '' });
   },
 
   getTransactions(): PaymentTransaction[] {
-    const raw = localStorage.getItem(STORAGE_KEYS.TRANSACTIONS);
-    if (!raw) return [];
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return [];
-    }
+    return clone(appData.transactions);
   },
 
   saveTransaction(tx: PaymentTransaction): void {
@@ -454,7 +371,7 @@ export const StorageService = {
     } else {
       list.unshift(tx);
     }
-    localStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(list));
+    appData.transactions = list;
   },
 
   // Record an operator-confirmed manual payment.
@@ -480,7 +397,7 @@ export const StorageService = {
     inv.paymentChannel = paymentChannel;
     inv.paymentRef = undefined;
     invoices[invIdx] = inv;
-    localStorage.setItem(STORAGE_KEYS.INVOICES, JSON.stringify(invoices));
+    appData.invoices = invoices;
 
     // Update customer: extend expiration date by 30 days and reset to active
     const customers = this.getCustomers();
@@ -502,7 +419,7 @@ export const StorageService = {
         notes: `Pembayaran manual dicatat via ${paymentMethod} pada ${paidAt}. Status akses router harus diverifikasi terpisah.`,
       };
       customers[custIdx] = updatedCust;
-      localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(customers));
+      appData.customers = customers;
     }
 
     return {
@@ -515,15 +432,6 @@ export const StorageService = {
 
   // Reset to default data
   resetDefaults(): void {
-    localStorage.removeItem(STORAGE_KEYS.CUSTOMERS);
-    localStorage.removeItem(STORAGE_KEYS.INVOICES);
-    localStorage.removeItem(STORAGE_KEYS.PPPOE_PACKAGES);
-    localStorage.removeItem(STORAGE_KEYS.HOTSPOT_PROFILES);
-    localStorage.removeItem(STORAGE_KEYS.VOUCHERS);
-    localStorage.removeItem(STORAGE_KEYS.ROUTERS);
-    localStorage.removeItem(STORAGE_KEYS.WA_LOGS);
-    localStorage.removeItem(STORAGE_KEYS.PAYMENT_CONFIG);
-    localStorage.removeItem(STORAGE_KEYS.WA_CONFIG);
-    localStorage.removeItem(STORAGE_KEYS.TRANSACTIONS);
+    appData = createEmptyAppData();
   }
 };

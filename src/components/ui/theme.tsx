@@ -5,22 +5,19 @@ const ThemeContext = createContext<{ theme: Theme; toggleTheme: () => void } | n
 const STORAGE_KEY = 'smartbilling-theme';
 
 export const ThemeProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
-  const [theme, setTheme] = useState<Theme>(() => {
+  const [theme, setTheme] = useState<Theme>('dark');
+
+  useEffect(() => {
     try {
-      return localStorage.getItem(STORAGE_KEY) === 'light' ? 'light' : 'dark';
-    } catch {
-      return 'dark';
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (error) {
+      console.error('Unable to clear the saved theme preference', error);
     }
-  });
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
-    try {
-      localStorage.setItem(STORAGE_KEY, theme);
-    } catch {
-      // The in-memory theme remains usable when storage is unavailable.
-    }
   }, [theme]);
 
   return <ThemeContext.Provider value={{ theme, toggleTheme: () => setTheme(current => current === 'dark' ? 'light' : 'dark') }}>{children}</ThemeContext.Provider>;

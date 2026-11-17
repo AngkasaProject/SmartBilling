@@ -736,14 +736,7 @@ function PublicVoucherLookup({ onSwitchToBuy }: { onSwitchToBuy?: () => void } =
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copiedKey, setCopiedKey] = useState("");
-  const [recentVouchers, setRecentVouchers] = useState<RecentVoucher[]>(() => {
-    try {
-      const stored = localStorage.getItem("smartbilling_recent_vouchers");
-      return stored ? JSON.parse(stored) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [recentVouchers, setRecentVouchers] = useState<RecentVoucher[]>([]);
   const copyToClipboard = async (text: string, key: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -778,9 +771,6 @@ function PublicVoucherLookup({ onSwitchToBuy }: { onSwitchToBuy?: () => void } =
             createdAt: data.createdAt,
             status: data.status,
           }, ...filtered];
-          try {
-            localStorage.setItem("smartbilling_recent_vouchers", JSON.stringify(next));
-          } catch {}
           return next;
         });
       }
@@ -899,7 +889,7 @@ function PublicVoucherLookup({ onSwitchToBuy }: { onSwitchToBuy?: () => void } =
         {/* Quick Recent Chips */}
         {recentVouchers.length > 0 && (
           <div className="mt-4 pt-3 border-t border-zinc-100">
-            <p className="text-[11px] font-semibold text-zinc-400 mb-1.5">Kode Bayar Sebelumnya di Perangkat Ini:</p>
+            <p className="text-[11px] font-semibold text-zinc-400 mb-1.5">Kode Bayar Sebelumnya di Halaman Ini:</p>
             <div className="flex flex-wrap gap-2">
               {recentVouchers.slice(0, 5).map((item) => (
                 <button
@@ -1550,6 +1540,13 @@ function PppoePackageCatalog({
 
 export function PortalPage() {
   const { confirm: confirmAction } = useToast();
+  useEffect(() => {
+    try {
+      localStorage.removeItem("smartbilling_recent_vouchers");
+    } catch (storageError) {
+      console.error("Unable to clear legacy voucher history", storageError);
+    }
+  }, []);
   const [portalStatus, setPortalStatus] = useState<PortalStatus>({
     connected: false,
   });
@@ -1589,14 +1586,7 @@ export function PortalPage() {
   const [lookupError, setLookupError] = useState("");
   const [lookupResult, setLookupResult] = useState<VoucherLookupData | null>(null);
   const [copiedKey, setCopiedKey] = useState("");
-  const [recentVouchers, setRecentVouchers] = useState<RecentVoucher[]>(() => {
-    try {
-      const stored = localStorage.getItem("smartbilling_recent_vouchers");
-      return stored ? JSON.parse(stored) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [recentVouchers, setRecentVouchers] = useState<RecentVoucher[]>([]);
   const [recentVoucherPage, setRecentVoucherPage] = useState(1);
   const recentVoucherPageCount = Math.ceil(recentVouchers.length / 5);
   const pagedRecentVouchers = recentVouchers.slice(
@@ -1786,9 +1776,6 @@ export function PortalPage() {
     setRecentVouchers(current => {
       const filtered = current.filter(v => v.orderId !== voucherItem.orderId && v.paymentCode !== voucherItem.paymentCode);
       const next = [voucherItem, ...filtered];
-      try {
-        localStorage.setItem("smartbilling_recent_vouchers", JSON.stringify(next));
-      } catch {}
       return next;
     });
   };
@@ -1801,22 +1788,16 @@ export function PortalPage() {
       if (next.every((voucher, index) => voucher.status === current[index]?.status)) {
         return current;
       }
-      try {
-        localStorage.setItem("smartbilling_recent_vouchers", JSON.stringify(next));
-      } catch {}
       return next;
     });
   };
 
   const clearRecentVouchers = async () => {
     if (!await confirmAction(
-      "Hapus semua riwayat notifikasi?",
-      `Riwayat ${recentVouchers.length} pesanan pada perangkat ini akan dihapus. Data pesanan dan pembayaran di server tidak terpengaruh.`,
+      "Kosongkan riwayat pesanan?",
+      `Riwayat ${recentVouchers.length} pesanan pada halaman ini akan dikosongkan. Data pesanan dan pembayaran di server tidak terpengaruh.`,
       true,
     )) return;
-    try {
-      localStorage.removeItem("smartbilling_recent_vouchers");
-    } catch {}
     setRecentVouchers([]);
     setRecentVoucherPage(1);
   };
