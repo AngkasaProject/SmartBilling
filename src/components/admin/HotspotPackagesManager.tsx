@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { HotspotProfile, HotspotServiceProfile, HotspotValidityPreset, RouterConfig } from '../../types';
+import { DEFAULT_HOTSPOT_PORTAL_NOTE, HotspotProfile, HotspotServiceProfile, HotspotValidityPreset, RouterConfig } from '../../types';
 import { StorageService } from '../../services/storage';
 import { useToast } from '../ui/toast';
 import { Plus, RefreshCw, X } from 'lucide-react';
@@ -19,6 +19,7 @@ interface PackageForm {
   name: string;
   serviceProfileId: string;
   portalSpeedLabel: string;
+  portalNote: string;
   price: number;
   validityPreset: HotspotValidityPreset;
   dataLimitMb: number;
@@ -87,6 +88,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
     name: '',
     serviceProfileId: '',
     portalSpeedLabel: '',
+    portalNote: DEFAULT_HOTSPOT_PORTAL_NOTE,
     price: 0,
     validityPreset: '1 hari',
     dataLimitMb: 0,
@@ -186,7 +188,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
       onRefreshData();
       setMessage(`Paket ${result.profile.name} tersimpan.`);
       setPackageDialog(false);
-      setPackageForm({ id: '', name: '', serviceProfileId: '', portalSpeedLabel: '', price: 0, validityPreset: '1 hari', dataLimitMb: 0 });
+      setPackageForm({ id: '', name: '', serviceProfileId: '', portalSpeedLabel: '', portalNote: DEFAULT_HOTSPOT_PORTAL_NOTE, price: 0, validityPreset: '1 hari', dataLimitMb: 0 });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : String(saveError));
     } finally {
@@ -299,6 +301,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
       name: profile.name,
       serviceProfileId: profile.serviceProfileId || '',
       portalSpeedLabel: profile.portalSpeedLabel || '',
+      portalNote: profile.portalNote ?? DEFAULT_HOTSPOT_PORTAL_NOTE,
       price: profile.price,
       validityPreset: '1 hari',
       dataLimitMb: 0,
@@ -320,7 +323,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
           <button type="button" onClick={() => { const routerId = profilesRouterId || routers[0]?.id || ''; setError(''); setRouterProfileForm(emptyRouterUserProfile(routerId)); setRouterProfileDialog(true); }} disabled={!routers.length} className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-bold text-slate-100 disabled:opacity-50">
             <Plus className="h-4 w-4" /> Tambah User Profile MikroTik
           </button>
-          <button type="button" onClick={() => { setError(''); setPackageForm({ id: '', name: '', serviceProfileId: serviceProfiles[0]?.id || '', portalSpeedLabel: '', price: 0, validityPreset: '1 hari', dataLimitMb: 0 }); setPackageDialog(true); }} disabled={!serviceProfiles.length && !routerProfiles.length} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">
+          <button type="button" onClick={() => { setError(''); setPackageForm({ id: '', name: '', serviceProfileId: serviceProfiles[0]?.id || '', portalSpeedLabel: '', portalNote: DEFAULT_HOTSPOT_PORTAL_NOTE, price: 0, validityPreset: '1 hari', dataLimitMb: 0 }); setPackageDialog(true); }} disabled={!serviceProfiles.length && !routerProfiles.length} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">
             <Plus className="h-4 w-4" /> Tambah Paket
           </button>
         </div>
@@ -414,6 +417,10 @@ export const HotspotPackagesManager: React.FC<Props> = ({
             <label className="block text-xs text-slate-300">Label kecepatan di portal (opsional)
               <input maxLength={64} value={packageForm.portalSpeedLabel} onChange={event => setPackageForm({ ...packageForm, portalSpeedLabel: event.target.value })} className={inputClass} placeholder="Contoh: Up to 10Mbps" />
               <span className="mt-1 block text-[11px] text-slate-500">Kosongkan untuk menampilkan rate limit dari profil MikroTik.</span>
+            </label>
+            <label className="block text-xs text-slate-300">Catatan di kartu portal (opsional)
+              <textarea maxLength={280} rows={2} value={packageForm.portalNote} onChange={event => setPackageForm({ ...packageForm, portalNote: event.target.value })} className={inputClass} placeholder="Tulis catatan untuk pelanggan" />
+              <span className="mt-1 block text-[11px] text-slate-500">Kosongkan untuk menyembunyikan catatan di kartu.</span>
             </label>
             <label className="block text-xs text-slate-300">Profil layanan
               <select required value={packageForm.serviceProfileId} onChange={event => setPackageForm({ ...packageForm, serviceProfileId: event.target.value })} className={inputClass}>

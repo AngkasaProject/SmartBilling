@@ -23,6 +23,7 @@ import {
 import { QrCode } from "./common/QrCode";
 import { QrisImage } from "./common/QrisImage";
 import { useToast } from "./ui/toast";
+import { DEFAULT_HOTSPOT_PORTAL_NOTE } from "../types";
 
 interface PortalStatus {
   connected: boolean;
@@ -76,6 +77,7 @@ interface VoucherProfile {
   name: string;
   speedLimit: string;
   portalSpeedLabel?: string;
+  portalNote?: string;
   validityDuration: string;
   validityHours: number;
   price: number;
@@ -2563,34 +2565,37 @@ export function PortalPage() {
                   <span className="grid h-9 w-9 place-items-center rounded-xl bg-zinc-100 text-zinc-600"><Wifi className="h-4 w-4" /></span>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {hotspotProfiles.map((profile) => (
-                    <button
-                      type="button"
-                      key={profile.id}
-                      onClick={() => setVoucherProfileId(profile.id)}
-                      aria-pressed={voucherProfileId === profile.id}
-                      className={`group relative rounded-2xl border p-4 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2 hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 sm:p-5 ${voucherProfileId === profile.id ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-900 shadow-sm" : "border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"}`}
-                    >
-                      <span className="flex items-start justify-between gap-3">
-                        <span className="min-w-0">
-                          <b className="block truncate text-base text-zinc-900">{profile.name}</b>
-                          <span className="mt-2 flex flex-wrap gap-1.5">
-                            <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-600">{profile.portalSpeedLabel || profile.speedLimit}</span>
-                            <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-600">{profile.validityDuration}</span>
+                  {hotspotProfiles.map(profile => {
+                    const portalNote = profile.portalNote === undefined ? DEFAULT_HOTSPOT_PORTAL_NOTE : profile.portalNote;
+                    return (
+                      <button
+                        type="button"
+                        key={profile.id}
+                        onClick={() => setVoucherProfileId(profile.id)}
+                        aria-pressed={voucherProfileId === profile.id}
+                        className={`group relative rounded-2xl border p-4 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2 hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 sm:p-5 ${voucherProfileId === profile.id ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-900 shadow-sm" : "border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"}`}
+                      >
+                        <span className="flex items-start justify-between gap-3">
+                          <span className="min-w-0">
+                            <b className="block truncate text-base text-zinc-900">{profile.name}</b>
+                            <span className="mt-2 flex flex-wrap gap-1.5">
+                              <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-600">{profile.portalSpeedLabel || profile.speedLimit}</span>
+                              <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-600">{profile.validityDuration}</span>
+                            </span>
+                          </span>
+                          <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full transition ${voucherProfileId === profile.id ? "bg-zinc-900 text-white" : "border border-zinc-200 text-transparent group-hover:border-zinc-400"}`}>
+                            <CheckCircle2 className="h-4 w-4" />
                           </span>
                         </span>
-                        <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full transition ${voucherProfileId === profile.id ? "bg-zinc-900 text-white" : "border border-zinc-200 text-transparent group-hover:border-zinc-400"}`}>
-                          <CheckCircle2 className="h-4 w-4" />
+                        {profile.dataLimitMb && <span className="mt-3 block text-[11px] text-zinc-400">Kuota {profile.dataLimitMb} MB</span>}
+                        {portalNote && <span className="mt-2 block break-words whitespace-pre-line text-[10px] text-zinc-500">{portalNote}</span>}
+                        <span className="mt-4 flex items-end justify-between border-t border-zinc-100 pt-3">
+                          <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400">Harga</span>
+                          <span className="text-xl font-bold tracking-tight text-zinc-900">{rupiah(profile.price)}</span>
                         </span>
-                      </span>
-                      {profile.dataLimitMb && <span className="mt-3 block text-[11px] text-zinc-400">Kuota {profile.dataLimitMb} MB</span>}
-                      <span className="mt-2 block text-[10px] text-zinc-500">Masa berlaku dimulai saat voucher pertama kali digunakan.</span>
-                      <span className="mt-4 flex items-end justify-between border-t border-zinc-100 pt-3">
-                        <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400">Harga</span>
-                        <span className="text-xl font-bold tracking-tight text-zinc-900">{rupiah(profile.price)}</span>
-                      </span>
-                    </button>
-                  ))}
+                      </button>
+                    );
+                  })}
                   {!hotspotProfiles.length && (
                     <p className="text-sm text-zinc-500 col-span-2 py-8 text-center border border-dashed border-zinc-200 rounded-xl">
                       Belum ada paket hotspot yang tersedia.

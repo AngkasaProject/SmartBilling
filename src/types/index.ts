@@ -55,6 +55,7 @@ export interface HotspotProfile {
   serviceProfileId?: string;
   speedLimit: string; // e.g. "5M/5M"
   portalSpeedLabel?: string;
+  portalNote?: string;
   routerId?: string;
   routerProfileName?: string;
   poolName?: string;
@@ -66,6 +67,8 @@ export interface HotspotProfile {
   color: string;
   enabled?: boolean;
 }
+
+export const DEFAULT_HOTSPOT_PORTAL_NOTE = 'Masa berlaku voucher dimulai saat voucher pertama kali digunakan.';
 
 export interface PppoePackage {
   id: string;

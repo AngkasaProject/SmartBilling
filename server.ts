@@ -1868,8 +1868,8 @@ async function startServer() {
       const stored = await getAppDataDb();
       const profiles = (stored.data.hotspotProfiles || [])
         .filter(profile => profile.enabled !== false && Boolean(profile.routerId && profile.routerProfileName))
-        .map(({ id, name, speedLimit, portalSpeedLabel, validityDuration, validityHours, price, sharedUsers, dataLimitMb }) => ({
-        id, name, speedLimit, portalSpeedLabel, validityDuration, validityHours, price, sharedUsers, dataLimitMb,
+        .map(({ id, name, speedLimit, portalSpeedLabel, portalNote, validityDuration, validityHours, price, sharedUsers, dataLimitMb }) => ({
+        id, name, speedLimit, portalSpeedLabel, portalNote, validityDuration, validityHours, price, sharedUsers, dataLimitMb,
       }));
       res.setHeader('Cache-Control', 'no-store');
       res.json({ profiles });
@@ -3391,12 +3391,13 @@ async function startServer() {
   });
 
   app.post('/api/admin/hotspot/packages', requireAdminSession, async (req, res) => {
-    const { id, name, serviceProfileId, portalSpeedLabel, price, enabled } = req.body || {};
+    const { id, name, serviceProfileId, portalSpeedLabel, portalNote, price, enabled } = req.body || {};
     if (
       (id !== undefined && (typeof id !== 'string' || id.length > 128)) ||
       typeof name !== 'string' || !name.trim() || name.length > 64 ||
       (serviceProfileId !== undefined && (typeof serviceProfileId !== 'string' || !serviceProfileId)) ||
       (portalSpeedLabel !== undefined && (typeof portalSpeedLabel !== 'string' || portalSpeedLabel.length > 64)) ||
+      (portalNote !== undefined && (typeof portalNote !== 'string' || portalNote.length > 280)) ||
       !Number.isSafeInteger(price) || price < 1 ||
       typeof enabled !== 'boolean'
     ) {
@@ -3415,6 +3416,7 @@ async function startServer() {
       const speedLabel = typeof portalSpeedLabel === 'string'
         ? portalSpeedLabel.trim() || undefined
         : existing?.portalSpeedLabel;
+      const note = typeof portalNote === 'string' ? portalNote.trim() : existing?.portalNote;
       const profile: HotspotProfile = serviceProfile
         ? {
           id: packageId,
@@ -3425,6 +3427,7 @@ async function startServer() {
           poolName: serviceProfile.poolName,
           speedLimit: serviceProfile.speedLimit,
           portalSpeedLabel: speedLabel,
+          portalNote: note,
           validityDuration: serviceProfile.validityPreset,
           validityHours: serviceProfile.validityHours,
           price,
@@ -3433,7 +3436,7 @@ async function startServer() {
           color: 'indigo',
           enabled,
         }
-        : { ...existing!, name: name.trim(), portalSpeedLabel: speedLabel, price, enabled };
+        : { ...existing!, name: name.trim(), portalSpeedLabel: speedLabel, portalNote: note, price, enabled };
       await saveAppDataCollectionDb(
         'hotspotProfiles',
         profiles.some(item => item.id === packageId)
