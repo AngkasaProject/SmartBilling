@@ -1868,8 +1868,8 @@ async function startServer() {
       const stored = await getAppDataDb();
       const profiles = (stored.data.hotspotProfiles || [])
         .filter(profile => profile.enabled !== false && Boolean(profile.routerId && profile.routerProfileName))
-        .map(({ id, name, speedLimit, validityDuration, validityHours, price, sharedUsers, dataLimitMb }) => ({
-        id, name, speedLimit, validityDuration, validityHours, price, sharedUsers, dataLimitMb,
+        .map(({ id, name, speedLimit, portalSpeedLabel, validityDuration, validityHours, price, sharedUsers, dataLimitMb }) => ({
+        id, name, speedLimit, portalSpeedLabel, validityDuration, validityHours, price, sharedUsers, dataLimitMb,
       }));
       res.setHeader('Cache-Control', 'no-store');
       res.json({ profiles });
@@ -1907,8 +1907,8 @@ async function startServer() {
       const stored = await getAppDataDb();
       const packages = (stored.data.pppoePackages || [])
         .filter(item => item.enabled && item.routerId && item.routerProfileName)
-        .map(({ id, name, speedLimit, monthlyFee, dataLimitMb }) => ({
-          id, name, speedLimit, monthlyFee, dataLimitMb,
+        .map(({ id, name, speedLimit, portalSpeedLabel, monthlyFee, dataLimitMb }) => ({
+          id, name, speedLimit, portalSpeedLabel, monthlyFee, dataLimitMb,
         }));
       res.setHeader('Cache-Control', 'no-store');
       res.json({ packages });
@@ -3391,11 +3391,12 @@ async function startServer() {
   });
 
   app.post('/api/admin/hotspot/packages', requireAdminSession, async (req, res) => {
-    const { id, name, serviceProfileId, price, enabled } = req.body || {};
+    const { id, name, serviceProfileId, portalSpeedLabel, price, enabled } = req.body || {};
     if (
       (id !== undefined && (typeof id !== 'string' || id.length > 128)) ||
       typeof name !== 'string' || !name.trim() || name.length > 64 ||
       (serviceProfileId !== undefined && (typeof serviceProfileId !== 'string' || !serviceProfileId)) ||
+      (portalSpeedLabel !== undefined && (typeof portalSpeedLabel !== 'string' || portalSpeedLabel.length > 64)) ||
       !Number.isSafeInteger(price) || price < 1 ||
       typeof enabled !== 'boolean'
     ) {
@@ -3411,6 +3412,9 @@ async function startServer() {
         : undefined;
       if (serviceProfileId && !serviceProfile) return res.status(404).json({ error: 'Profil layanan tidak ditemukan' });
       if (!serviceProfile && !existing) return res.status(400).json({ error: 'Pilih profil layanan untuk paket baru' });
+      const speedLabel = typeof portalSpeedLabel === 'string'
+        ? portalSpeedLabel.trim() || undefined
+        : existing?.portalSpeedLabel;
       const profile: HotspotProfile = serviceProfile
         ? {
           id: packageId,
@@ -3420,6 +3424,7 @@ async function startServer() {
           routerProfileName: serviceProfile.routerProfileName,
           poolName: serviceProfile.poolName,
           speedLimit: serviceProfile.speedLimit,
+          portalSpeedLabel: speedLabel,
           validityDuration: serviceProfile.validityPreset,
           validityHours: serviceProfile.validityHours,
           price,
@@ -3428,7 +3433,7 @@ async function startServer() {
           color: 'indigo',
           enabled,
         }
-        : { ...existing!, name: name.trim(), price, enabled };
+        : { ...existing!, name: name.trim(), portalSpeedLabel: speedLabel, price, enabled };
       await saveAppDataCollectionDb(
         'hotspotProfiles',
         profiles.some(item => item.id === packageId)

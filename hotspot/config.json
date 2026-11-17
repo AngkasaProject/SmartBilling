@@ -1,6 +1,6 @@
 {
-  "brandName": "Nama Usaha",
-  "wifiName": "Nama WiFi",
-  "portalUrl": "https://BILLING_DOMAIN/?tab=voucher",
+  "brandName": "Aqlan Net",
+  "wifiName": "aqlan.wifi",
+  "portalUrl": "https://aqlan.semart.web.id",
   "logoPath": "logo.png"
 }

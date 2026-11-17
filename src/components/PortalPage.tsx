@@ -75,6 +75,7 @@ interface VoucherProfile {
   id: string;
   name: string;
   speedLimit: string;
+  portalSpeedLabel?: string;
   validityDuration: string;
   validityHours: number;
   price: number;
@@ -85,6 +86,7 @@ interface PppoePortalPackage {
   id: string;
   name: string;
   speedLimit: string;
+  portalSpeedLabel?: string;
   monthlyFee: number;
   dataLimitMb?: number;
 }
@@ -1486,7 +1488,8 @@ function PppoePackageCatalog({
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
           {packages.map((plan) => {
-            const message = `Halo, saya tertarik dengan paket internet ${plan.name} (${plan.speedLimit}). Mohon info pendaftaran.`;
+            const speedLabel = plan.portalSpeedLabel || plan.speedLimit;
+            const message = `Halo, saya tertarik dengan paket internet ${plan.name} (${speedLabel}). Mohon info pendaftaran.`;
             const contactUrl = operatorWhatsapp
               ? `https://wa.me/${operatorWhatsapp}?text=${encodeURIComponent(message)}`
               : "";
@@ -1501,7 +1504,7 @@ function PppoePackageCatalog({
                     <h3 className="truncate text-base font-bold text-zinc-900">{plan.name}</h3>
                     <p className="mt-1 inline-flex items-center gap-1.5 rounded-md bg-zinc-100 px-2 py-1 text-xs font-semibold text-zinc-700">
                       <Wifi className="h-3.5 w-3.5" />
-                      {plan.speedLimit}
+                      {speedLabel}
                     </p>
                   </div>
                   <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-zinc-100 text-zinc-600">
@@ -2572,7 +2575,7 @@ export function PortalPage() {
                         <span className="min-w-0">
                           <b className="block truncate text-base text-zinc-900">{profile.name}</b>
                           <span className="mt-2 flex flex-wrap gap-1.5">
-                            <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-600">{profile.speedLimit}</span>
+                            <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-600">{profile.portalSpeedLabel || profile.speedLimit}</span>
                             <span className="rounded-md bg-zinc-100 px-2 py-1 text-[10px] font-semibold text-zinc-600">{profile.validityDuration}</span>
                           </span>
                         </span>

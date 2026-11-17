@@ -54,6 +54,7 @@ export interface HotspotProfile {
   name: string;
   serviceProfileId?: string;
   speedLimit: string; // e.g. "5M/5M"
+  portalSpeedLabel?: string;
   routerId?: string;
   routerProfileName?: string;
   poolName?: string;
@@ -72,6 +73,7 @@ export interface PppoePackage {
   routerId: string;
   routerProfileName: string;
   speedLimit: string;
+  portalSpeedLabel?: string;
   monthlyFee: number;
   enabled: boolean;
   dataLimitMb?: number;

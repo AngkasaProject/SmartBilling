@@ -18,6 +18,7 @@ interface PackageForm {
   id: string;
   name: string;
   serviceProfileId: string;
+  portalSpeedLabel: string;
   price: number;
   validityPreset: HotspotValidityPreset;
   dataLimitMb: number;
@@ -85,6 +86,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
     id: '',
     name: '',
     serviceProfileId: '',
+    portalSpeedLabel: '',
     price: 0,
     validityPreset: '1 hari',
     dataLimitMb: 0,
@@ -184,7 +186,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
       onRefreshData();
       setMessage(`Paket ${result.profile.name} tersimpan.`);
       setPackageDialog(false);
-      setPackageForm({ id: '', name: '', serviceProfileId: '', price: 0, validityPreset: '1 hari', dataLimitMb: 0 });
+      setPackageForm({ id: '', name: '', serviceProfileId: '', portalSpeedLabel: '', price: 0, validityPreset: '1 hari', dataLimitMb: 0 });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : String(saveError));
     } finally {
@@ -296,6 +298,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
       id: profile.id,
       name: profile.name,
       serviceProfileId: profile.serviceProfileId || '',
+      portalSpeedLabel: profile.portalSpeedLabel || '',
       price: profile.price,
       validityPreset: '1 hari',
       dataLimitMb: 0,
@@ -317,7 +320,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
           <button type="button" onClick={() => { const routerId = profilesRouterId || routers[0]?.id || ''; setError(''); setRouterProfileForm(emptyRouterUserProfile(routerId)); setRouterProfileDialog(true); }} disabled={!routers.length} className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-bold text-slate-100 disabled:opacity-50">
             <Plus className="h-4 w-4" /> Tambah User Profile MikroTik
           </button>
-          <button type="button" onClick={() => { setError(''); setPackageForm({ id: '', name: '', serviceProfileId: serviceProfiles[0]?.id || '', price: 0, validityPreset: '1 hari', dataLimitMb: 0 }); setPackageDialog(true); }} disabled={!serviceProfiles.length && !routerProfiles.length} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">
+          <button type="button" onClick={() => { setError(''); setPackageForm({ id: '', name: '', serviceProfileId: serviceProfiles[0]?.id || '', portalSpeedLabel: '', price: 0, validityPreset: '1 hari', dataLimitMb: 0 }); setPackageDialog(true); }} disabled={!serviceProfiles.length && !routerProfiles.length} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">
             <Plus className="h-4 w-4" /> Tambah Paket
           </button>
         </div>
@@ -344,7 +347,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <h3 className="font-bold text-white">{profile.name}</h3>
-                  <p className="mt-1 text-xs text-slate-400">{profile.validityDuration} · {profile.speedLimit}</p>
+                  <p className="mt-1 text-xs text-slate-400">{profile.validityDuration} · {profile.portalSpeedLabel || profile.speedLimit}</p>
                 </div>
                 <span className={`text-[10px] font-bold ${profile.enabled === false ? 'text-slate-500' : 'text-emerald-300'}`}>{profile.enabled === false ? 'TERSEMBUNYI' : 'AKTIF'}</span>
               </div>
@@ -408,6 +411,10 @@ export const HotspotPackagesManager: React.FC<Props> = ({
               <button type="button" onClick={() => setPackageDialog(false)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white"><X className="h-4 w-4" /></button>
             </div>
             <label className="block text-xs text-slate-300">Nama paket<input required maxLength={64} value={packageForm.name} onChange={event => setPackageForm({ ...packageForm, name: event.target.value })} className={inputClass} /></label>
+            <label className="block text-xs text-slate-300">Label kecepatan di portal (opsional)
+              <input maxLength={64} value={packageForm.portalSpeedLabel} onChange={event => setPackageForm({ ...packageForm, portalSpeedLabel: event.target.value })} className={inputClass} placeholder="Contoh: Up to 10Mbps" />
+              <span className="mt-1 block text-[11px] text-slate-500">Kosongkan untuk menampilkan rate limit dari profil MikroTik.</span>
+            </label>
             <label className="block text-xs text-slate-300">Profil layanan
               <select required value={packageForm.serviceProfileId} onChange={event => setPackageForm({ ...packageForm, serviceProfileId: event.target.value })} className={inputClass}>
                 <option value="">Pilih profil</option>

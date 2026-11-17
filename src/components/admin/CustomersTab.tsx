@@ -162,7 +162,7 @@ export const CustomersTab: React.FC<Props> = ({
   const [secretProfiles, setSecretProfiles] = useState<PppRouterProfile[]>([]);
   const [secretProfilesLoading, setSecretProfilesLoading] = useState(false);
   const [linkingSecret, setLinkingSecret] = useState<PppRouterSecret | null>(null);
-  const [packageForm, setPackageForm] = useState({ id: '', name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 });
+  const [packageForm, setPackageForm] = useState({ id: '', name: '', routerProfileName: '', portalSpeedLabel: '', monthlyFee: 0, dataLimitMb: 0 });
   const [profileForm, setProfileForm] = useState<PppRouterProfileForm>({
     existingName: '',
     routerId: '',
@@ -371,6 +371,7 @@ export const CustomersTab: React.FC<Props> = ({
       routerId: packageRouterId,
       routerProfileName: profile.name,
       speedLimit: profile.rateLimit,
+      portalSpeedLabel: packageForm.portalSpeedLabel.trim() || undefined,
       monthlyFee: Math.round(packageForm.monthlyFee),
       enabled: true,
       dataLimitMb: packageForm.dataLimitMb ? Math.round(packageForm.dataLimitMb) : undefined,
@@ -396,7 +397,7 @@ export const CustomersTab: React.FC<Props> = ({
       }));
     }
     onRefreshData();
-    setPackageForm({ id: '', name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 });
+    setPackageForm({ id: '', name: '', routerProfileName: '', portalSpeedLabel: '', monthlyFee: 0, dataLimitMb: 0 });
     setIsPackageFormOpen(false);
     toast(packageForm.id ? 'Paket PPPoE berhasil diperbarui.' : 'Paket PPPoE berhasil ditambahkan.', 'success');
     if (completesLinkingPackage) setIsPackageModalOpen(false);
@@ -639,6 +640,7 @@ export const CustomersTab: React.FC<Props> = ({
       id: pppoePackage.id,
       name: pppoePackage.name,
       routerProfileName: pppoePackage.routerProfileName,
+      portalSpeedLabel: pppoePackage.portalSpeedLabel || '',
       monthlyFee: pppoePackage.monthlyFee,
       dataLimitMb: pppoePackage.dataLimitMb || 0,
     });
@@ -940,7 +942,7 @@ export const CustomersTab: React.FC<Props> = ({
                 <button
                   onClick={() => {
                     setPackageRouterId(routers.find(router => router.status === 'connected')?.id || routers[0]?.id || '');
-                    setPackageForm({ id: '', name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 });
+                    setPackageForm({ id: '', name: '', routerProfileName: '', portalSpeedLabel: '', monthlyFee: 0, dataLimitMb: 0 });
                     setPackageModalTab('packages');
                     setIsPackageFormOpen(false);
                     setIsPackageModalOpen(true);
@@ -1588,7 +1590,7 @@ export const CustomersTab: React.FC<Props> = ({
                         type="button"
                         onClick={() => {
                           setPackageRouterId(linkingSecret.routerId);
-                          setPackageForm({ id: '', name: '', routerProfileName: linkingSecret.profile, monthlyFee: 0, dataLimitMb: 0 });
+                          setPackageForm({ id: '', name: '', routerProfileName: linkingSecret.profile, portalSpeedLabel: '', monthlyFee: 0, dataLimitMb: 0 });
                           setPackageModalTab('packages');
                           setIsPackageFormOpen(true);
                           setIsPackageModalOpen(true);
@@ -1719,7 +1721,7 @@ export const CustomersTab: React.FC<Props> = ({
                       <p className="mt-1 text-xs text-slate-400">Hubungkan harga dan kuota billing ke profile MikroTik.</p>
                     </div>
                     {!isPackageFormOpen && (
-                      <button type="button" onClick={() => { setPackageForm({ id: '', name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 }); setIsPackageFormOpen(true); }} className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-500">
+                      <button type="button" onClick={() => { setPackageForm({ id: '', name: '', routerProfileName: '', portalSpeedLabel: '', monthlyFee: 0, dataLimitMb: 0 }); setIsPackageFormOpen(true); }} className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-500">
                         <Plus className="mr-1 inline h-4 w-4" /> Tambah Paket
                       </button>
                     )}
@@ -1728,7 +1730,7 @@ export const CustomersTab: React.FC<Props> = ({
                     <form onSubmit={handleSavePppoePackage} className="grid gap-4 rounded-xl border border-slate-800 bg-slate-950 p-4 sm:grid-cols-2">
                       <div className="flex items-center justify-between sm:col-span-2">
                         <h5 className="text-sm font-bold">{packageForm.id ? 'Edit Paket' : 'Paket Baru'}</h5>
-                        <button type="button" onClick={() => { setIsPackageFormOpen(false); setPackageForm({ id: '', name: '', routerProfileName: '', monthlyFee: 0, dataLimitMb: 0 }); }} className="text-xs text-slate-400 hover:text-white">Batal</button>
+                        <button type="button" onClick={() => { setIsPackageFormOpen(false); setPackageForm({ id: '', name: '', routerProfileName: '', portalSpeedLabel: '', monthlyFee: 0, dataLimitMb: 0 }); }} className="text-xs text-slate-400 hover:text-white">Batal</button>
                       </div>
                       <label className="text-xs text-slate-300">Nama paket
                         <input required minLength={2} maxLength={80} value={packageForm.name} onChange={event => setPackageForm({ ...packageForm, name: event.target.value })} placeholder="Internet 10 Mbps" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
@@ -1747,6 +1749,10 @@ export const CustomersTab: React.FC<Props> = ({
                         {profilesLoading && <span className="mt-1 block text-[11px] text-slate-500">Memuat profile dari router...</span>}
                         {!profilesLoading && !packageRouterProfiles.length && packageRouterId && <span className="mt-1 block text-[11px] text-amber-300">Profile tidak tersedia. Tambahkan dari tab PPP Profile.</span>}
                       </label>
+                      <label className="text-xs text-slate-300 sm:col-span-2">Label kecepatan di portal (opsional)
+                        <input maxLength={64} value={packageForm.portalSpeedLabel} onChange={event => setPackageForm({ ...packageForm, portalSpeedLabel: event.target.value })} placeholder="Contoh: Up to 10Mbps" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
+                        <span className="mt-1 block text-[11px] text-slate-500">Kosongkan untuk menampilkan rate limit dari PPP Profile MikroTik.</span>
+                      </label>
                       <label className="text-xs text-slate-300">Biaya bulanan (Rp)
                         <input required type="number" min={1} step={1} value={packageForm.monthlyFee || ''} onChange={event => setPackageForm({ ...packageForm, monthlyFee: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
                       </label>
@@ -1763,7 +1769,7 @@ export const CustomersTab: React.FC<Props> = ({
                       <div key={item.id} className="flex items-center justify-between gap-3 border-b border-slate-800/80 p-4 last:border-b-0">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-bold">{item.name}</p>
-                          <p className="mt-1 text-xs text-slate-400">{routers.find(router => router.id === item.routerId)?.name || 'Router'} · {item.routerProfileName} · {item.speedLimit || 'tanpa batas'}</p>
+                          <p className="mt-1 text-xs text-slate-400">{routers.find(router => router.id === item.routerId)?.name || 'Router'} · {item.routerProfileName} · {item.portalSpeedLabel || item.speedLimit || 'tanpa batas'}</p>
                           <p className="mt-1 text-xs text-slate-300">Rp {item.monthlyFee.toLocaleString('id-ID')}/bulan{item.dataLimitMb ? ` · ${(item.dataLimitMb / 1024).toFixed(1)} GB` : ' · kuota tanpa batas'}</p>
                         </div>
                         <div className="flex shrink-0 gap-1">
