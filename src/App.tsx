@@ -317,6 +317,7 @@ function AppContent() {
         paymentLinkCreated = true;
         const invoice = result.invoice as Invoice | null;
         if (invoice) {
+          StorageService.saveInvoice(invoice);
           text =
             typeof result.message === "string"
               ? result.message
@@ -342,6 +343,8 @@ function AppContent() {
           throw new Error(result.error || `HTTP ${response.status}`);
         if (typeof result.url !== "string" || !result.url) throw new Error("Tautan tagihan tidak dibuat oleh server");
         paymentLinkCreated = true;
+        const invoice = result.invoice as Invoice | null;
+        if (invoice) StorageService.saveInvoice(invoice);
         text = renderWhatsAppTemplate("isolir", appSettings.whatsappTemplates, {
           customer_name: customer.name,
           business_name: appSettings.companyName.trim() || appSettings.brandName.trim() || appSettings.appName,
@@ -457,6 +460,8 @@ function AppContent() {
           const linkResult = await linkResponse.json();
           if (!linkResponse.ok)
             throw new Error(linkResult.error || `HTTP ${linkResponse.status}`);
+          const invoice = linkResult.invoice as Invoice | null;
+          if (invoice) StorageService.saveInvoice(invoice);
           message = renderWhatsAppTemplate("isolir", appSettings.whatsappTemplates, {
             customer_name: customer.name,
             business_name: appSettings.companyName.trim() || appSettings.brandName.trim() || appSettings.appName,
