@@ -1,0 +1,38 @@
+$(if http-status == 302)Hotspot login required$(endif)
+$(if http-header == "Location")$(link-redirect)$(endif)
+<!--
+<?xml version="1.0" encoding="UTF-8"?>
+<WISPAccessGatewayParam
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:noNamespaceSchemaLocation="http://$(hostname)/xml/WISPAccessGatewayParam.xsd">
+  <Redirect>
+    <AccessProcedure>1.0</AccessProcedure>
+    <AccessLocation>$(location-id)</AccessLocation>
+    <LocationName>$(location-name)</LocationName>
+    <LoginURL>$(link-login-only)?target=xml</LoginURL>
+    <AbortLoginURL>$(link-login-only)?target=xml</AbortLoginURL>
+    <MessageType>100</MessageType>
+    <ResponseCode>0</ResponseCode>
+  </Redirect>
+</WISPAccessGatewayParam>
+-->
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="pragma" content="no-cache">
+  <meta http-equiv="expires" content="-1">
+  <meta http-equiv="refresh" content="0;url=$(link-redirect)">
+  <title>Perlu login Hotspot</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <main class="panel">
+    <p class="eyebrow">Hotspot</p>
+    <h1>Login diperlukan</h1>
+    <p>Anda akan diarahkan ke halaman login. Jika tidak berpindah otomatis, lanjutkan di sini.</p>
+    <a class="button" href="$(link-redirect)">Lanjutkan</a>
+  </main>
+</body>
+</html>

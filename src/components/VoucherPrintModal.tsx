@@ -93,23 +93,32 @@ export const VoucherPrintModal: React.FC<Props> = ({ vouchers, settings, onClose
                 >
                   {/* Top Bar */}
                   <div className="flex items-start justify-between border-b border-slate-200 pb-2 mb-2.5">
-                    <div className="flex items-center gap-1.5">
-                      <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-xs">
-                        {settings.brandIconDataUrl
-                          ? <img src={settings.brandIconDataUrl} alt="" className="h-full w-full rounded-lg bg-white object-contain p-0.5" />
-                          : (settings.brandName || settings.appName || 'S').charAt(0)}
-                      </div>
-                      <div>
-                        {settings.brandMainLogoDataUrl || settings.brandLogoDataUrl
-                          ? <img src={settings.brandMainLogoDataUrl || settings.brandLogoDataUrl} alt={settings.brandName || settings.appName} className="h-6 w-32 object-contain object-left" />
-                          : <h4 className="font-extrabold text-xs text-slate-900 tracking-tight">{settings.brandName || settings.appName}</h4>}
-                        <p className="text-[9px] text-slate-500 font-mono flex items-center gap-1">
-                          <Wifi className="w-2.5 h-2.5" /> {ssidName}
-                        </p>
-                      </div>
+                    <div className="min-w-0 flex-1">
+                      {settings.brandMainLogoDataUrl || settings.brandLogoDataUrl ? (
+                        <img
+                          src={settings.brandMainLogoDataUrl || settings.brandLogoDataUrl}
+                          alt={settings.brandName || settings.appName}
+                          className="h-8 w-36 max-w-full object-contain object-left"
+                        />
+                      ) : (
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-indigo-600 text-xs font-bold text-white">
+                            {settings.brandIconDataUrl
+                              ? <img src={settings.brandIconDataUrl} alt="" className="h-full w-full rounded-lg bg-white object-contain p-0.5" />
+                              : (settings.brandName || settings.appName || 'S').charAt(0)}
+                          </div>
+                          <h4 className="truncate font-extrabold text-xs tracking-tight text-slate-900">{settings.brandName || settings.appName}</h4>
+                        </div>
+                      )}
+                      <p className="flex items-center gap-1 text-[9px] font-mono text-slate-500">
+                        <Wifi className="h-2.5 w-2.5" /> {ssidName}
+                      </p>
                     </div>
                     <div className="text-right">
-                      <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full">
+                      <span className="block text-[8px] font-bold uppercase tracking-wider text-slate-400">
+                        Paket
+                      </span>
+                      <span className="block max-w-32 truncate text-[10px] font-bold text-indigo-700">
                         {v.profileName}
                       </span>
                       <p className="text-xs font-black text-slate-900 mt-0.5">
@@ -119,30 +128,31 @@ export const VoucherPrintModal: React.FC<Props> = ({ vouchers, settings, onClose
                   </div>
 
                   {/* Body with QR & Code */}
-                  <div className="flex items-center justify-between gap-3 my-1">
-                    <div>
-                      <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-                        Kode Voucher
+                  <div className="my-1 flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider">
+                        Username
                       </span>
-                      <div className="text-base font-black font-mono tracking-wider text-slate-900 mt-0.5 bg-slate-100 px-2 py-1 rounded border border-slate-200">
+                      <div className="max-w-36 truncate rounded border border-slate-200 bg-slate-100 px-2 py-1 font-mono text-sm font-black tracking-wider text-slate-900">
                         {v.code}
                       </div>
-                      <div className="text-[10px] text-slate-500 mt-1.5 leading-tight">
-                        Durasi: <b>{v.validityDuration}</b>
-                        <br />
-                        Speed: <b>{v.speedLimit}</b>
+                      <div className="mt-1 text-[9px] leading-tight text-slate-500">
+                        Password: <b className="break-all font-mono text-slate-700">{v.password || v.code}</b>
+                      </div>
+                      <div className="mt-1 text-[9px] text-slate-500">
+                        Masa aktif: <b>{v.validityDuration}</b>
                       </div>
                     </div>
 
                     <div className="flex flex-col items-center">
-                      <QrCode value={v.code} size={64} />
-                      <span className="text-[8px] text-slate-400 mt-0.5 font-medium">Scan kode voucher</span>
+                      <QrCode value={JSON.stringify({ username: v.code, password: v.password || v.code })} size={104} label={`Data login ${v.code}`} />
+                      <span className="mt-0.5 text-[8px] font-medium text-slate-400">Scan untuk login</span>
                     </div>
                   </div>
 
                   {/* Footer instruction */}
                   <div className="mt-2 pt-2 border-t border-slate-100 text-[9px] text-slate-400 flex items-center justify-between">
-                    <span>Masukkan kode di halaman hotspot</span>
+                    <span>Scan QR atau masukkan username & password</span>
                     <span>1 User</span>
                   </div>
                 </div>
@@ -163,6 +173,7 @@ export const VoucherPrintModal: React.FC<Props> = ({ vouchers, settings, onClose
                   <p className="text-[10px] text-slate-400">--------------------------------</p>
 
                   <div className="my-2">
+                    <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Paket</p>
                     <p className="text-xs font-bold text-indigo-700">{v.profileName}</p>
                     <p className="text-sm font-black text-slate-900">Rp {v.price.toLocaleString('id-ID')}</p>
                   </div>
@@ -170,22 +181,21 @@ export const VoucherPrintModal: React.FC<Props> = ({ vouchers, settings, onClose
                   <p className="text-[10px] text-slate-400">--------------------------------</p>
 
                   <div className="my-3">
-                    <span className="text-[10px] uppercase text-slate-500">Kode Login Voucher:</span>
+                    <span className="text-[10px] uppercase text-slate-500">Username:</span>
                     <p className="text-xl font-black text-slate-900 tracking-widest my-1 bg-slate-100 py-1 rounded border border-slate-200">
                       {v.code}
                     </p>
+                    <p className="text-xs text-slate-600">Password: <b className="font-mono text-slate-900">{v.password || v.code}</b></p>
                   </div>
 
                   <div className="flex justify-center my-2">
-                    <QrCode value={v.code} size={90} />
+                    <QrCode value={JSON.stringify({ username: v.code, password: v.password || v.code })} size={128} label={`Data login ${v.code}`} />
                   </div>
 
-                  <p className="text-[10px] text-slate-500">
-                    Durasi: {v.validityDuration} | Max: {v.speedLimit}
-                  </p>
+                  <p className="text-[10px] text-slate-500">Masa aktif: {v.validityDuration}</p>
                   <p className="text-[9px] text-slate-400 mt-2">
                     1. Hubungkan HP ke WiFi {ssidName}<br />
-                    2. Masukkan kode di halaman hotspot<br />
+                    2. Scan QR atau masukkan username & password<br />
                     Terima Kasih & Selamat Berinternet!
                   </p>
                   <p className="text-[8px] text-slate-400 mt-2">Batch: {v.batchCode}</p>

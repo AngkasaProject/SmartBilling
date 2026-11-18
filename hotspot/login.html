@@ -63,6 +63,18 @@
     }
     .brand-mark img { width: 28px; height: 28px; object-fit: contain; }
     .brand-name { font-size: 14px; font-weight: 700; letter-spacing: -.02em; }
+    .brand.has-logo { gap: 0; }
+    .brand.has-logo .brand-mark {
+      width: auto;
+      height: 42px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .brand.has-logo .brand-mark img { width: auto; height: 42px; max-width: 180px; }
+    .brand.has-logo .brand-mark [data-brand-fallback],
+    .brand.has-logo .brand-name { display: none !important; }
     .connection-pill {
       display: inline-flex;
       align-items: center;
@@ -616,19 +628,41 @@
           code = value.trim();
         }
       }
-      if (!code || /[\r\n]/.test(code)) {
+      var credentials = null;
+      if (code.charAt(0) === '{') {
+        try {
+          var parsedCredentials = JSON.parse(code);
+          if (parsedCredentials && typeof parsedCredentials.username === 'string' &&
+              typeof parsedCredentials.password === 'string') {
+            credentials = parsedCredentials;
+          }
+        } catch (_error) {}
+      }
+      if (credentials &&
+          (!credentials.username || !credentials.password ||
+           /[\r\n]/.test(credentials.username) || /[\r\n]/.test(credentials.password))) {
+        setScannerStatus('QR tidak berisi data login yang valid. Coba pindai ulang.', true);
+        return;
+      }
+      if (!credentials && (!code || /[\r\n]/.test(code) || code.charAt(0) === '{')) {
         setScannerStatus('QR tidak berisi kode voucher yang valid. Coba pindai ulang.', true);
         return;
       }
 
-      setMode('voucher');
       var username = document.getElementById('username');
-      username.value = code;
-      username.dispatchEvent(new Event('input', { bubbles: true }));
+      if (credentials) {
+        setMode('member');
+        username.value = credentials.username;
+        document.getElementById('password').value = credentials.password;
+      } else {
+        setMode('voucher');
+        username.value = code;
+        username.dispatchEvent(new Event('input', { bubbles: true }));
+      }
       stopCamera();
       scanner.hidden = true;
       document.body.style.overflow = '';
-      setScannerStatus('Kode voucher berhasil dipindai.', false);
+      setScannerStatus(credentials ? 'Data login berhasil dipindai.' : 'Kode voucher berhasil dipindai.', false);
       username.focus();
     }
 

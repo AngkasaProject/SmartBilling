@@ -3911,6 +3911,71 @@ async function startServer() {
     }
   });
 
+  app.post('/api/mikrotik/hotspot/users/manual', requireAdminSession, async (req, res) => {
+    const { routerId, name, password, profile, limitUptime = '', limitBytesTotal = 0, comment = '' } = req.body || {};
+    const validUptime = (value: string) =>
+      value === '' || /^(?:\d+[wdhms])*(?:\d{1,3}:\d{2}:\d{2})?$/i.test(value);
+    if (
+      typeof routerId !== 'string' || !routerId ||
+      typeof name !== 'string' || !/^[A-Za-z0-9._@+-]{1,64}$/.test(name) ||
+      typeof password !== 'string' || !password || password.length > 128 || /[\u0000-\u001F\u007F]/.test(password) ||
+      typeof profile !== 'string' || !/^[A-Za-z0-9_. -]{1,64}$/.test(profile) ||
+      typeof limitUptime !== 'string' || limitUptime.length > 64 || !validUptime(limitUptime) ||
+      typeof limitBytesTotal !== 'number' || !Number.isSafeInteger(limitBytesTotal) || limitBytesTotal < 0 ||
+      typeof comment !== 'string' || comment.length > 200
+    ) {
+      return res.status(400).json({ error: 'Router, username, password, profile, atau batas user Hotspot tidak valid' });
+    }
+    try {
+      const router = await resolveRouterConnection(routerId);
+      if (!router) return res.status(404).json({ error: 'Router tidak ditemukan atau kredensial tidak tersedia' });
+      const [routerProfiles, routerUsers, stored] = await Promise.all([
+        getHotspotUserProfiles(router),
+        getHotspotUsers(router),
+        getAppDataDb(),
+      ]);
+      if (!routerProfiles.some(item => item.name === profile)) {
+        return res.status(400).json({ error: 'User profile tidak ditemukan pada router yang dipilih' });
+      }
+      if (routerUsers.some(item => item.name.toLowerCase() === name.toLowerCase())) {
+        return res.status(409).json({ error: `Username "${name}" sudah ada pada router` });
+      }
+
+      await addHotspotUser(router, {
+        name,
+        password,
+        profile,
+        limitUptime: limitUptime || '0s',
+        limitBytesTotal,
+        comment: comment.trim() || 'Member manual',
+      });
+
+      const billingProfile = (stored.data.hotspotProfiles || []).find(item =>
+        item.routerId === routerId && item.routerProfileName === profile
+      );
+      const now = new Date().toISOString();
+      const voucher: Voucher = {
+        id: randomUUID(),
+        code: name,
+        password,
+        profileId: billingProfile?.id || `manual:${routerId}:${profile}`,
+        profileName: billingProfile?.name || profile,
+        price: billingProfile?.price || 0,
+        validityHours: billingProfile?.validityHours || 0,
+        validityDuration: limitUptime || billingProfile?.validityDuration || 'Tanpa batas',
+        speedLimit: billingProfile?.speedLimit || '',
+        status: 'unused',
+        batchCode: comment.trim() || 'Member manual',
+        createdAt: now,
+        routerId,
+      };
+      await saveAppDataCollectionDb('vouchers', [voucher, ...(stored.data.vouchers || [])]);
+      res.status(201).json({ voucher });
+    } catch (error) {
+      res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.delete('/api/mikrotik/hotspot/users', requireAdminSession, async (req, res) => {
     const { routerId, name } = req.body || {};
     if (typeof routerId !== 'string' || !routerId || typeof name !== 'string' || !name || name.length > 128) {

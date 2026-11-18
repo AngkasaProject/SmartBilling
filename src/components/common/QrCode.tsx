@@ -5,9 +5,10 @@ interface Props {
   value: string;
   size?: number;
   className?: string;
+  label?: string;
 }
 
-export const QrCode: React.FC<Props> = ({ value, size = 160, className = '' }) => {
+export const QrCode: React.FC<Props> = ({ value, size = 160, className = '', label }) => {
   const [source, setSource] = useState('');
   const [error, setError] = useState('');
 
@@ -43,7 +44,7 @@ export const QrCode: React.FC<Props> = ({ value, size = 160, className = '' }) =
 
   return (
     <span className={`inline-flex rounded-xl bg-white p-2 shadow-inner ${className}`}>
-      <img src={source} width={size} height={size} alt={`QR code ${value}`} className="block" />
+      <img src={source} width={size} height={size} alt={label || `QR code ${value}`} className="block" />
     </span>
   );
 };

@@ -45,12 +45,19 @@
     });
     document.querySelectorAll('[data-brand-logo]').forEach(function (image) {
       if (!logoPath) return;
+      image.alt = brandName;
       image.addEventListener('error', function () {
         image.hidden = true;
+        var fallback = image.parentNode.querySelector('[data-brand-fallback]');
+        var brand = image.parentNode.parentNode;
+        if (fallback) fallback.hidden = false;
+        if (brand.classList) brand.classList.remove('has-logo');
       }, { once: true });
       image.addEventListener('load', function () {
         var fallback = image.parentNode.querySelector('[data-brand-fallback]');
+        var brand = image.parentNode.parentNode;
         if (fallback) fallback.hidden = true;
+        if (brand.classList) brand.classList.add('has-logo');
         image.hidden = false;
       }, { once: true });
       image.src = logoPath;

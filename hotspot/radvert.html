@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="pragma" content="no-cache">
+  <meta http-equiv="expires" content="-1">
+  <title>Iklan Hotspot</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script>
+    function openHotspotAdvert() {
+      window.open('$(link-redirect)', 'hotspot_advert');
+      window.setTimeout(function () {
+        window.location.href = unescape('$(link-orig-esc)');
+      }, 1000);
+    }
+  </script>
+</head>
+<body onload="openHotspotAdvert()">
+  <main class="panel">
+    <p class="eyebrow">Hotspot</p>
+    <h1>Iklan diperlukan</h1>
+    <p>Jendela iklan sedang dibuka. Setelah itu Anda akan kembali ke halaman tujuan.</p>
+    <a class="button" href="$(link-redirect)" target="hotspot_advert" rel="noopener">Buka iklan</a>
+  </main>
+</body>
+</html>

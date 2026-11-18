@@ -23,7 +23,8 @@ import {
   Trash2,
   Unplug,
   Edit2,
-  Power
+  Power,
+  UserPlus
 } from 'lucide-react';
 
 interface RouterVoucher extends Voucher {
@@ -77,6 +78,9 @@ export const VouchersTab: React.FC<Props> = ({
   const [savingUser, setSavingUser] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState('');
   const [userForm, setUserForm] = useState({ password: '', profile: '', limitUptime: '', limitBytesTotal: '0', comment: '' });
+  const [isManualUserModalOpen, setIsManualUserModalOpen] = useState(false);
+  const [manualUserForm, setManualUserForm] = useState({ name: '', password: '', profile: '', limitUptime: '', limitBytesTotal: '0', comment: '' });
+  const [savingManualUser, setSavingManualUser] = useState(false);
   const [isGenerateModalOpen, setIsGenerateModalOpen] = useState(false);
   const [isScriptModalOpen, setIsScriptModalOpen] = useState(false);
   const [copiedScript, setCopiedScript] = useState(false);
@@ -148,7 +152,7 @@ export const VouchersTab: React.FC<Props> = ({
   }, [selectedRouterId]);
 
   useEffect(() => {
-    if (!editingVoucher || !selectedRouterId) {
+    if ((!editingVoucher && !isManualUserModalOpen) || !selectedRouterId) {
       setRouterUserProfiles([]);
       setUserProfileError('');
       return;
@@ -163,7 +167,13 @@ export const VouchersTab: React.FC<Props> = ({
         return result.profiles as Array<{ name: string }>;
       })
       .then(profiles => {
-        if (active) setRouterUserProfiles(profiles);
+        if (active) {
+          setRouterUserProfiles(profiles);
+          setManualUserForm(current => ({
+            ...current,
+            profile: current.profile || profiles[0]?.name || '',
+          }));
+        }
       })
       .catch(error => {
         if (active) setUserProfileError(error instanceof Error ? error.message : String(error));
@@ -174,7 +184,7 @@ export const VouchersTab: React.FC<Props> = ({
     return () => {
       active = false;
     };
-  }, [editingVoucher, selectedRouterId]);
+  }, [editingVoucher, isManualUserModalOpen, selectedRouterId]);
 
   const handleGenerateBatch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -199,6 +209,42 @@ export const VouchersTab: React.FC<Props> = ({
       setPageError(error instanceof Error ? error.message : String(error));
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleCreateManualUser = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSavingManualUser(true);
+    setPageError('');
+    try {
+      const response = await fetch('/api/mikrotik/hotspot/users/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          routerId: selectedRouterId,
+          name: manualUserForm.name.trim(),
+          password: manualUserForm.password,
+          profile: manualUserForm.profile,
+          limitUptime: manualUserForm.limitUptime.trim(),
+          limitBytesTotal: Number(manualUserForm.limitBytesTotal),
+          comment: manualUserForm.comment.trim(),
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      await StorageService.syncDataFromSqlite();
+      onRefreshData();
+      setRouterReloadKey(key => key + 1);
+      setIsManualUserModalOpen(false);
+      setManualUserForm({ name: '', password: '', profile: '', limitUptime: '', limitBytesTotal: '0', comment: '' });
+      const createdVoucher = result.voucher as Voucher;
+      if (await confirmAction('User Hotspot berhasil ditambahkan', `User ${createdVoucher.code} sudah dibuat di MikroTik. Cetak kartu login sekarang?`)) {
+        onOpenPrintModal([createdVoucher]);
+      }
+    } catch (error) {
+      setPageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingManualUser(false);
     }
   };
 
@@ -231,7 +277,7 @@ export const VouchersTab: React.FC<Props> = ({
 
     if (!matchesSearch) return false;
     if (statusFilter !== 'all' && v.status !== statusFilter) return false;
-    if (selectedProfileId !== 'all' && v.profileId !== selectedProfileId) return false;
+    if (selectedProfileId !== 'all' && v.profileName !== selectedProfileId) return false;
     return true;
   });
 
@@ -517,6 +563,19 @@ export const VouchersTab: React.FC<Props> = ({
               <Plus className="w-4 h-4" />
               <span>Generate Voucher Baru</span>
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setManualUserForm({ name: '', password: '', profile: '', limitUptime: '', limitBytesTotal: '0', comment: '' });
+                setIsManualUserModalOpen(true);
+              }}
+              hidden={activeSection !== 'all' && activeSection !== 'unused'}
+              disabled={!selectedRouterId}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 font-semibold text-white text-xs rounded-xl transition flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Tambah User Manual</span>
+            </button>
           </div>
         </div>
 
@@ -740,7 +799,7 @@ export const VouchersTab: React.FC<Props> = ({
       </>}
 
       {/* Batch Generate Modal */}
-      {activeSection === 'all' && isGenerateModalOpen && (
+      {(activeSection === 'all' || activeSection === 'unused') && isGenerateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md text-white shadow-2xl p-6">
             <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-4">
@@ -822,6 +881,56 @@ export const VouchersTab: React.FC<Props> = ({
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {isManualUserModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/80 p-4 backdrop-blur-sm">
+          <form onSubmit={handleCreateManualUser} className="my-auto w-full max-w-xl space-y-4 rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="font-bold">Tambah user Hotspot manual</h3>
+                <p className="mt-1 text-xs text-slate-400">Tentukan username dan password sendiri. Akun dibuat langsung di MikroTik {routers.find(router => router.id === selectedRouterId)?.name || ''}.</p>
+              </div>
+              <button type="button" onClick={() => setIsManualUserModalOpen(false)} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white" aria-label="Tutup"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block text-xs text-slate-300">Username
+                <input required autoComplete="username" maxLength={64} pattern="[A-Za-z0-9._@+-]+" value={manualUserForm.name} onChange={event => setManualUserForm({ ...manualUserForm, name: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white" />
+              </label>
+              <label className="block text-xs text-slate-300">Password
+                <input required type="text" autoComplete="new-password" maxLength={128} value={manualUserForm.password} onChange={event => setManualUserForm({ ...manualUserForm, password: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white" />
+              </label>
+            </div>
+            <label className="block text-xs text-slate-300">User profile MikroTik
+              <select required value={manualUserForm.profile} onChange={event => setManualUserForm({ ...manualUserForm, profile: event.target.value })} disabled={userProfilesLoading || !!userProfileError} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white disabled:opacity-60">
+                <option value="">{userProfilesLoading ? 'Memuat profile router...' : 'Pilih profile'}</option>
+                {routerUserProfiles.map(profile => <option key={profile.name} value={profile.name}>{profile.name}</option>)}
+              </select>
+              {userProfilesLoading && <span role="status" className="mt-1 block text-[11px] text-slate-500">Memuat profile dari router...</span>}
+              {userProfileError && <span role="alert" className="mt-1 block text-[11px] text-rose-300">{userProfileError}</span>}
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-xs text-slate-300">Batas waktu
+                <input maxLength={64} value={manualUserForm.limitUptime} onChange={event => setManualUserForm({ ...manualUserForm, limitUptime: event.target.value })} placeholder="Kosongkan untuk tanpa batas" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+                <span className="mt-1 block text-[10px] text-slate-500">Contoh: 12h, 1d, atau 01:00:00.</span>
+              </label>
+              <label className="text-xs text-slate-300">Batas kuota (byte)
+                <input required type="number" min={0} step={1} value={manualUserForm.limitBytesTotal} onChange={event => setManualUserForm({ ...manualUserForm, limitBytesTotal: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+                <span className="mt-1 block text-[10px] text-slate-500">{Number(manualUserForm.limitBytesTotal || 0) === 0 ? '0 = tanpa batas kuota.' : `${(Number(manualUserForm.limitBytesTotal) / (1024 * 1024)).toFixed(2)} MB`}</span>
+              </label>
+            </div>
+            <label className="block text-xs text-slate-300">Catatan (opsional)
+              <input maxLength={200} value={manualUserForm.comment} onChange={event => setManualUserForm({ ...manualUserForm, comment: event.target.value })} placeholder="Contoh: Member Budi" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
+            </label>
+            {pageError && <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-950/30 p-3 text-xs text-rose-200">{pageError}</p>}
+            <div className="flex justify-end gap-2 border-t border-slate-800 pt-4">
+              <button type="button" onClick={() => setIsManualUserModalOpen(false)} className="rounded-lg bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200">Batal</button>
+              <button type="submit" disabled={savingManualUser || !selectedRouterId || !manualUserForm.profile || userProfilesLoading || !!userProfileError} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
+                {savingManualUser ? 'Membuat user...' : 'Buat User & Simpan'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
