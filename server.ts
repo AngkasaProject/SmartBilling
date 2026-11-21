@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { createHash, createHmac, randomBytes, randomUUID, randomInt, scryptSync, timingSafeEqual } from 'crypto';
 import { renderWhatsAppTemplate, whatsappTemplateValues } from './src/utils/whatsappTemplates';
-import { telegramBot } from './server/telegram.js';
+import { telegramBot, escapeHtml as escapeTelegramHtml } from './server/telegram.js';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { AppDataSnapshot, Customer, HotspotProfile, HotspotServiceProfile, HotspotValidityPreset, Invoice, ManualPaymentMethod, PaymentTransaction, RouterConfig, Voucher } from './src/types/index.js';
@@ -5723,22 +5723,48 @@ async function startServer() {
     }
   });
 
+  function buildDecisionBadge(action: 'approve' | 'reject', approver: string, at: string): string {
+    const name = escapeTelegramHtml(approver);
+    const time = escapeTelegramHtml(new Date(at).toLocaleString('id-ID'));
+    return action === 'approve'
+      ? `\n\n━━━━━━━━━━━━━━━━━━━━━━\n✅ <b>STATUS: SUDAH DISETUJUI</b>\n👤 <b>Oleh:</b> ${name}\n🕒 <b>Waktu:</b> ${time}`
+      : `\n\n━━━━━━━━━━━━━━━━━━━━━━\n❌ <b>STATUS: DIBATALKAN</b>\n👤 <b>Oleh:</b> ${name}\n🕒 <b>Waktu:</b> ${time}`;
+  }
+
+  async function readTelegramMessageRefs(orderId: string) {
+    const stored = await getAppDataDb();
+    const transaction = (stored.data.transactions || []).find(item => item.orderId === orderId);
+    return transaction?.telegramMessageRefs || [];
+  }
+
   async function processPaymentDecision(
     orderId: string,
     action: 'approve' | 'reject',
-    channel: string = 'manual-admin-approved'
+    channel: string = 'manual-admin-approved',
+    decision?: { approver: string; at: string; clickedBy?: { chatId: string; messageId?: number } }
   ): Promise<{ success: boolean; message?: string }> {
     if (voucherApprovalsInProgress.has(orderId)) {
       return { success: false, message: 'Pesanan sedang diproses' };
     }
     voucherApprovalsInProgress.add(orderId);
     try {
+      const refs = decision ? await readTelegramMessageRefs(orderId) : [];
       const stored = await getAppDataDb();
       const transactions = await expirePendingManualPayments(stored);
       const transaction = transactions.find(item =>
         item.orderId === orderId && item.paymentMethod === 'manual' && item.status === 'pending'
       );
-      if (!transaction) return { success: false, message: 'Permintaan pembayaran tidak ditemukan atau sudah diproses' };
+      if (!transaction) {
+        // Klik ganda / sudah diproses admin lain: cukup samakan tampilan pesan.
+        if (refs.length) {
+          await telegramBot.syncPaymentMessage(
+            refs,
+            buildDecisionBadge(action, decision!.approver, decision!.at),
+            decision!.clickedBy
+          );
+        }
+        return { success: false, message: 'Permintaan pembayaran tidak ditemukan atau sudah diproses' };
+      }
       if (action === 'approve') {
         if (transaction.orderType === 'voucher') {
           await activateAndSettleVoucher(orderId, channel);
@@ -5766,6 +5792,13 @@ async function startServer() {
           console.error(`[Payment] ${orderId} processed, but its transfer proof could not be deleted:`, error);
         }
       }
+      if (refs.length) {
+        await telegramBot.syncPaymentMessage(
+          refs,
+          buildDecisionBadge(action, decision!.approver, decision!.at),
+          decision!.clickedBy
+        );
+      }
       return { success: true };
     } catch (error) {
       return { success: false, message: error instanceof Error ? error.message : String(error) };
@@ -5774,8 +5807,12 @@ async function startServer() {
     }
   }
 
-  telegramBot.setActionHandler(async (orderId, _orderType, action, adminInfo) => {
-    return await processPaymentDecision(orderId, action, `manual-telegram:${adminInfo}`);
+  telegramBot.setActionHandler(async (orderId, _orderType, action, adminInfo, clickedBy) => {
+    return await processPaymentDecision(orderId, action, `manual-telegram:${adminInfo}`, {
+      approver: adminInfo,
+      at: new Date().toISOString(),
+      clickedBy,
+    });
   });
 
   app.post('/api/admin/payment-requests/:orderId/:action', requireAdminSession, async (req, res) => {

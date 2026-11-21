@@ -88,7 +88,8 @@ export type ActionHandler = (
   orderId: string,
   orderType: 'voucher' | 'invoice',
   action: 'approve' | 'reject',
-  adminInfo: string
+  adminInfo: string,
+  clickedBy: { chatId: string; messageId?: number }
 ) => Promise<{ success: boolean; message?: string }>;
 
 export function escapeHtml(text: string): string {
@@ -133,6 +134,51 @@ export class TelegramBotManager {
     const idStr = String(chatId).trim();
     if (!this.config.allowedChatIds.length) return false;
     return this.config.allowedChatIds.some(allowed => allowed === idStr || allowed === `-${idStr}`);
+  }
+
+  public isAllowedId(chatId: string | number): boolean {
+    return this.isChatAllowed(chatId);
+  }
+
+  /**
+   * Terapkan footer status ke SEMUA salinan pesan notifikasi (semua admin),
+   * supaya admin lain ikut melihat siapa yang sudah memproses pesanan.
+   */
+  public async syncPaymentMessage(
+    refs: TelegramMessageReference[],
+    statusBadge: string,
+    skip?: { chatId: string; messageId?: number }
+  ): Promise<void> {
+    for (const ref of refs) {
+      if (!ref?.messageId) continue;
+      if (skip && String(ref.chatId) === String(skip.chatId) && ref.messageId === skip.messageId) continue;
+      try {
+        const message = await this.callApi('getChatMessage', {
+          chat_id: ref.chatId,
+          message_id: ref.messageId,
+        });
+        const isPhoto = Array.isArray(message?.photo);
+        const originalText = isPhoto ? (message?.caption || '') : (message?.text || '');
+        const before = originalText.split('\n\n━━━━━━━━━━━━━━━━━━━━━━\n')[0];
+        const updatedHtml = escapeHtml(before)
+          .replace(/&lt;b&gt;/g, '<b>')
+          .replace(/&lt;\/b&gt;/g, '</b>')
+          .replace(/&lt;code&gt;/g, '<code>')
+          .replace(/&lt;\/code&gt;/g, '</code>')
+          .replace(/&lt;i&gt;/g, '<i>')
+          .replace(/&lt;\/i&gt;/g, '</i>') + statusBadge;
+        await this.callApi(isPhoto ? 'editMessageCaption' : 'editMessageText', {
+          chat_id: ref.chatId,
+          message_id: ref.messageId,
+          ...(isPhoto ? { caption: updatedHtml } : { text: updatedHtml }),
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: [] },
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[Telegram] Gagal memperbarui pesan ${ref.messageId} di chat ${ref.chatId}:`, message);
+      }
+    }
   }
 
   public async callApi(method: string, payload?: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
@@ -575,7 +621,10 @@ export class TelegramBotManager {
     }
 
     try {
-      const result = await this.actionHandler(orderId, orderType, action, adminInfo);
+      const result = await this.actionHandler(orderId, orderType, action, adminInfo, {
+        chatId: String(chatId),
+        messageId,
+      });
 
       if (!result.success) {
         await this.callApi('sendMessage', {
@@ -585,7 +634,7 @@ export class TelegramBotManager {
         return;
       }
 
-      // Update the original message text and remove inline buttons
+      // Update the clicked message; copies in other admins' chats are synced by the server.
       if (messageId && (cb.message?.text || cb.message?.caption)) {
         const originalText = cb.message.caption || cb.message.text || '';
         const before = originalText.split('\n\n━━━━━━━━━━━━━━━━━━━━━━\n')[0];
