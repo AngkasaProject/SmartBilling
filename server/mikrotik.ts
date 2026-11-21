@@ -1033,6 +1033,13 @@ export async function deleteRouterServiceRecord(
   }
 }
 
+const sameRateLimit = (left: string, right: string): boolean =>
+  left.replace(/\s+/g, '').toLowerCase() === right.replace(/\s+/g, '').toLowerCase();
+
+/**
+ * Pastikan user profile hotspot ada di router. Bila profil sudah ada dengan setting
+ * berbeda, profil disinkronkan (bukan dilempar error) supaya aktivasi voucher tidak gagal.
+ */
 export async function ensureHotspotUserProfile(
   router: RouterConnection,
   profile: { name: string; rateLimit: string; sharedUsers: number; addressPool?: string }
@@ -1040,13 +1047,26 @@ export async function ensureHotspotUserProfile(
   const profiles = await getHotspotUserProfiles(router);
   const existing = profiles.find(item => item.name === profile.name);
   if (existing) {
-    if (
-      existing.rateLimit !== profile.rateLimit ||
-      existing.sharedUsers !== profile.sharedUsers ||
-      (profile.addressPool !== undefined && existing.addressPool !== profile.addressPool)
-    ) {
-      throw new Error(`Hotspot profile "${profile.name}" already exists with different settings`);
-    }
+    const sharedUsers = Number.isFinite(existing.sharedUsers) ? existing.sharedUsers : profile.sharedUsers;
+    const needsSync =
+      !sameRateLimit(existing.rateLimit, profile.rateLimit) ||
+      sharedUsers !== profile.sharedUsers ||
+      (profile.addressPool !== undefined && existing.addressPool !== profile.addressPool);
+    if (!needsSync) return;
+    console.warn(
+      `[MikroTik] Profile "${profile.name}" berbeda dengan konfigurasi billing ` +
+      `(router: rate-limit="${existing.rateLimit}", shared-users=${existing.sharedUsers}, address-pool="${existing.addressPool}"; ` +
+      `billing: rate-limit="${profile.rateLimit}", shared-users=${profile.sharedUsers}, address-pool="${profile.addressPool ?? '-'}"). ` +
+      'Menyinkronkan profil router ke konfigurasi billing.'
+    );
+    await updateHotspotUserProfile(router, profile.name, {
+      name: profile.name,
+      rateLimit: profile.rateLimit,
+      sharedUsers: profile.sharedUsers,
+      addressPool: profile.addressPool || '',
+      sessionTimeout: existing.sessionTimeout,
+      idleTimeout: existing.idleTimeout,
+    });
     return;
   }
   if (router.apiType === 'rest') {
