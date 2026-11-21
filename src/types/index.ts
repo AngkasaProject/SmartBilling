@@ -64,6 +64,10 @@ export interface HotspotProfile {
   validityDuration: string; // e.g. "3 Jam", "1 Hari", "7 Hari", "30 Hari"
   validityHours: number;
   price: number;
+  /** Harga sebelum diskon; ditampilkan sebagai harga coret di portal bila lebih besar dari price. */
+  compareAtPrice?: number;
+  /** Urutan tampil di portal; kecil tampil lebih dulu. */
+  sortOrder?: number;
   sharedUsers: number;
   dataLimitMb?: number;
   color: string;

@@ -21,6 +21,7 @@ interface PackageForm {
   portalSpeedLabel: string;
   portalNote: string;
   price: number;
+  compareAtPrice: number;
   validityPreset: HotspotValidityPreset;
   dataLimitMb: number;
 }
@@ -90,6 +91,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
     portalSpeedLabel: '',
     portalNote: DEFAULT_HOTSPOT_PORTAL_NOTE,
     price: 0,
+    compareAtPrice: 0,
     validityPreset: '1 hari',
     dataLimitMb: 0,
   });
@@ -110,6 +112,12 @@ export const HotspotPackagesManager: React.FC<Props> = ({
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Urutan kartu di portal mengikuti sortOrder; paket tanpa sortOrder tampil terakhir.
+  const orderedProfiles = React.useMemo(
+    () => [...profiles].sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER)),
+    [profiles],
+  );
 
   useEffect(() => {
     if (!profilesRouterId) {
@@ -188,7 +196,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
       onRefreshData();
       setMessage(`Paket ${result.profile.name} tersimpan.`);
       setPackageDialog(false);
-      setPackageForm({ id: '', name: '', serviceProfileId: '', portalSpeedLabel: '', portalNote: DEFAULT_HOTSPOT_PORTAL_NOTE, price: 0, validityPreset: '1 hari', dataLimitMb: 0 });
+      setPackageForm({ id: '', name: '', serviceProfileId: '', portalSpeedLabel: '', portalNote: DEFAULT_HOTSPOT_PORTAL_NOTE, price: 0, compareAtPrice: 0, validityPreset: '1 hari', dataLimitMb: 0 });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : String(saveError));
     } finally {
@@ -303,10 +311,30 @@ export const HotspotPackagesManager: React.FC<Props> = ({
       portalSpeedLabel: profile.portalSpeedLabel || '',
       portalNote: profile.portalNote ?? DEFAULT_HOTSPOT_PORTAL_NOTE,
       price: profile.price,
+      compareAtPrice: profile.compareAtPrice ?? 0,
       validityPreset: '1 hari',
       dataLimitMb: 0,
     });
     setPackageDialog(true);
+  };
+
+  const movePackage = async (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= orderedProfiles.length) return;
+    setError('');
+    const order = orderedProfiles.map(item => item.id);
+    [order[index], order[target]] = [order[target], order[index]];
+    try {
+      await readResponse(await fetch('/api/admin/hotspot/packages/reorder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order }),
+      }));
+      await StorageService.syncDataFromSqlite();
+      onRefreshData();
+    } catch (moveError) {
+      setError(moveError instanceof Error ? moveError.message : String(moveError));
+    }
   };
 
   return (
@@ -323,7 +351,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
           <button type="button" onClick={() => { const routerId = profilesRouterId || routers[0]?.id || ''; setError(''); setRouterProfileForm(emptyRouterUserProfile(routerId)); setRouterProfileDialog(true); }} disabled={!routers.length} className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-bold text-slate-100 disabled:opacity-50">
             <Plus className="h-4 w-4" /> Tambah User Profile MikroTik
           </button>
-          <button type="button" onClick={() => { setError(''); setPackageForm({ id: '', name: '', serviceProfileId: serviceProfiles[0]?.id || '', portalSpeedLabel: '', portalNote: DEFAULT_HOTSPOT_PORTAL_NOTE, price: 0, validityPreset: '1 hari', dataLimitMb: 0 }); setPackageDialog(true); }} disabled={!serviceProfiles.length && !routerProfiles.length} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">
+          <button type="button" onClick={() => { setError(''); setPackageForm({ id: '', name: '', serviceProfileId: serviceProfiles[0]?.id || '', portalSpeedLabel: '', portalNote: DEFAULT_HOTSPOT_PORTAL_NOTE, price: 0, compareAtPrice: 0, validityPreset: '1 hari', dataLimitMb: 0 }); setPackageDialog(true); }} disabled={!serviceProfiles.length && !routerProfiles.length} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-40">
             <Plus className="h-4 w-4" /> Tambah Paket
           </button>
         </div>
@@ -345,7 +373,7 @@ export const HotspotPackagesManager: React.FC<Props> = ({
 
       {activePage === 'packages' && (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {profiles.map(profile => (
+          {orderedProfiles.map((profile, index) => (
             <article key={profile.id} className="rounded-xl border border-slate-800 bg-slate-900 p-4">
               <div className="flex items-start justify-between gap-2">
                 <div>
@@ -354,10 +382,31 @@ export const HotspotPackagesManager: React.FC<Props> = ({
                 </div>
                 <span className={`text-[10px] font-bold ${profile.enabled === false ? 'text-slate-500' : 'text-emerald-300'}`}>{profile.enabled === false ? 'TERSEMBUNYI' : 'AKTIF'}</span>
               </div>
-              <p className="mt-3 text-sm font-bold text-indigo-300">Rp {profile.price.toLocaleString('id-ID')}</p>
-              <div className="mt-3 flex gap-2">
+              <p className="mt-3 text-sm font-bold text-indigo-300">
+                Rp {profile.price.toLocaleString('id-ID')}
+                {profile.compareAtPrice && profile.compareAtPrice > profile.price && (
+                  <span className="ml-2 text-xs font-normal text-slate-500 line-through">Rp {profile.compareAtPrice.toLocaleString('id-ID')}</span>
+                )}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" onClick={() => editPackage(profile)} className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200">Edit</button>
                 <button type="button" onClick={() => void setPackageEnabled(profile, profile.enabled === false)} className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200">{profile.enabled === false ? 'Tampilkan' : 'Sembunyikan'}</button>
+                <button
+                  type="button"
+                  onClick={() => void movePackage(index, -1)}
+                  disabled={index === 0}
+                  title="Naikkan urutan"
+                  aria-label={`Naikkan urutan ${profile.name}`}
+                  className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 disabled:opacity-40"
+                >↑</button>
+                <button
+                  type="button"
+                  onClick={() => void movePackage(index, 1)}
+                  disabled={index === orderedProfiles.length - 1}
+                  title="Turunkan urutan"
+                  aria-label={`Turunkan urutan ${profile.name}`}
+                  className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-200 disabled:opacity-40"
+                >↓</button>
               </div>
             </article>
           ))}
@@ -443,6 +492,10 @@ export const HotspotPackagesManager: React.FC<Props> = ({
               </div>
             )}
             <label className="block text-xs text-slate-300">Harga (Rp)<input required type="number" min="1" step="1" value={packageForm.price || ''} onChange={event => setPackageForm({ ...packageForm, price: Number(event.target.value) })} className={inputClass} /></label>
+            <label className="block text-xs text-slate-300">Harga coret (Rp, opsional)
+              <input type="number" min="0" step="1" value={packageForm.compareAtPrice || ''} onChange={event => setPackageForm({ ...packageForm, compareAtPrice: Number(event.target.value) })} className={inputClass} placeholder="Contoh: 20000" />
+              <span className="mt-1 block text-[11px] text-slate-500">Ditampilkan sebagai harga coret bila lebih besar dari harga jual. Kosongkan untuk menyembunyikan.</span>
+            </label>
             {error && <p role="alert" className="text-xs text-rose-300">{error}</p>}
             <div className="flex justify-end gap-2 border-t border-slate-800 pt-4">
               <button type="button" onClick={() => setPackageDialog(false)} className="rounded-lg bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200">Batal</button>

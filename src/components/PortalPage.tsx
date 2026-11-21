@@ -81,6 +81,8 @@ interface VoucherProfile {
   validityDuration: string;
   validityHours: number;
   price: number;
+  compareAtPrice?: number;
+  sortOrder?: number;
   dataLimitMb?: number;
 }
 
@@ -2687,6 +2689,11 @@ export function PortalPage() {
                         aria-pressed={voucherProfileId === profile.id}
                         className={`group relative rounded-2xl border p-4 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2 hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 sm:p-5 ${voucherProfileId === profile.id ? "border-zinc-900 bg-zinc-50 ring-1 ring-zinc-900 shadow-sm" : "border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"}`}
                       >
+                        {profile.compareAtPrice && profile.compareAtPrice > profile.price && (
+                          <span className="absolute -top-2 right-3 rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-bold text-white shadow-sm">
+                            -{Math.round((1 - profile.price / profile.compareAtPrice) * 100)}%
+                          </span>
+                        )}
                         <span className="flex items-start justify-between gap-3">
                           <span className="min-w-0">
                             <b className="block truncate text-base text-zinc-900">{profile.name}</b>
@@ -2703,7 +2710,12 @@ export function PortalPage() {
                         {portalNote && <span className="mt-2 block break-words whitespace-pre-line text-[10px] text-zinc-500">{portalNote}</span>}
                         <span className="mt-4 flex items-end justify-between border-t border-zinc-100 pt-3">
                           <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400">Harga</span>
-                          <span className="text-xl font-bold tracking-tight text-zinc-900">{rupiah(profile.price)}</span>
+                          <span className="flex flex-col items-end">
+                            {profile.compareAtPrice && profile.compareAtPrice > profile.price && (
+                              <span className="text-[11px] font-medium text-zinc-400 line-through">{rupiah(profile.compareAtPrice)}</span>
+                            )}
+                            <span className="text-xl font-bold tracking-tight text-zinc-900">{rupiah(profile.price)}</span>
+                          </span>
                         </span>
                       </button>
                     );

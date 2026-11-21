@@ -2060,8 +2060,9 @@ async function startServer() {
       const stored = await getAppDataDb();
       const profiles = (stored.data.hotspotProfiles || [])
         .filter(profile => profile.enabled !== false && Boolean(profile.routerId && profile.routerProfileName))
-        .map(({ id, name, speedLimit, portalSpeedLabel, portalNote, validityDuration, validityHours, price, sharedUsers, dataLimitMb }) => ({
-        id, name, speedLimit, portalSpeedLabel, portalNote, validityDuration, validityHours, price, sharedUsers, dataLimitMb,
+        .sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER))
+        .map(({ id, name, speedLimit, portalSpeedLabel, portalNote, validityDuration, validityHours, price, compareAtPrice, sortOrder, sharedUsers, dataLimitMb }) => ({
+        id, name, speedLimit, portalSpeedLabel, portalNote, validityDuration, validityHours, price, compareAtPrice, sortOrder, sharedUsers, dataLimitMb,
       }));
       res.setHeader('Cache-Control', 'no-store');
       res.json({ profiles });
@@ -3620,8 +3621,36 @@ async function startServer() {
     }
   });
 
+  app.post('/api/admin/hotspot/packages/reorder', requireAdminSession, async (req, res) => {
+    const order = req.body?.order;
+    if (
+      !Array.isArray(order) ||
+      order.length > 500 ||
+      order.some(id => typeof id !== 'string' || !id || id.length > 128) ||
+      new Set(order).size !== order.length
+    ) {
+      return res.status(400).json({ error: 'Urutan paket tidak valid' });
+    }
+    try {
+      const stored = await getAppDataDb();
+      const profiles = stored.data.hotspotProfiles || [];
+      const known = new Set(profiles.map(item => item.id));
+      if (order.some((id: string) => !known.has(id))) {
+        return res.status(400).json({ error: 'Ada paket yang tidak dikenal pada urutan baru' });
+      }
+      const rank = new Map<string, number>(order.map((id: string, index: number) => [id, index]));
+      const next = profiles
+        .map(item => ({ ...item, sortOrder: rank.get(item.id) ?? profiles.length }))
+        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+      await saveAppDataCollectionDb('hotspotProfiles', next);
+      res.json({ profiles: next });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post('/api/admin/hotspot/packages', requireAdminSession, async (req, res) => {
-    const { id, name, serviceProfileId, portalSpeedLabel, portalNote, price, enabled } = req.body || {};
+    const { id, name, serviceProfileId, portalSpeedLabel, portalNote, price, compareAtPrice, sortOrder, enabled } = req.body || {};
     if (
       (id !== undefined && (typeof id !== 'string' || id.length > 128)) ||
       typeof name !== 'string' || !name.trim() || name.length > 64 ||
@@ -3629,6 +3658,9 @@ async function startServer() {
       (portalSpeedLabel !== undefined && (typeof portalSpeedLabel !== 'string' || portalSpeedLabel.length > 64)) ||
       (portalNote !== undefined && (typeof portalNote !== 'string' || portalNote.length > 280)) ||
       !Number.isSafeInteger(price) || price < 1 ||
+      (compareAtPrice !== undefined && compareAtPrice !== null &&
+        (!Number.isSafeInteger(compareAtPrice) || compareAtPrice < 0)) ||
+      (sortOrder !== undefined && sortOrder !== null && (!Number.isSafeInteger(sortOrder) || sortOrder < 0)) ||
       typeof enabled !== 'boolean'
     ) {
       return res.status(400).json({ error: 'Nama, profil layanan, harga, dan status paket tidak valid' });
@@ -3647,6 +3679,13 @@ async function startServer() {
         ? portalSpeedLabel.trim() || undefined
         : existing?.portalSpeedLabel;
       const note = typeof portalNote === 'string' ? portalNote.trim() : existing?.portalNote;
+      // Harga coret hanya bermakna bila lebih tinggi dari harga jual.
+      const normalizedCompareAt = typeof compareAtPrice === 'number' && compareAtPrice > price
+        ? compareAtPrice
+        : undefined;
+      const nextSortOrder = typeof sortOrder === 'number'
+        ? sortOrder
+        : existing?.sortOrder ?? (profiles.reduce((max, item) => Math.max(max, item.sortOrder ?? -1), -1) + 1);
       const profile: HotspotProfile = serviceProfile
         ? {
           id: packageId,
@@ -3661,12 +3700,23 @@ async function startServer() {
           validityDuration: serviceProfile.validityPreset,
           validityHours: serviceProfile.validityHours,
           price,
+          compareAtPrice: normalizedCompareAt,
+          sortOrder: nextSortOrder,
           sharedUsers: serviceProfile.sharedUsers,
           dataLimitMb: serviceProfile.dataLimitMb,
           color: 'indigo',
           enabled,
         }
-        : { ...existing!, name: name.trim(), portalSpeedLabel: speedLabel, portalNote: note, price, enabled };
+        : {
+          ...existing!,
+          name: name.trim(),
+          portalSpeedLabel: speedLabel,
+          portalNote: note,
+          price,
+          compareAtPrice: normalizedCompareAt,
+          sortOrder: nextSortOrder,
+          enabled,
+        };
       await saveAppDataCollectionDb(
         'hotspotProfiles',
         profiles.some(item => item.id === packageId)
