@@ -544,10 +544,14 @@ export class TelegramBotManager {
       return;
     }
 
-    const adminName = cb.from.username
-      ? `@${cb.from.username}`
-      : `${cb.from.first_name} ${cb.from.last_name || ''}`.trim();
-    const adminInfo = `${adminName} (ID: ${fromId})`;
+    // Nama lengkap dari akun yang menekan tombol; username hanya pelengkap (bisa tidak ada/kosong).
+    const adminFullName = `${cb.from.first_name || ''} ${cb.from.last_name || ''}`.trim();
+    const adminHandle = cb.from.username ? `@${cb.from.username}` : '';
+    const adminLabel = adminFullName
+      ? (adminHandle ? `${adminFullName} (${adminHandle})` : adminFullName)
+      : (adminHandle || 'Admin Telegram');
+    const adminId = String(fromId);
+    const adminInfo = `${adminLabel} (ID: ${adminId})`;
 
     if (!this.actionHandler) {
       try {
@@ -584,11 +588,13 @@ export class TelegramBotManager {
       // Update the original message text and remove inline buttons
       if (messageId && (cb.message?.text || cb.message?.caption)) {
         const originalText = cb.message.caption || cb.message.text || '';
+        const before = originalText.split('\n\n━━━━━━━━━━━━━━━━━━━━━━\n')[0];
+        const approver = `${escapeHtml(adminLabel)} (ID: <code>${escapeHtml(adminId)}</code>)`;
         const statusBadge = action === 'approve'
-          ? `\n\n━━━━━━━━━━━━━━━━━━━━━━\n✅ <b>STATUS: SUDAH DISETUJUI</b>\n👤 <b>Oleh:</b> ${escapeHtml(adminInfo)}\n🕒 <b>Waktu:</b> ${new Date().toLocaleString('id-ID')}`
-          : `\n\n━━━━━━━━━━━━━━━━━━━━━━\n❌ <b>STATUS: DIBATALKAN</b>\n👤 <b>Oleh:</b> ${escapeHtml(adminInfo)}\n🕒 <b>Waktu:</b> ${new Date().toLocaleString('id-ID')}`;
+          ? `\n\n━━━━━━━━━━━━━━━━━━━━━━\n✅ <b>STATUS: SUDAH DISETUJUI</b>\n👤 <b>Oleh:</b> ${approver}\n🕒 <b>Waktu:</b> ${new Date().toLocaleString('id-ID')}`
+          : `\n\n━━━━━━━━━━━━━━━━━━━━━━\n❌ <b>STATUS: DIBATALKAN</b>\n👤 <b>Oleh:</b> ${approver}\n🕒 <b>Waktu:</b> ${new Date().toLocaleString('id-ID')}`;
 
-        const updatedHtml = escapeHtml(originalText)
+        const updatedHtml = escapeHtml(before)
           .replace(/&lt;b&gt;/g, '<b>')
           .replace(/&lt;\/b&gt;/g, '</b>')
           .replace(/&lt;code&gt;/g, '<code>')
