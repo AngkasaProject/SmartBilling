@@ -18,10 +18,23 @@
 </head>
 <body onload="openHotspotAdvert()">
   <main class="panel">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">
+          <img data-brand-logo alt="" hidden>
+          <svg data-brand-fallback width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 9.5a11 11 0 0 1 14 0M8 12.5a6.5 6.5 0 0 1 8 0M10.8 15.5a2.1 2.1 0 0 1 2.4 0M12 19h.01"/>
+          </svg>
+        </span>
+        <span class="brand-name" data-brand-name>WiFi Hotspot</span>
+      </div>
+      <span class="connection-pill"><span class="connection-dot"></span><span data-wifi-name>Jaringan tersedia</span></span>
+    </header>
     <p class="eyebrow">Hotspot</p>
     <h1>Iklan diperlukan</h1>
     <p>Jendela iklan sedang dibuka. Setelah itu Anda akan kembali ke halaman tujuan.</p>
     <a class="button" href="$(link-redirect)" target="hotspot_advert" rel="noopener">Buka iklan</a>
   </main>
+  <script type="text/javascript" src="hotspot-config.js"></script>
 </body>
 </html>

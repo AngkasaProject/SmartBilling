@@ -50,6 +50,18 @@
     }
     .brand-mark img { width: 28px; height: 28px; object-fit: contain; }
     .brand-name { font-size: 14px; font-weight: 700; letter-spacing: -.02em; }
+    .brand.has-logo { gap: 0; }
+    .brand.has-logo .brand-mark {
+      width: auto;
+      height: 42px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .brand.has-logo .brand-mark img { width: auto; height: 42px; max-width: 180px; }
+    .brand.has-logo .brand-mark [data-brand-fallback],
+    .brand.has-logo .brand-name { display: none !important; }
     .connection-pill {
       display: inline-flex;
       align-items: center;
@@ -163,7 +175,7 @@
         </span>
         <span class="brand-name" data-brand-name>WiFi Hotspot</span>
       </div>
-      <span class="connection-pill"><span class="connection-dot"></span>Terhubung</span>
+      <span class="connection-pill"><span class="connection-dot"></span><span data-wifi-name>Terhubung</span></span>
     </header>
 
     <section class="card" aria-labelledby="page-title">
