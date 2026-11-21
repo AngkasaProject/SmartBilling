@@ -117,6 +117,8 @@ export const INITIAL_SETTINGS: AppSettings = {
   paymentAutoVerify: false,
 
   gracePeriodDays: 0,
+  isolirMethod: 'disable',
+  isolirProfiles: {},
   defaultVoucherPrefix: 'NET-',
   voucherLength: 5,
   updatedAt: new Date().toISOString(),

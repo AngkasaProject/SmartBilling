@@ -63,6 +63,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   gracePeriodDays: 0,
   defaultVoucherPrefix: 'NET-',
   voucherLength: 5,
+  isolirMethod: 'disable',
+  isolirProfiles: {},
   telegramBotToken: '',
   telegramChatId: '',
   telegramEnabled: false,
@@ -221,6 +223,8 @@ export async function resetAllBusinessDataDb(): Promise<string> {
     paymentMerchantCode: DEFAULT_APP_SETTINGS.paymentMerchantCode,
     paymentWebhookSecret: DEFAULT_APP_SETTINGS.paymentWebhookSecret,
     paymentAutoVerify: DEFAULT_APP_SETTINGS.paymentAutoVerify,
+    isolirMethod: DEFAULT_APP_SETTINGS.isolirMethod,
+    isolirProfiles: DEFAULT_APP_SETTINGS.isolirProfiles,
     updatedAt: new Date().toISOString(),
   };
   const emptySnapshot: AppDataSnapshot = {
@@ -1279,6 +1283,8 @@ export async function getAppSettingsDb(): Promise<AppSettings> {
     try {
       const parsed = JSON.parse(res[0].values[0][0] as string);
       const settings = { ...DEFAULT_APP_SETTINGS, ...parsed };
+      if (!settings.isolirProfiles || typeof settings.isolirProfiles !== 'object') settings.isolirProfiles = {};
+      if (settings.isolirMethod !== 'profile') settings.isolirMethod = 'disable';
       const previousDefaultVoucherTemplate = [
         'Yth. Bapak/Ibu {{customer_name}},',
         '',

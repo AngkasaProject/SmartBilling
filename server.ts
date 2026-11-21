@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createHash, createHmac, randomBytes, randomUUID, randomInt, scryptSync, timingSafeEqual } from 'crypto';
-import { renderWhatsAppTemplate } from './src/utils/whatsappTemplates';
+import { renderWhatsAppTemplate, whatsappTemplateValues } from './src/utils/whatsappTemplates';
 import { telegramBot } from './server/telegram.js';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -95,10 +95,12 @@ import {
   getPppoeActiveSessionStats,
   getPppoeActiveSessions,
   disconnectPppoeSessions,
+  killPppoeSessionsIfAny,
   getRouterLogs,
   updatePppoeSecret,
   getPppoeSecrets,
 } from './server/mikrotik.js';
+import { planIsolation, resolveRestoreProfile, nextProfileState } from './server/isolir.js';
 
 dotenv.config();
 
@@ -1406,9 +1408,8 @@ async function startServer() {
       ? `Pembayaran online tersedia 24 jam melalui tautan berikut:\n${paymentUrl}`
       : `Rincian tagihan dan pilihan pembayaran:\n${paymentUrl}`;
     const options = [paymentLink, paymentOptions].filter(Boolean).join('\n\n');
-    return renderWhatsAppTemplate('reminder', settings.whatsappTemplates, {
+    return renderWhatsAppTemplate('reminder', settings.whatsappTemplates, whatsappTemplateValues(settings, {
       customer_name: customer.name,
-      business_name: settings.companyName.trim() || settings.brandName.trim() || settings.appName,
       invoice_number: invoice.invoiceNumber,
       package_name: customer.servicePackageName || customer.profileName,
       period,
@@ -1416,7 +1417,7 @@ async function startServer() {
       due_date: invoice.dueDate,
       payment_url: paymentUrl,
       payment_options: options,
-    });
+    }));
 
   }
 
@@ -1545,6 +1546,7 @@ async function startServer() {
 
       let removed = 0;
       let updated = 0;
+      const syncSettings = await getAppSettingsDb();
       const syncedCustomers = customers.flatMap(customer => {
         const routerData = liveDataByRouter.get(customer.routerId);
         if (!routerData) return [customer];
@@ -1554,11 +1556,22 @@ async function startServer() {
           return [];
         }
         const profile = routerData.profiles.find(item => item.name === secret.profile);
+        const isolated = isIsolatedBySettings(customer, secret, syncSettings);
+        const isolirProfile = String(syncSettings.isolirProfiles?.[customer.routerId] || '').trim();
+        const liveProfile = String(secret.profile || '').trim();
+        // Profil isolir tidak pernah menimpa profil asli; profil asli disimpan terpisah di server.
+        const profileState = nextProfileState({
+          currentProfileName: customer.profileName,
+          currentOriginalProfileName: customer.originalProfileName,
+          liveProfile,
+          isolirProfile,
+        });
         const nextCustomer: Customer = {
           ...customer,
-          profileName: secret.profile || customer.profileName,
+          profileName: profileState.profileName,
+          originalProfileName: profileState.originalProfileName,
           bandwidthLimit: profile?.rateLimit || customer.bandwidthLimit,
-          status: secret.disabled
+          status: isolated
             ? 'isolated'
             : customer.status === 'isolated' || customer.status === 'disabled'
               ? 'active'
@@ -1567,6 +1580,7 @@ async function startServer() {
         };
         if (
           nextCustomer.profileName !== customer.profileName ||
+          nextCustomer.originalProfileName !== customer.originalProfileName ||
           nextCustomer.bandwidthLimit !== customer.bandwidthLimit ||
           nextCustomer.status !== customer.status ||
           nextCustomer.ipAddress !== customer.ipAddress
@@ -1581,6 +1595,84 @@ async function startServer() {
       res.status(502).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
+
+  /**
+   * Isolasi pelanggan sesuai settings: kill sesi aktif dulu, lalu nonaktifkan secret
+   * atau ganti ke profil isolir (per router). Mengembalikan catatan hasil.
+   */
+  async function applyIsolation(
+    customer: Customer,
+    settings: Awaited<ReturnType<typeof getAppSettingsDb>>
+  ): Promise<{ ok: boolean; profileName: string; originalProfileName?: string; note: string }> {
+    const router = await resolveRouterConnection(customer.routerId);
+    if (!router) throw new Error('Kredensial router tidak tersedia');
+    const isolirProfile = String(settings.isolirProfiles?.[customer.routerId] || '').trim();
+    const plan = planIsolation({ customer, isolirMethod: settings.isolirMethod, isolirProfile });
+    if (plan.useProfile) {
+      await killPppoeSessionsIfAny(router, customer.pppoeUsername);
+      await updatePppoeSecret(router, customer.pppoeUsername, {
+        disabled: false,
+        profile: isolirProfile,
+      });
+      return {
+        ok: true,
+        profileName: isolirProfile,
+        originalProfileName: plan.originalProfileName,
+        note: `Diisolir dengan profil "${isolirProfile}" di RouterOS (profil asli "${plan.originalProfileName}").`,
+      };
+    }
+    await killPppoeSessionsIfAny(router, customer.pppoeUsername);
+    await updatePppoeSecret(router, customer.pppoeUsername, { disabled: true });
+    return {
+      ok: true,
+      profileName: customer.profileName,
+      note: settings.isolirMethod === 'profile'
+        ? 'Profil isolir belum dipilih untuk router ini; secret dinonaktifkan.'
+        : 'Secret PPPoE dinonaktifkan di RouterOS.',
+    };
+  }
+
+  /** Profil PPP tujuan saat pelanggan dipulihkan dari isolir. */
+  function resolveRestoreProfileFor(
+    customer: Customer,
+    settings: Awaited<ReturnType<typeof getAppSettingsDb>>,
+    targetProfile?: string
+  ): string {
+    return resolveRestoreProfile({
+      customer,
+      isolirProfile: String(settings.isolirProfiles?.[customer.routerId] || ''),
+      targetProfile,
+    });
+  }
+
+  /** Aktifkan kembali pelanggan setelah pembayaran: validasi profil dulu, baru putus sesi isolir dan pulihkan. */
+  async function restoreFromIsolation(
+    customer: Customer,
+    settings: Awaited<ReturnType<typeof getAppSettingsDb>>,
+    targetProfile?: string
+  ): Promise<string> {
+    const router = await resolveRouterConnection(customer.routerId);
+    if (!router) throw new Error('Kredensial router tidak tersedia');
+    const profile = resolveRestoreProfileFor(customer, settings, targetProfile);
+    await killPppoeSessionsIfAny(router, customer.pppoeUsername);
+    await updatePppoeSecret(router, customer.pppoeUsername, {
+      disabled: false,
+      profile,
+    });
+    return profile;
+  }
+
+  /** True bila secret/router sudah berada pada kondisi isolir sesuai settings. */
+  function isIsolatedBySettings(
+    customer: Customer,
+    secret: { disabled: boolean; profile: string } | undefined,
+    settings: Awaited<ReturnType<typeof getAppSettingsDb>>
+  ): boolean {
+    if (!secret) return false;
+    if (settings.isolirMethod !== 'profile') return secret.disabled;
+    const isolirProfile = String(settings.isolirProfiles?.[customer.routerId] || '').trim();
+    return Boolean(isolirProfile) && secret.profile === isolirProfile;
+  }
 
   const voucherApprovalsInProgress = new Set<string>();
   async function activateAndSettleVoucher(orderId: string, paymentChannel: string): Promise<void> {
@@ -1627,14 +1719,13 @@ async function startServer() {
     );
 
     const settings = await getAppSettingsDb();
-    const deliveryMessage = renderWhatsAppTemplate('voucherDelivery', settings.whatsappTemplates, {
+    const deliveryMessage = renderWhatsAppTemplate('voucherDelivery', settings.whatsappTemplates, whatsappTemplateValues(settings, {
       customer_name: transaction.customerName,
-      business_name: settings.companyName.trim() || settings.brandName.trim() || settings.appName,
       package_name: voucher.profileName,
       voucher_code: voucher.code,
       voucher_password: voucher.password || voucher.code,
       validity: voucher.validityDuration,
-    });
+    }));
     try {
       const sent = await sendWhatsAppMessage(transaction.customerPhone, deliveryMessage);
       await recordWhatsAppLog(transaction.customerPhone, transaction.customerName, 'voucher_delivery', deliveryMessage, 'sent', JSON.stringify(sent.data));
@@ -1687,17 +1778,18 @@ async function startServer() {
         );
         let routerActivated = false;
         let activationNote = 'Akses router belum diaktifkan.';
+        let restoredProfile = '';
         try {
-          const router = await resolveRouterConnection(customer.routerId);
-          if (!router) throw new Error('Kredensial router tidak tersedia');
-          await updatePppoeSecret(router, customer.pppoeUsername, {
-            disabled: false,
-            ...(scheduledPackage ? { profile: scheduledPackage.routerProfileName } : {}),
-          });
+          const settings = await getAppSettingsDb();
+          restoredProfile = await restoreFromIsolation(
+            customer,
+            settings,
+            scheduledPackage ? scheduledPackage.routerProfileName : undefined
+          );
           routerActivated = true;
           activationNote = scheduledPackage
             ? `Paket PPPoE diubah ke ${scheduledPackage.name} di RouterOS.`
-            : 'Akses PPPoE diaktifkan di RouterOS.';
+            : `Akses PPPoE diaktifkan kembali pada profil "${restoredProfile}".`;
         } catch (activationError) {
           activationNote = `Akses router belum aktif: ${activationError instanceof Error ? activationError.message : String(activationError)}`;
           console.error(`[Payment] Manual invoice ${invoice.invoiceNumber} approved; RouterOS activation failed: ${activationNote}`);
@@ -1714,7 +1806,8 @@ async function startServer() {
               bandwidthLimit: scheduledPackage.speedLimit,
               monthlyFee: scheduledPackage.monthlyFee,
               pendingPppoePackageId: undefined,
-            } : {}),
+            } : routerActivated && restoredProfile ? { profileName: restoredProfile } : {}),
+            ...(routerActivated ? { originalProfileName: undefined } : {}),
             notes: `Pembayaran ${provider.toUpperCase()} diverifikasi pada ${paidAt}. ${activationNote}`,
           }
           : item);
@@ -1732,13 +1825,12 @@ async function startServer() {
       const appUrl = await configuredPaymentAppUrl();
       const billingUrl = appUrl ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(token)}` : '';
       const settings = await getAppSettingsDb();
-      const message = renderWhatsAppTemplate('paymentSuccess', settings.whatsappTemplates, {
+      const message = renderWhatsAppTemplate('paymentSuccess', settings.whatsappTemplates, whatsappTemplateValues(settings, {
         customer_name: customer.name,
-        business_name: settings.companyName.trim() || settings.brandName.trim() || settings.appName,
         invoice_number: invoice.invoiceNumber,
         amount: `${settings.currencySymbol || 'Rp'} ${invoice.totalAmount.toLocaleString('id-ID')}`,
         service_until: customer.expiredDate,
-      }) + (billingUrl ? `\n\nLihat tagihan berikutnya:\n${billingUrl}` : '');
+      })) + (billingUrl ? `\n\nLihat tagihan berikutnya:\n${billingUrl}` : '');
       try {
         const sent = await sendWhatsAppMessage(customer.phone, message);
         await recordWhatsAppLog(customer.phone, customer.name, 'payment_success', message, 'sent', JSON.stringify(sent.data));
@@ -2702,6 +2794,25 @@ async function startServer() {
         const operatorUrl = operatorWhatsapp
           ? `https://wa.me/${operatorWhatsapp}?text=${encodeURIComponent(contactMessage)}`
           : '';
+        try {
+          await sendWhatsAppMessage(
+            phone.trim(),
+            renderWhatsAppTemplate('manualVoucher', settings.whatsappTemplates, whatsappTemplateValues(settings, {
+              customer_name: customerName.trim(),
+              package_name: profile.name,
+              payment_code: paymentCode,
+              amount: `${settings.currencySymbol || 'Rp'} ${profile.price.toLocaleString('id-ID')}`,
+              method: manualMethod!.name,
+              account_holder: manualMethod!.accountHolder || manualMethod!.serviceName || '-',
+              account_number: manualMethod!.accountNumber || '-',
+              validity: profile.validityDuration,
+              notes: manualMethod!.instructions,
+              operator_url: operatorUrl || 'Hubungi nomor WhatsApp operator yang tersedia.',
+            }))
+          );
+        } catch (error) {
+          console.error(`[WhatsApp] Could not send manual voucher payment instructions for ${orderId}:`, error);
+        }
         return res.status(201).json({
           orderId,
           paymentCode,
@@ -3316,6 +3427,25 @@ async function startServer() {
       const operatorUrl = operatorWhatsapp
         ? `https://wa.me/${operatorWhatsapp}?text=${encodeURIComponent(contactMessage)}`
         : '';
+      try {
+        await sendWhatsAppMessage(
+          nextTransaction.customerPhone,
+          renderWhatsAppTemplate('manualVoucher', appSettings.whatsappTemplates, whatsappTemplateValues(appSettings, {
+            customer_name: nextTransaction.customerName,
+            package_name: profile.name,
+            payment_code: paymentCode,
+            amount: `${appSettings.currencySymbol || 'Rp'} ${nextTransaction.amount.toLocaleString('id-ID')}`,
+            method: method.name,
+            account_holder: method.accountHolder || method.serviceName || '-',
+            account_number: method.accountNumber || '-',
+            validity: profile.validityDuration,
+            notes: method.instructions,
+            operator_url: operatorUrl || 'Hubungi nomor WhatsApp operator yang tersedia.',
+          }))
+        );
+      } catch (error) {
+        console.error(`[WhatsApp] Could not send manual voucher payment instructions for ${orderIdNext}:`, error);
+      }
 
       return res.status(201).json({
         found: true,
@@ -4344,6 +4474,59 @@ async function startServer() {
     }
   });
 
+  /**
+   * Isolir / aktifkan pelanggan sepenuhnya di server: RouterOS + status billing + profil asli.
+   * Client tidak menyimpan state apa pun; semua keputusan ada di sini.
+   */
+  app.post('/api/admin/customers/:customerId/isolation', requireAdminSession, async (req, res) => {
+    const action = req.body?.action;
+    if (action !== 'isolate' && action !== 'activate') {
+      return res.status(400).json({ error: 'Aksi harus "isolate" atau "activate"' });
+    }
+    try {
+      const stored = await getAppDataDb();
+      const customer = (stored.data.customers || []).find(item => item.id === req.params.customerId);
+      if (!customer) return res.status(404).json({ error: 'Data pelanggan tidak ditemukan' });
+      const settings = await getAppSettingsDb();
+      let routerNote = '';
+      let routerUpdated = false;
+      let nextOriginalProfileName: string | undefined = customer.originalProfileName;
+      try {
+        if (action === 'isolate') {
+          const result = await applyIsolation(customer, settings);
+          routerNote = result.note;
+          routerUpdated = true;
+          if (result.originalProfileName) nextOriginalProfileName = result.originalProfileName;
+        } else {
+          const restoredProfile = await restoreFromIsolation(customer, settings);
+          routerUpdated = true;
+          nextOriginalProfileName = undefined;
+          routerNote = `Akses PPPoE diaktifkan kembali pada profil "${restoredProfile}".`;
+        }
+      } catch (routerError) {
+        routerNote = routerError instanceof Error ? routerError.message : String(routerError);
+      }
+      const nextStatus: Customer['status'] = routerUpdated
+        ? (action === 'isolate' ? 'isolated' : 'active')
+        : customer.status;
+      const latest = await getAppDataDb();
+      const updated = (latest.data.customers || []).map(item => item.id === customer.id
+        ? {
+          ...item,
+          status: nextStatus,
+          originalProfileName: nextOriginalProfileName,
+          notes: action === 'isolate'
+            ? `Status billing diisolir manual oleh NOC. ${routerNote}`
+            : `Status billing diaktifkan manual oleh NOC. ${routerNote}`,
+        }
+        : item);
+      await saveAppDataCollectionDb('customers', updated);
+      res.json({ status: nextStatus, routerUpdated, note: routerNote, profileName: customer.profileName });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post('/api/admin/customers/:customerId/payment-link', requireAdminSession, async (req, res) => {
     try {
       const stored = await getAppDataDb();
@@ -4841,9 +5024,8 @@ async function startServer() {
         try {
           await sendWhatsAppMessage(
             customer.phone,
-            renderWhatsAppTemplate('manualInvoice', appSettings.whatsappTemplates, {
+            renderWhatsAppTemplate('manualInvoice', appSettings.whatsappTemplates, whatsappTemplateValues(appSettings, {
               customer_name: customer.name,
-              business_name: appSettings.companyName.trim() || appSettings.brandName.trim() || appSettings.appName,
               invoice_number: invoice.invoiceNumber,
               payment_code: paymentCode,
               amount: `${appSettings.currencySymbol || 'Rp'} ${invoice.totalAmount.toLocaleString('id-ID')}`,
@@ -4853,7 +5035,7 @@ async function startServer() {
               notes: method.instructions,
               expires_at: new Date(expiresAt).toLocaleString('id-ID'),
               operator_url: operatorUrl || 'Hubungi nomor WhatsApp operator yang tersedia.',
-            })
+            }))
           );
         } catch (error) {
           console.error(`[WhatsApp] Could not send manual invoice payment instructions for ${transaction.orderId}:`, error);
@@ -5664,6 +5846,21 @@ async function startServer() {
           return res.status(400).json({ error: 'Zona waktu tidak dikenali' });
         }
       }
+      if (settingsInput.isolirMethod !== undefined &&
+        settingsInput.isolirMethod !== 'disable' && settingsInput.isolirMethod !== 'profile') {
+        return res.status(400).json({ error: 'Perilaku isolir harus "disable" atau "profile"' });
+      }
+      if (settingsInput.isolirProfiles !== undefined) {
+        const profiles = settingsInput.isolirProfiles;
+        if (!isRecord(profiles) || Object.values(profiles).some(value =>
+          typeof value !== 'string' || value.length > 64 || (value.trim() && !/^[A-Za-z0-9_. -]+$/.test(value))
+        )) {
+          return res.status(400).json({ error: 'Pemetaan profil isolir per router tidak valid' });
+        }
+        settingsInput.isolirProfiles = Object.fromEntries(
+          Object.entries(profiles).filter(([, value]) => String(value).trim())
+        );
+      }
       if (settingsInput.whatsappTemplates !== undefined) {
         const templateKeys = ['reminder', 'isolir', 'paymentSuccess', 'manualInvoice', 'manualVoucher', 'voucherDelivery'];
         if (!isRecord(settingsInput.whatsappTemplates) || Object.entries(settingsInput.whatsappTemplates).some(([key, value]) =>
@@ -6122,6 +6319,13 @@ async function startServer() {
     try {
       const router = await resolveRouterConnection(req.params.routerId);
       if (!router) return res.status(404).json({ error: 'Router not found or credential is unavailable' });
+      const settings = await getAppSettingsDb();
+      const isolirProfile = String(settings.isolirProfiles?.[req.params.routerId] || '').trim();
+      const targetingIsolir = disabled === true ||
+        (profile !== undefined && settings.isolirMethod === 'profile' && profile === isolirProfile);
+      if (targetingIsolir) {
+        await killPppoeSessionsIfAny(router, req.params.username);
+      }
       await updatePppoeSecret(router, req.params.username, { password, profile, disabled, comment });
       res.json({ status: 'success' });
     } catch (error) {
@@ -7156,13 +7360,16 @@ async function startServer() {
       );
       for (const customer of endingCustomers) {
         try {
-          const router = await resolveRouterConnection(customer.routerId);
-          if (!router) throw new Error('Kredensial router tidak tersedia');
-          await updatePppoeSecret(router, customer.pppoeUsername, { disabled: true });
+          const { note, originalProfileName } = await applyIsolation(customer, settings);
           const latest = await getAppDataDb();
           const updatedCustomers = (latest.data.customers || []).map(item =>
             item.id === customer.id
-              ? { ...item, status: 'disabled' as const, notes: `Langganan dihentikan sesuai permintaan pada ${new Date().toISOString()}.` }
+              ? {
+                ...item,
+                status: 'disabled' as const,
+                ...(originalProfileName ? { originalProfileName } : {}),
+                notes: `Langganan dihentikan sesuai permintaan pada ${new Date().toISOString()}. ${note}`,
+              }
               : item
           );
           await savePublicPaymentUpdateDb(
@@ -7226,13 +7433,6 @@ async function startServer() {
         .filter(customer => !customer.cancelAtExpiry && (customer.status !== 'active' || customer.expiredDate <= dueTomorrow))
         .map(customer => ensureDueInvoice(customer.id, true)));
       stored = await getAppDataDb();
-      if (!settings.autoSendReminderH1) return;
-      const cancellationLogs = stored.data.whatsappLogs || [];
-      const cancellationNoticeInvoices = (stored.data.invoices || []).filter(invoice =>
-        invoice.status === 'canceled' &&
-        invoice.cancellationReason === 'grace_period' &&
-        invoice.canceledAt
-      );
       let bulkWhatsAppMessagesAttempted = 0;
       const waitForBulkWhatsAppSlot = async () => {
         if (bulkWhatsAppMessagesAttempted > 0 && WA_BULK_DELAY_MS > 0) {
@@ -7240,6 +7440,78 @@ async function startServer() {
         }
         bulkWhatsAppMessagesAttempted += 1;
       };
+      if (settings.autoSendIsolir) {
+        const activeCustomers = (stored.data.customers || []).filter(customer =>
+          customer.status === 'active' &&
+          !customer.cancelAtExpiry &&
+          /^\d{4}-\d{2}-\d{2}$/.test(customer.expiredDate || '') &&
+          customer.expiredDate < today
+        );
+        if (activeCustomers.length) {
+          const isolirLogs = stored.data.whatsappLogs || [];
+          for (const customer of activeCustomers) {
+            try {
+              const pendingInvoiceIds = (stored.data.invoices || [])
+                .filter(invoice => invoice.customerId === customer.id && invoice.status === 'unpaid')
+                .map(invoice => invoice.id);
+              const hasUnexpiredPayment = (stored.data.transactions || []).some(transaction =>
+                transaction.orderType === 'invoice' &&
+                pendingInvoiceIds.includes(transaction.invoiceId || '') &&
+                transaction.status === 'pending' &&
+                transaction.expiresAt &&
+                new Date(transaction.expiresAt).getTime() > now.getTime()
+              );
+              if (hasUnexpiredPayment) continue;
+              const { note, originalProfileName } = await applyIsolation(customer, settings);
+              const latest = await getAppDataDb();
+              await saveAppDataCollectionDb('customers', (latest.data.customers || []).map(item =>
+                item.id === customer.id
+                  ? {
+                    ...item,
+                    status: 'isolated' as const,
+                    ...(originalProfileName ? { originalProfileName } : {}),
+                    notes: `Isolir otomatis ${today}. ${note}`,
+                  }
+                  : item
+              ));
+              const marker = `auto-isolir:${customer.id}:${today}`;
+              if (isolirLogs.some(log => log.type === 'isolated' && log.responseInfo?.includes(marker) && log.status === 'sent')) continue;
+              if (!customer.phone) continue;
+              const secret = await getOrCreatePortalLinkSecretDb();
+              const token = createPortalLinkToken({ customerId: customer.id }, Date.now() + 30 * 24 * 60 * 60 * 1000, secret);
+              const appUrl = await configuredPaymentAppUrl();
+              const paymentUrl = appUrl ? `${appUrl.origin}/portal/billing?token=${encodeURIComponent(token)}` : '';
+              const message = renderWhatsAppTemplate('isolir', settings.whatsappTemplates, whatsappTemplateValues(settings, {
+                customer_name: customer.name,
+                payment_url: paymentUrl,
+                invoice_number: pendingInvoiceIds[0]
+                  ? (stored.data.invoices || []).find(invoice => invoice.id === pendingInvoiceIds[0])?.invoiceNumber || ''
+                  : '',
+                due_date: customer.expiredDate,
+              }));
+              try {
+                await waitForBulkWhatsAppSlot();
+                const sent = await sendWhatsAppMessage(customer.phone, message);
+                await recordWhatsAppLog(customer.phone, customer.name, 'isolated', message, 'sent', `${marker}:${sent.provider}`);
+              } catch (error) {
+                const failure = error instanceof Error ? error.message : String(error);
+                console.error(`[Isolir] WhatsApp notice failed for ${customer.customerId}: ${failure}`);
+                await recordWhatsAppLog(customer.phone, customer.name, 'isolated', message, 'failed', `${marker}:${failure}`);
+              }
+            } catch (error) {
+              console.error(`[Isolir] Failed to isolate customer ${customer.customerId}:`, error);
+            }
+          }
+          stored = await getAppDataDb();
+        }
+      }
+      if (!settings.autoSendReminderH1) return;
+      const cancellationLogs = stored.data.whatsappLogs || [];
+      const cancellationNoticeInvoices = (stored.data.invoices || []).filter(invoice =>
+        invoice.status === 'canceled' &&
+        invoice.cancellationReason === 'grace_period' &&
+        invoice.canceledAt
+      );
       for (const invoice of cancellationNoticeInvoices) {
         const marker = `invoice-canceled:${invoice.id}`;
         const attempts = cancellationLogs
@@ -7386,6 +7658,37 @@ async function startServer() {
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : 'OpenWA status request failed' });
     }
+  });
+
+  // Captive portal probe: OS menjawab "Masuk ke jaringan" hanya bila probe HTTP-nya
+  // dijawab redirect, bukan 204/teks yang diharapkan. Dipakai saat pelanggan isolir.
+  const CAPTIVE_PROBE_PATHS = [
+    '/generate_204',
+    '/gen_204',
+    '/hotspot-detect.html',
+    '/library/test/success.html',
+    '/connecttest.txt',
+    '/redirect',
+    '/ncsi.txt',
+    '/success.txt',
+  ];
+
+  app.get('/captive-portal', requireAdminSession, async (_req, res) => {
+    const appUrl = await configuredPaymentAppUrl();
+    res.json({
+      enabled: true,
+      portalUrl: appUrl ? `${appUrl.origin}/portal/billing` : null,
+      probePaths: CAPTIVE_PROBE_PATHS,
+    });
+  });
+
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    if (!CAPTIVE_PROBE_PATHS.includes(req.path)) return next();
+    void configuredPaymentAppUrl().then(appUrl => {
+      if (!appUrl) return next();
+      res.redirect(302, `${appUrl.origin}/portal/billing`);
+    }).catch(() => next());
   });
 
   // In production, serve dist folder; in dev, Vite handles it or can be started via vite CLI

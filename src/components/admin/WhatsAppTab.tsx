@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { WhatsAppLog, WhatsAppGatewayConfig, WhatsAppTemplateKey, WhatsAppTemplates } from '../../types';
+import { WhatsAppLog, WhatsAppGatewayConfig, WhatsAppTemplateKey, WhatsAppTemplates, AppSettings } from '../../types';
 import { StorageService } from '../../services/storage';
-import { DEFAULT_WHATSAPP_TEMPLATES, renderWhatsAppTemplate, WHATSAPP_TEMPLATE_TOKENS } from '../../utils/whatsappTemplates';
+import { DEFAULT_WHATSAPP_TEMPLATES, renderWhatsAppTemplate, WHATSAPP_TEMPLATE_TOKENS, whatsappTemplateValues } from '../../utils/whatsappTemplates';
 import { useToast } from '../ui/toast';
 import {
   Send,
@@ -64,6 +64,7 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
   const [fonnteToken, setFonnteToken] = useState('');
   const [savingGatewayConfig, setSavingGatewayConfig] = useState(false);
   const [waConfigError, setWaConfigError] = useState('');
+  const [sessionCheckError, setSessionCheckError] = useState('');
   const [checkingSession, setCheckingSession] = useState(false);
 
   // Quick message tester form
@@ -78,12 +79,15 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
   const [savingTemplates, setSavingTemplates] = useState(false);
   const [templatesLoaded, setTemplatesLoaded] = useState(false);
   const [templatesLoadError, setTemplatesLoadError] = useState('');
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
 
   useEffect(() => {
     void fetch('/api/settings').then(async response => {
       const settings = await response.json();
+      if (response.status === 401) throw new Error('Sesi admin berakhir. Login ulang untuk memuat pengaturan WhatsApp.');
       if (!response.ok) throw new Error(settings.error || `HTTP ${response.status}`);
       setTemplates({ ...DEFAULT_WHATSAPP_TEMPLATES, ...settings.whatsappTemplates });
+      setAppSettings(settings as AppSettings);
       setTemplatesLoaded(true);
     }).catch(error => {
       const message = error instanceof Error ? error.message : String(error);
@@ -95,6 +99,7 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
   const loadWhatsAppConfig = async () => {
     const response = await fetch('/api/wa/config');
     const result = await response.json() as WhatsAppEnvironmentConfig & { error?: string };
+    if (response.status === 401) throw new Error('Sesi admin berakhir. Login ulang untuk membuka panel WhatsApp.');
     if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
     setWaEnvironment(result);
     setFonnteApiUrl(result.fonnteApiUrl);
@@ -218,27 +223,29 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
     voucherDelivery: 'Pengiriman voucher aktif',
   };
 
-  const templatePreview = renderWhatsAppTemplate(selectedMessageTemplate, templates, {
-    customer_name: 'Budi Santoso',
-    business_name: 'SmartBilling',
-    invoice_number: 'INV-202610-001',
-    package_name: 'Paket Internet 20 Mbps',
-    period: '10/2026',
-    amount: 'Rp 250.000',
-    due_date: '25 Oktober 2026',
-    payment_url: 'https://billing.example/portal',
-    payment_options: 'DANA: 081234567890\nAtas nama: SmartBilling\nTransfer dan kirim bukti pembayaran.',
-    payment_code: 'SBM-A1B2C3D4',
-    method: 'DANA',
-    account_holder: 'SmartBilling',
-    account_number: '081234567890',
-    notes: 'Transfer sesuai nominal, lalu kirim bukti pembayaran.',
-    operator_url: 'https://wa.me/6281234567890',
-    service_until: '25 November 2026',
-    voucher_code: 'NET-12345',
-    voucher_password: 'NET-12345',
-    validity: '30 hari',
-  });
+  const templatePreview = renderWhatsAppTemplate(selectedMessageTemplate, templates, whatsappTemplateValues(
+    appSettings ?? { companyName: '', brandName: '', appName: 'SmartBilling' },
+    {
+      customer_name: 'Budi Santoso',
+      invoice_number: 'INV-202610-001',
+      package_name: 'Paket Internet 20 Mbps',
+      period: '10/2026',
+      amount: 'Rp 250.000',
+      due_date: '25 Oktober 2026',
+      payment_url: 'https://billing.example/portal',
+      payment_options: 'DANA: 081234567890\nAtas nama: SmartBilling\nTransfer dan kirim bukti pembayaran.',
+      payment_code: 'SBM-A1B2C3D4',
+      method: 'DANA',
+      account_holder: 'SmartBilling',
+      account_number: '081234567890',
+      notes: 'Transfer sesuai nominal, lalu kirim bukti pembayaran.',
+      operator_url: 'https://wa.me/6281234567890',
+      service_until: '25 November 2026',
+      voucher_code: 'NET-12345',
+      voucher_password: 'NET-12345',
+      validity: '30 hari',
+    },
+  ));
 
   const handleCheckSessionStatus = async () => {
     setCheckingSession(true);
@@ -249,6 +256,7 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
       const sessionStatus = ['connected', 'disconnected', 'scan_qr', 'starting'].includes(result.status)
         ? result.status
         : 'disconnected';
+      setSessionCheckError('');
       setConfig(prev => ({
         ...prev,
         sessionStatus,
@@ -260,8 +268,10 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
         result.message,
       );
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSessionCheckError(message);
       setConfig(prev => ({ ...prev, sessionStatus: 'disconnected' }));
-      toast('Gagal memeriksa status sesi OpenWA', 'error', error instanceof Error ? error.message : String(error));
+      toast('Gagal memeriksa status sesi OpenWA', 'error', message);
     } finally {
       setCheckingSession(false);
     }
@@ -311,6 +321,35 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
 
   return (
     <div className="space-y-6">
+      {waConfigError && (
+        <div role="alert" className="rounded-2xl border border-rose-500/40 bg-rose-950/50 p-4 text-xs text-rose-200">
+          <p className="font-bold text-rose-100">Panel WhatsApp tidak dapat dimuat</p>
+          <p className="mt-1">{waConfigError}</p>
+          <button
+            type="button"
+            onClick={() => { setWaConfigError(''); loadWhatsAppConfig().catch(error => setWaConfigError(error instanceof Error ? error.message : String(error))); }}
+            className="mt-2 rounded-lg border border-rose-400/40 px-2.5 py-1 font-semibold text-rose-100 hover:bg-rose-900/60"
+          >
+            Muat ulang konfigurasi
+          </button>
+        </div>
+      )}
+      {waEnvironment?.managedByEnvironment && (
+        <div className="rounded-2xl border border-amber-500/40 bg-amber-950/40 p-4 text-xs text-amber-200">
+          <p className="font-bold text-amber-100">Konfigurasi WhatsApp dikunci environment server</p>
+          <p className="mt-1">
+            Variabel <code className="font-mono">.env</code> diisi, jadi field terkait sengaja di-nonaktifkan dari dashboard. Ubah di <code className="font-mono">.env</code> lalu restart server.
+          </p>
+          <ul className="mt-2 space-y-0.5 font-mono text-[11px] text-amber-300/90">
+            <li>WA_PROVIDER — pilihan provider</li>
+            {waEnvironment.baseUrlManagedByEnvironment && <li>OPENWA_BASE_URL — OpenWA Base URL</li>}
+            {waEnvironment.sessionIdManagedByEnvironment && <li>OPENWA_SESSION_ID — OpenWA Session ID</li>}
+            {waEnvironment.apiKeyManagedByEnvironment && <li>OPENWA_API_KEY — OpenWA API key</li>}
+            {waEnvironment.fonnteApiUrlManagedByEnvironment && <li>FONNTE_API_URL — Fonnte API URL</li>}
+            {waEnvironment.fonnteTokenManagedByEnvironment && <li>FONNTE_TOKEN — Fonnte token</li>}
+          </ul>
+        </div>
+      )}
       {/* Provider REST integration banner */}
       <div className="bg-gradient-to-r from-slate-900 via-emerald-950/40 to-slate-900 border border-emerald-500/30 rounded-2xl p-6 shadow-xl relative overflow-hidden">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
@@ -499,6 +538,21 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
                   </p>
                 </>
               )}
+              <ul className="mt-2 space-y-0.5 border-t border-slate-800 pt-2 text-[11px] text-slate-400">
+                <li>Provider: <span className="font-mono text-slate-300">{config.provider}</span></li>
+                <li>Kunci environment: <span className={waEnvironment?.managedByEnvironment ? 'text-amber-300' : 'text-slate-300'}>{waEnvironment ? (waEnvironment.managedByEnvironment ? 'ya (WA_PROVIDER)' : 'tidak') : 'belum termuat'}</span></li>
+                <li>Kredensial API key/token: <span className={waEnvironment?.tokenConfigured ? 'text-emerald-400' : 'text-rose-300'}>{waEnvironment ? (waEnvironment.tokenConfigured ? 'terkonfigurasi' : 'belum') : 'belum termuat'}</span></li>
+                <li>Base URL: <span className="font-mono text-slate-300">{config.openwaUrl || '—'}</span></li>
+              </ul>
+              {sessionCheckError && (
+                <div className="mt-2 rounded-lg border border-rose-500/40 bg-rose-950/40 p-2 text-[11px] text-rose-200">
+                  <p className="font-semibold">Provider menolak kredensial dari server</p>
+                  <p className="mt-0.5 break-words font-mono">{sessionCheckError}</p>
+                  <p className="mt-1 text-rose-300/80">
+                    Perbaiki nilai di <code className="font-mono">.env</code> (OpenWA: <code className="font-mono">OPENWA_API_KEY</code> / <code className="font-mono">OPENWA_BASE_URL</code>), lalu restart server.
+                  </p>
+                </div>
+              )}
             </div>
             <p className="text-[11px] text-slate-400">
               {waEnvironment?.managedByEnvironment
@@ -679,21 +733,21 @@ export const WhatsAppTab: React.FC<Props> = ({ waLogs, waConfig, onRefreshData }
           <textarea
             rows={12}
             maxLength={4000}
-            value={templates[selectedMessageTemplate]}
+            value={templates[selectedMessageTemplate] || ''}
             onChange={event => setTemplates(current => ({ ...current, [selectedMessageTemplate]: event.target.value }))}
             className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs leading-relaxed text-white outline-none focus:border-emerald-500"
           />
-          <p className="mt-1 text-right text-[10px] text-slate-500">{templates[selectedMessageTemplate].length}/4000 karakter</p>
+          <p className="mt-1 text-right text-[10px] text-slate-500">{(templates[selectedMessageTemplate] || '').length}/4000 karakter</p>
         </div>
         <div>
           <p className="mb-2 text-xs font-semibold text-slate-300">Kode dinamis — klik untuk menambahkan</p>
           <div className="flex flex-wrap gap-2">
-            {WHATSAPP_TEMPLATE_TOKENS[selectedMessageTemplate].map(token => (
-              <button key={token} type="button" onClick={() => setTemplates(current => ({
+            {WHATSAPP_TEMPLATE_TOKENS[selectedMessageTemplate].map(item => (
+              <button key={item.token} type="button" title={item.label} onClick={() => setTemplates(current => ({
                 ...current,
-                [selectedMessageTemplate]: `${current[selectedMessageTemplate]}{{${token}}}`,
+                [selectedMessageTemplate]: `${current[selectedMessageTemplate]}{{${item.token}}}`,
               }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 font-mono text-[10px] text-emerald-300 hover:border-emerald-500">
-                {`{{${token}}}`}
+                {`{{${item.token}}}`}
               </button>
             ))}
           </div>

@@ -311,7 +311,24 @@ Uji portal dari perangkat yang belum login. Untuk pembayaran otomatis, hostname 
 
 ## 🔒 Operasi Isolir PPPoE MikroTik
 
-Status isolir billing tidak otomatis mengubah akses MikroTik. Saat mengubah status pelanggan, operator dapat mengonfirmasi secara terpisah apakah secret PPPoE juga harus dinonaktifkan atau diaktifkan. Perbedaan status billing dan secret ditandai pada daftar pelanggan, dengan aksi untuk menyelaraskan secret setelah konfirmasi. Pengiriman notifikasi isolir otomatis hanya dilakukan setelah RouterOS berhasil mengonfirmasi secret dinonaktifkan. Pembatalan langganan yang dijadwalkan tetap menonaktifkan secret saat masa layanan berakhir; isolir otomatis semata-mata karena tagihan jatuh tempo tidak diimplementasikan.
+Isolir otomatis berjalan di background scheduler: pelanggan berstatus `active` yang `expiredDate`-nya sudah lewat (H+1) dan tidak punya pembayaran pending yang masih berlaku akan diputus sesi PPPoE-nya lalu diisolir, status billing menjadi `isolated`, dan notifikasi isolir dikirim via WhatsApp (mengikuti saklar `autoSendIsolir`).
+
+Perilaku isolir diatur di **Pengaturan → Billing & voucher → Perilaku isolir**:
+
+1. **Nonaktifkan secret PPPoE** (default, perilaku lama) — sesi aktif diputus lebih dulu, lalu secret `disabled`. Remote pelanggan tidak bisa masuk sampai secret diaktifkan.
+2. **Ganti ke profil PPPoE isolir** — sesi aktif diputus, secret tetap aktif dengan profil isolir pilihan per router. Trafik di-drop firewall sehingga hanya Portal Pembayaran yang bisa dibuka; remote pelanggan tetap bisa diakses. Pilih profil isolir per router pada panel yang sama; bila profil belum dipilih, sistem kembali ke opsi 1.
+
+Pembayaran yang dikonfirmasi (manual, gateway, atau tombol aktifkan) akan memutus sesi isolir dan mengembalikan profil normal pelanggan. Perintah PPPoE manual dari menu pelanggan/MikroTik juga memutus sesi lebih dulu bila tujuannya isolir.
+
+### Menyiapkan profil isolir + captive portal
+
+Panduan lengkap pembuatan pool, PPP profile isolir, address-list, rule firewall `drop`, captive portal opsional, dan bypass Portal Pembayaran ada di [docs/isolir-profile.md](docs/isolir-profile.md).
+
+Ringkasnya: pelanggan isolir memakai pool khusus, rule firewall mengizinkan DNS + Portal Pembayaran lalu `drop` sisanya, dan pelanggan menerima pesan WhatsApp isolir dengan tautan langsung ke portal pembayaran.
+
+Captive portal untuk isolir PPPoE memakai **NAT redirect HTTP berbasis IP** (`src-address-list`), bukan `/ip hotspot`. Hotspot RouterOS bekerja di interface L2 dan tidak menjangkau sesi PPPoE; memasangnya di bridge yang sama dengan hotspot voucher tidak akan mengenai pelanggan PPPoE, tetapi justru mengalihkan semua pelanggan voucher ke portal billing.
+
+Notifikasi "Masuk ke jaringan" pada perangkat pelanggan muncul bila URL probe OS (mis. `/generate_204` untuk Android, `/connecttest.txt` untuk Windows, `/hotspot-detect.html` untuk Apple) sampai ke server billing dan dijawab redirect. Server sudah menjawab rute tersebut dengan `302` ke Portal Pembayaran; yang perlu ditambahkan hanya rule firewall agar probe tidak di-drop.
 
 ## 💳 Pembayaran Invoice
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+﻿import React, { useState, useEffect } from "react";
 import {
   Customer,
   Invoice,
@@ -35,8 +35,9 @@ import {
 } from "lucide-react";
 import { ToastProvider, useToast } from "./components/ui/toast";
 import { ThemeProvider } from "./components/ui/theme";
+import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { Button } from "./components/ui/button";
-import { renderWhatsAppTemplate } from "./utils/whatsappTemplates";
+import { renderWhatsAppTemplate, whatsappTemplateValues } from "./utils/whatsappTemplates";
 
 const adminTabLabels: Record<string, string> = {
   dashboard: "Dashboard",
@@ -80,9 +81,9 @@ function AppContent() {
       "'": "&apos;",
     })[character] || character);
     const icon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#10b981"/></linearGradient></defs><rect width="64" height="64" rx="18" fill="#0b1222"/><rect x="5" y="5" width="54" height="54" rx="15" fill="url(#g)"/><text x="32" y="44" fill="#fff" font-family="Arial,sans-serif" font-size="39" font-weight="800" text-anchor="middle">${escapedInitial}</text></svg>`;
-    document.title = `${name} — ISP Billing & Hotspot`;
+    document.title = `${name} â€” ISP Billing & Hotspot`;
     const description = appSettings.tagline.trim()
-      ? `${appSettings.tagline.trim()} — Kelola pelanggan PPPoE, voucher hotspot, dan tagihan dengan ${name}.`
+      ? `${appSettings.tagline.trim()} â€” Kelola pelanggan PPPoE, voucher hotspot, dan tagihan dengan ${name}.`
       : `Kelola pelanggan PPPoE, voucher hotspot, tagihan, pendapatan, dan router MikroTik dengan ${name}.`;
     const socialImage = new URL("/og-image.svg", window.location.origin).href;
     const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]') || document.createElement("link");
@@ -96,14 +97,14 @@ function AppContent() {
       const meta = document.querySelector<HTMLMetaElement>(selector);
       if (meta) meta.content = content;
     };
-    updateMeta('meta[property="og:title"]', `${name} — ISP Billing & Hotspot`);
+    updateMeta('meta[property="og:title"]', `${name} â€” ISP Billing & Hotspot`);
     updateMeta('meta[name="description"]', description);
     updateMeta('meta[property="og:description"]', description);
     updateMeta('meta[property="og:site_name"]', name);
     updateMeta('meta[property="og:image"]', socialImage);
     updateMeta('meta[name="twitter:description"]', description);
     updateMeta('meta[name="twitter:image"]', socialImage);
-    updateMeta('meta[name="twitter:title"]', `${name} — ISP Billing & Hotspot`);
+    updateMeta('meta[name="twitter:title"]', `${name} â€” ISP Billing & Hotspot`);
   }, [appSettings.appName, appSettings.brandName, appSettings.brandIconDataUrl, appSettings.tagline]);
 
   // App Data
@@ -260,7 +261,7 @@ function AppContent() {
           toast(
             "Pelanggan disinkronkan dari MikroTik",
             "success",
-            `${result.removed} dihapus dari billing · ${result.updated} diperbarui.`,
+            `${result.removed} dihapus dari billing Â· ${result.updated} diperbarui.`,
           );
         }
         setDataSyncError(null);
@@ -345,11 +346,12 @@ function AppContent() {
         paymentLinkCreated = true;
         const invoice = result.invoice as Invoice | null;
         if (invoice) StorageService.saveInvoice(invoice);
-        text = renderWhatsAppTemplate("isolir", appSettings.whatsappTemplates, {
+        text = renderWhatsAppTemplate("isolir", appSettings.whatsappTemplates, whatsappTemplateValues(appSettings, {
           customer_name: customer.name,
-          business_name: appSettings.companyName.trim() || appSettings.brandName.trim() || appSettings.appName,
           payment_url: result.url,
-        });
+          invoice_number: invoice?.invoiceNumber || "",
+          due_date: invoice?.dueDate || customer.expiredDate || "",
+        }));
       } catch (error) {
         setWaError(error instanceof Error ? error.message : String(error));
       }
@@ -417,98 +419,83 @@ function AppContent() {
     const newStatus = isBlocked ? "active" : "isolated";
     if (!await confirmAction(
       `${newStatus === "isolated" ? "Isolir pelanggan" : "Aktifkan pelanggan"}?`,
-      `Status billing ${customer.name} dan secret PPPoE "${customer.pppoeUsername}" di RouterOS akan ${newStatus === "isolated" ? "dinonaktifkan" : "diaktifkan"}.`
+      `Status billing ${customer.name} dan secret PPPoE "${customer.pppoeUsername}" di RouterOS akan ${newStatus === "isolated" ? "diisolir" : "diaktifkan kembali"}. Sesi aktif akan diputus terlebih dahulu.`
     )) return;
 
     let routerUpdated = false;
     let routerUpdateError = "";
+    let routerNote = "";
     try {
       const response = await fetch(
-        `/api/mikrotik/pppoe/secrets/${encodeURIComponent(customer.routerId)}/${encodeURIComponent(customer.pppoeUsername)}`,
+        `/api/admin/customers/${encodeURIComponent(customer.id)}/isolation`,
         {
-          method: "PATCH",
+          method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ disabled: newStatus === "isolated" }),
+          body: JSON.stringify({ action: newStatus === "isolated" ? "isolate" : "activate" }),
         },
       );
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || `RouterOS returned ${response.status}`);
-      routerUpdated = true;
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      routerUpdated = result.routerUpdated === true;
+      routerNote = typeof result.note === "string" ? result.note : "";
+      if (!routerUpdated) routerUpdateError = routerNote;
     } catch (error) {
       routerUpdateError = error instanceof Error ? error.message : String(error);
     }
-    try {
-      const updated: Customer = {
-        ...customer,
-        status: newStatus,
-        notes:
-          newStatus === "isolated"
-            ? `Status billing diisolir manual oleh NOC.${routerUpdated ? " Secret RouterOS juga dinonaktifkan." : " Gagal menyelaraskan akses RouterOS."}`
-            : `Status billing diaktifkan manual oleh NOC.${routerUpdated ? " Secret RouterOS juga diaktifkan." : " Gagal menyelaraskan akses RouterOS."}`,
-      };
-      StorageService.saveCustomer(updated);
 
-      if (newStatus === "isolated" && appSettings.autoSendIsolir && routerUpdated) {
-        let status: "sent" | "failed" = "sent";
-        let responseInfo = "";
-        let message = `PEMBERITAHUAN ISOLIR: Akses internet PPPoE ${customer.name} pada paket ${customer.servicePackageName || customer.profileName} telah dinonaktifkan.`;
-        try {
-          const linkResponse = await fetch(
-            `/api/admin/customers/${encodeURIComponent(customer.id)}/payment-link`,
-            { method: "POST" },
-          );
-          const linkResult = await linkResponse.json();
-          if (!linkResponse.ok)
-            throw new Error(linkResult.error || `HTTP ${linkResponse.status}`);
-          const invoice = linkResult.invoice as Invoice | null;
-          if (invoice) StorageService.saveInvoice(invoice);
-          message = renderWhatsAppTemplate("isolir", appSettings.whatsappTemplates, {
-            customer_name: customer.name,
-            business_name: appSettings.companyName.trim() || appSettings.brandName.trim() || appSettings.appName,
-            payment_url: linkResult.url,
-          });
-          const waResponse = await fetch("/api/wa/send", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ phone: customer.phone, message }),
-          });
-          const waResult = await waResponse.json();
-          if (!waResponse.ok)
-            throw new Error(
-              waResult.error || `OpenWA returned ${waResponse.status}`,
-            );
-          responseInfo = JSON.stringify(waResult.data);
-        } catch (error) {
-          status = "failed";
-          responseInfo = error instanceof Error ? error.message : String(error);
-        }
-        StorageService.addWaLog({
-          recipientPhone: customer.phone,
-          recipientName: customer.name,
-          type: "isolated",
-          message,
-          status,
-          responseInfo,
+    if (newStatus === "isolated" && appSettings.autoSendIsolir && routerUpdated) {
+      let status: "sent" | "failed" = "sent";
+      let responseInfo = "";
+      let message = `PEMBERITAHUAN ISOLIR: Akses internet PPPoE ${customer.name} pada paket ${customer.servicePackageName || customer.profileName} telah dinonaktifkan.`;
+      try {
+        const linkResponse = await fetch(
+          `/api/admin/customers/${encodeURIComponent(customer.id)}/payment-link`,
+          { method: "POST" },
+        );
+        const linkResult = await linkResponse.json();
+        if (!linkResponse.ok)
+          throw new Error(linkResult.error || `HTTP ${linkResponse.status}`);
+        const invoice = linkResult.invoice as Invoice | null;
+        if (invoice) StorageService.saveInvoice(invoice);
+        message = renderWhatsAppTemplate("isolir", appSettings.whatsappTemplates, whatsappTemplateValues(appSettings, {
+          customer_name: customer.name,
+          payment_url: linkResult.url,
+          invoice_number: invoice?.invoiceNumber || "",
+          due_date: invoice?.dueDate || customer.expiredDate || "",
+        }));
+        const waResponse = await fetch("/api/wa/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone: customer.phone, message }),
         });
+        const waResult = await waResponse.json();
+        if (!waResponse.ok)
+          throw new Error(waResult.error || `OpenWA returned ${waResponse.status}`);
+        responseInfo = JSON.stringify(waResult.data);
+      } catch (error) {
+        status = "failed";
+        responseInfo = error instanceof Error ? error.message : String(error);
       }
-
-      refreshAllData();
-      toast(
-        newStatus === "isolated" ? "Status billing diisolir." : "Status billing diaktifkan.",
-        routerUpdateError ? "error" : "success",
-        routerUpdateError
-          ? `Status billing tersimpan, tetapi RouterOS gagal diubah: ${routerUpdateError}`
-          : routerUpdated
-            ? "Billing dan secret RouterOS berhasil diselaraskan."
-            : "RouterOS tidak berhasil diselaraskan."
-      );
-    } catch (error) {
-      toast(
-        "Gagal menyimpan status billing",
-        "error",
-        error instanceof Error ? error.message : String(error),
-      );
+      StorageService.addWaLog({
+        recipientPhone: customer.phone,
+        recipientName: customer.name,
+        type: "isolated",
+        message,
+        status,
+        responseInfo,
+      });
     }
+
+    // Server sudah menyimpan perubahan; tarik ulang snapshot agar state klien tidak menimpa server.
+    await StorageService.syncDataFromSqlite();
+    refreshAllData(false);
+    toast(
+      newStatus === "isolated" ? "Status billing diisolir." : "Status billing diaktifkan.",
+      routerUpdateError ? "error" : "success",
+      routerUpdateError
+        ? `Status billing tersimpan, tetapi RouterOS gagal diubah: ${routerUpdateError}`
+        : routerNote || "Billing dan profil RouterOS berhasil diselaraskan.",
+    );
   };
 
   const pathname = window.location.pathname;
@@ -597,6 +584,7 @@ function AppContent() {
         )}
 
         <main className="mx-auto w-full max-w-7xl flex-1 p-4 sm:p-6 lg:p-8">
+        <ErrorBoundary key={adminTab}>
         {adminTab === "dashboard" && (
           <DashboardTab
             customers={customers}
@@ -667,6 +655,7 @@ function AppContent() {
             section={settingsSection}
           />
         )}
+        </ErrorBoundary>
         </main>
 
       </div>

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Customer, Invoice, Voucher, RouterConfig } from '../../types';
 import { StorageService } from '../../services/storage';
+import { isExpiringSoon } from '../../utils/billing';
 import {
   Activity,
   ArrowUpRight,
@@ -665,10 +666,14 @@ export const DashboardTab: React.FC<Props> = ({
 
   const activeCustomers = customers.filter(c => c.status === 'active').length;
   const isolatedCustomers = customers.filter(c => c.status === 'isolated' || c.status === 'disabled').length;
-  const expiringCustomers = customers.filter(c => c.status === 'expiring').length;
+  const expiringList = customers.filter(c => isExpiringSoon(c));
+  const expiringCustomers = expiringList.length;
   const issuedVouchers = vouchers.filter(v => v.status !== 'pending').length;
 
-  const urgentCustomers = customers.filter(c => c.status === 'isolated' || c.status === 'disabled' || c.status === 'expiring');
+  const urgentCustomers = [
+    ...customers.filter(c => c.status === 'isolated' || c.status === 'disabled'),
+    ...expiringList,
+  ];
 
   const mainRouter = routers.find(router => router.status === 'connected');
 

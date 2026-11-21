@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Customer, Invoice, PppoePackage, RouterConfig } from '../../types';
 import { StorageService } from '../../services/storage';
+import { isExpiringSoon } from '../../utils/billing';
 import { useToast } from '../ui/toast';
 import {
   Users,
@@ -685,7 +686,7 @@ export const CustomersTab: React.FC<Props> = ({
     const action = disabled ? 'Nonaktifkan' : 'Aktifkan';
     if (!await confirmAction(
       `${action} secret PPPoE?`,
-      `Secret "${customer.pppoeUsername}" akan ${disabled ? 'dinonaktifkan' : 'diaktifkan'} langsung pada MikroTik. Status penagihan tidak berubah.${disabled ? ' Jika sedang online, putuskan sesi secara terpisah.' : ''}`,
+      `Secret "${customer.pppoeUsername}" akan ${disabled ? 'dinonaktifkan' : 'diaktifkan'} langsung pada MikroTik. Status penagihan tidak berubah.${disabled ? ' Sesi aktif akan diputus terlebih dahulu.' : ''}`,
       disabled
     )) return;
     const actionKey = `${customer.routerId}:${customer.pppoeUsername}`;
@@ -896,6 +897,7 @@ export const CustomersTab: React.FC<Props> = ({
 
     if (!matchesSearch) return false;
     if (statusFilter === 'all') return true;
+    if (statusFilter === 'expiring') return isExpiringSoon(c);
     return statusFilter === 'isolated'
       ? c.status === 'isolated' || c.status === 'disabled'
       : c.status === statusFilter;
@@ -1029,7 +1031,7 @@ export const CustomersTab: React.FC<Props> = ({
                 statusFilter === 'expiring' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'
               }`}
             >
-              H-1 / H-3 ({customers.filter(c => c.status === 'expiring').length})
+              H-1 / H-3 ({customers.filter(c => isExpiringSoon(c)).length})
             </button>
             <button
               onClick={() => setStatusFilter('isolated')}
@@ -1630,7 +1632,6 @@ export const CustomersTab: React.FC<Props> = ({
                     className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:border-indigo-500"
                   >
                     <option value="active">Aktif</option>
-                    <option value="expiring">Menjelang Expired (H-1/H-3)</option>
                     <option value="isolated">Ter-Isolir (Blokir)</option>
                   </select>
                 </div>

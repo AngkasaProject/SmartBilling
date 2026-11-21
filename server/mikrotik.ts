@@ -368,6 +368,11 @@ export async function disconnectPppoeSessions(router: RouterConnection, name: st
   return disconnected;
 }
 
+/** Kill sesi PPPoE bila ada; tidak melempar error bila tidak ada sesi aktif. */
+export async function killPppoeSessionsIfAny(router: RouterConnection, name: string): Promise<number> {
+  return removePppoeSessions(router, name);
+}
+
 function toRouterConfig(
   router: RouterConnection,
   identity: unknown,

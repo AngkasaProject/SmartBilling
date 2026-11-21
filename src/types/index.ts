@@ -12,6 +12,8 @@ export interface Customer {
   pppoePackageId?: string;
   servicePackageName?: string;
   profileName: string; // e.g. "Paket Home 20 Mbps"
+  /** Profil PPP asli saat pelanggan sedang diisolir dengan mode profil; dipakai untuk memulihkan. */
+  originalProfileName?: string;
   bandwidthLimit: string; // e.g. "20M/20M"
   monthlyFee: number; // e.g. 175000
   billingDate: number; // e.g. tanggal 5 setiap bulan
@@ -300,6 +302,10 @@ export interface AppSettings {
   gracePeriodDays: number;
   defaultVoucherPrefix: string;
   voucherLength: number;
+  /** disable = nonaktifkan secret; profile = ganti ke profil isolir (per router). */
+  isolirMethod: 'disable' | 'profile';
+  /** routerId -> nama PPP profile isolir yang dipakai saat isolirMethod = 'profile'. */
+  isolirProfiles: Record<string, string>;
 
   // 6. Telegram Bot Integration
   telegramEnabled?: boolean;

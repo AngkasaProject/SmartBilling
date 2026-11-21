@@ -17,7 +17,7 @@ export const settingsSections: Array<{
   icon: ElementType;
 }> = [
   { id: 'business', label: 'Profil bisnis', description: 'Nama dan kontak pada invoice', icon: Building },
-  { id: 'billing', label: 'Billing & voucher', description: 'Format kode voucher', icon: Sliders },
+  { id: 'billing', label: 'Billing & voucher', description: 'Format voucher & perilaku isolir', icon: Sliders },
   { id: 'reminders', label: 'Pengingat otomatis', description: 'Jadwal notifikasi WhatsApp', icon: Activity },
   { id: 'telegram', label: 'Bot Telegram', description: 'Notifikasi & tombol persetujuan', icon: Send },
   { id: 'database', label: 'Database & backup', description: 'Status dan pencadangan data', icon: Database },

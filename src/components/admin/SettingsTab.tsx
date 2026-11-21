@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AppSettings } from '../../types';
+import { AppSettings, RouterConfig } from '../../types';
 import { StorageService } from '../../services/storage';
 import { useToast } from '../ui/toast';
 import {
@@ -75,6 +75,9 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings, sect
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [showTelegramToken, setShowTelegramToken] = useState(false);
   const [loadingPortalSessionSecret, setLoadingPortalSessionSecret] = useState(false);
+  const [routers, setRouters] = useState<RouterConfig[]>([]);
+  const [routerProfiles, setRouterProfiles] = useState<Record<string, string[]>>({});
+  const [profilesLoading, setProfilesLoading] = useState(false);
 
   useEffect(() => setFormData(settings), [settings]);
 
@@ -121,6 +124,36 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings, sect
     void loadDatabaseInfo();
     void loadSecurityInfo();
   }, []);
+
+  useEffect(() => {
+    if (section !== 'billing') return;
+    let active = true;
+    setProfilesLoading(true);
+    (async () => {
+      try {
+        const result = await readJson<{ routers: RouterConfig[] }>(await fetch('/api/mikrotik/routers'));
+        const list = result.routers || [];
+        if (!active) return;
+        setRouters(list);
+        const entries = await Promise.all(list.map(async router => {
+          try {
+            const profiles = await readJson<{ profiles: Array<{ name: string }> }>(
+              await fetch(`/api/mikrotik/pppoe/profiles?routerId=${encodeURIComponent(router.id)}`)
+            );
+            return [router.id, profiles.profiles.map(profile => profile.name)] as const;
+          } catch {
+            return [router.id, []] as const;
+          }
+        }));
+        if (active) setRouterProfiles(Object.fromEntries(entries));
+      } catch {
+        if (active) setRouters([]);
+      } finally {
+        if (active) setProfilesLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [section]);
 
   const updateSetting = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setFormData(current => ({ ...current, [key]: value }));
@@ -552,6 +585,78 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings, sect
                 <p className="text-xs font-semibold text-muted-foreground">Contoh kode yang akan diterbitkan</p>
                 <code className="mt-2 block text-lg font-bold tracking-wider text-primary">{sampleVoucherCode}</code>
               </div>
+
+              <header className="border-b border-border pb-4">
+                <h2 className="text-lg font-bold">Perilaku isolir</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Dipakai saat pelanggan otomatis diisolir setelah jatuh tempo. Sesi PPPoE aktif selalu diputus lebih dulu
+                  agar isolir langsung berlaku.
+                </p>
+              </header>
+              <div className="grid gap-3">
+                <label className={`flex cursor-pointer gap-3 rounded-xl border p-3 text-xs ${formData.isolirMethod === 'disable' ? 'border-primary bg-primary/5' : 'border-border'}`}>
+                  <input
+                    type="radio"
+                    name="isolirMethod"
+                    className="mt-0.5"
+                    checked={formData.isolirMethod !== 'profile'}
+                    onChange={() => updateSetting('isolirMethod', 'disable')}
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold">Nonaktifkan secret PPPoE</span>
+                    <span className="mt-1 block font-normal text-muted-foreground">
+                      Seperti perilaku sekarang. Pelanggan tidak bisa connect, remote juga tidak bisa masuk sampai secret diaktifkan.
+                    </span>
+                  </span>
+                </label>
+                <label className={`flex cursor-pointer gap-3 rounded-xl border p-3 text-xs ${formData.isolirMethod === 'profile' ? 'border-primary bg-primary/5' : 'border-border'}`}>
+                  <input
+                    type="radio"
+                    name="isolirMethod"
+                    className="mt-0.5"
+                    checked={formData.isolirMethod === 'profile'}
+                    onChange={() => updateSetting('isolirMethod', 'profile')}
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold">Ganti ke profil PPPoE isolir</span>
+                    <span className="mt-1 block font-normal text-muted-foreground">
+                      Secret tetap connect memakai profil isolir (IP di-drop firewall, hanya portal pembayaran yang bisa dibuka), sehingga remote pelanggan tetap bisa diakses.
+                    </span>
+                  </span>
+                </label>
+              </div>
+              {formData.isolirMethod === 'profile' && (
+                <div className="space-y-3">
+                  {routers.length === 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      {profilesLoading ? 'Memuat daftar router…' : 'Belum ada router terdaftar. Tambahkan router pada menu MikroTik.'}
+                    </p>
+                  )}
+                  {routers.map(router => (
+                    <label key={router.id} className="block text-xs font-semibold">
+                      Profil isolir · {router.name}
+                      <select
+                        value={formData.isolirProfiles?.[router.id] || ''}
+                        onChange={event => updateSetting('isolirProfiles', { ...(formData.isolirProfiles || {}), [router.id]: event.target.value })}
+                        className={inputClass}
+                      >
+                        <option value="">— Belum dipilih (fallback: nonaktifkan secret) —</option>
+                        {(routerProfiles[router.id] || []).map(name => (
+                          <option key={name} value={name}>{name}</option>
+                        ))}
+                      </select>
+                      <span className="mt-1 block font-normal text-muted-foreground">
+                        Router: {router.host}:{router.port}
+                        {routerProfiles[router.id]?.length ? '' : ' · belum ada profil terbaca'}
+                      </span>
+                    </label>
+                  ))}
+                  <p className="text-[11px] text-muted-foreground">
+                    Butuh profil isolir? Ikuti panduan di <code className="font-mono">docs/isolir-profile.md</code> pada repo
+                    (address-list & firewall drop + captive portal opsional).
+                  </p>
+                </div>
+              )}
             </>
           )}
 
@@ -565,11 +670,12 @@ export const SettingsTab: React.FC<Props> = ({ settings, onRefreshSettings, sect
                 <input type="checkbox" checked={formData.autoSendReminderH1} onChange={event => updateSetting('autoSendReminderH1', event.target.checked)} className="mt-0.5 h-4 w-4 accent-indigo-600" />
                 <span>
                   <span className="block text-sm font-semibold">Aktifkan notifikasi invoice otomatis</span>
-                  <span className="mt-1 block text-xs text-muted-foreground">Kirim pengingat H-1 dan pemberitahuan WhatsApp saat invoice dibatalkan setelah 7 hari masa tenggang. Secret PPPoE tetap tidak diubah otomatis.</span>
+                  <span className="mt-1 block text-xs text-muted-foreground">Kirim pengingat H-1 dan pemberitahuan WhatsApp saat invoice dibatalkan setelah 7 hari masa tenggang.</span>
                 </span>
               </label>
               <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-foreground">
                 Pastikan provider dan kredensial WhatsApp telah diatur di menu WhatsApp API. Tautan pelanggan memerlukan URL aplikasi publik yang benar.
+                Isolir otomatis mengikuti saklar <code className="font-mono">autoSendIsolir</code> dan perilaku isolir pada Pengaturan → Format &amp; Perilaku.
               </div>
             </>
           )}
